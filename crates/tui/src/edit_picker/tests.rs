@@ -491,3 +491,60 @@ fn snapshot_keys_80x24() {
     press(&mut p, KeyCode::Char('?'));
     assert_snapshot!(drawn(&mut p, 80, 24).backend());
 }
+
+/// Every key the overlay lists does something here, and keys it doesn't
+/// list do nothing (tui spec, "Keys", Testing).
+#[test]
+fn every_listed_key_acts_and_others_do_nothing() {
+    for (name, event) in crate::hints::events(&KEYS, |_| true) {
+        let mut p = picker();
+        drawn(&mut p, 80, 24);
+        press(&mut p, KeyCode::Down);
+        assert_ne!(p.input(Input::Key(event)), Flow::Unchanged, "{name}");
+    }
+    for c in ['x', 'z', 'v', 'r', 's'] {
+        assert_eq!(
+            press(&mut picker(), KeyCode::Char(c)),
+            Flow::Unchanged,
+            "{c}"
+        );
+    }
+}
+
+/// The selection stays on its file through a filter and its clearing, as
+/// the log picker's does; a filter that matches nothing says so.
+#[test]
+fn the_selection_stays_on_its_file_and_no_match_says_so() {
+    let mut p = picker();
+    press(&mut p, KeyCode::Down);
+    press(&mut p, KeyCode::Down);
+    press(&mut p, KeyCode::Char('/'));
+    press(&mut p, KeyCode::Char('s'));
+    assert_eq!(
+        screen(&drawn(&mut p, 80, 24))
+            .iter()
+            .find(|r| r.starts_with('›'))
+            .map(String::as_str),
+        Some("› Advanced Settings      adv_settings.yml")
+    );
+    press(&mut p, KeyCode::Esc);
+    assert_eq!(p.state.selected(), Some(2));
+    press(&mut p, KeyCode::Char('/'));
+    press(&mut p, KeyCode::Char('Q'));
+    let rows = screen(&drawn(&mut p, 80, 24));
+    assert_eq!(
+        rows[2], "No files match \"Q\". Esc clears the filter.",
+        "{rows:?}"
+    );
+}
+
+/// A paste while the keys show does nothing: the overlay closes on keys,
+/// and the filter line never takes what it can't show.
+#[test]
+fn a_paste_under_the_keys_does_nothing() {
+    let mut p = picker();
+    press(&mut p, KeyCode::Char('/'));
+    press(&mut p, KeyCode::F(1));
+    assert_eq!(p.input(Input::Paste("vlan".into())), Flow::Unchanged);
+    assert_eq!(p.query, "");
+}

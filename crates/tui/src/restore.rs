@@ -161,7 +161,7 @@ pub(crate) const REVIEW_KEYS: Keys = Keys {
                 },
                 Key {
                     keys: &["Esc"],
-                    what: "back to the menu, or close",
+                    what: "back to the menu, or quit",
                     meaning: Meaning::Back,
                 },
             ],
@@ -171,7 +171,7 @@ pub(crate) const REVIEW_KEYS: Keys = Keys {
             keys: &[
                 Key {
                     keys: &["q"],
-                    what: "close",
+                    what: "quit",
                     meaning: Meaning::Leave,
                 },
                 Key {
@@ -656,6 +656,9 @@ impl Screen {
             KeyCode::Up | KeyCode::Char('k') => self.move_menu(ListState::select_previous),
             KeyCode::Home | KeyCode::Char('g') => self.move_menu(ListState::select_first),
             KeyCode::End | KeyCode::Char('G') => self.move_menu(ListState::select_last),
+            // The page keys page the file from the menu too, as the
+            // announcement viewer's page its text (tui spec, "Keys").
+            KeyCode::PageUp | KeyCode::PageDown | KeyCode::Char('b' | ' ') => self.file_key(code),
             KeyCode::Enter if self.pane.is_some() => {
                 self.focus_on = Focus::File;
                 Flow::Redraw
@@ -747,7 +750,7 @@ impl Screen {
     /// The footer: `hints` and `tail`, fitted to `width` (tui spec,
     /// "Keys", Hints).
     fn hints(&self, hints: &[Hint], tail: &[Hint], width: u16) -> Line<'static> {
-        crate::hints::footer(&self.theme, None, hints, tail, width)
+        crate::hints::footer(&self.theme, hints, tail, width)
     }
 
     fn draw_form(&mut self, frame: &mut Frame<'_>, body: Rect, footer: Rect) {
@@ -1062,8 +1065,11 @@ struct PaneStyles {
 /// Why not ratatui's `List`, whose `ListState` keeps a selection in
 /// sight: its items don't wrap (ratatui-widgets 0.3.2's `reflow` is
 /// private), and a long value, an rclone token, must show whole. Why not
-/// ratatui-textarea's cursor: the pane is read-only. tui-scrollview has no "scroll this into view", so
-/// the offset is set from each line's rows (`ScrollViewState::set_offset`).
+/// a read-only ratatui-textarea 0.9.3, which wraps (`set_wrap_mode`),
+/// keeps its cursor line in view and maps clicks (`screen_to_data`): it
+/// draws no scrollbar, and the pane shows tui-scrollview's, as the
+/// announcement's. tui-scrollview has no "scroll this into view", so the
+/// offset is set from each line's rows (`ScrollViewState::set_offset`).
 struct Pane {
     /// Each line, made safe.
     lines: Vec<String>,

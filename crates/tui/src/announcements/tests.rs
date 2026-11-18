@@ -811,3 +811,29 @@ fn snapshot_both_repositories_marked_100x24() {
     let terminal = drawn(&mut v, 100, 24);
     insta::assert_snapshot!(terminal.backend());
 }
+
+/// Every key the overlay lists does something here (tui spec, "Keys",
+/// Testing); keys it doesn't list do nothing.
+#[test]
+fn every_listed_key_acts_and_others_do_nothing() {
+    let three = || {
+        vec![
+            entry("2026-03-01", "One", &long(), true),
+            entry("2026-02-01", "Two", &long(), true),
+            entry("2026-01-01", "Three", &long(), true),
+        ]
+    };
+    for (name, event) in crate::hints::events(&KEYS, |_| true) {
+        let mut v = viewer(three());
+        v.list.select(Some(1));
+        drawn(&mut v, 100, 30);
+        assert_ne!(v.input(Input::Key(event)), Flow::Unchanged, "{name}");
+    }
+    for c in ['x', 'z', 'v', 'r', 's'] {
+        assert_eq!(
+            key(&mut viewer(three()), KeyCode::Char(c)),
+            Flow::Unchanged,
+            "{c}"
+        );
+    }
+}

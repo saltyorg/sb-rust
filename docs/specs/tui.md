@@ -1542,8 +1542,9 @@ the test's directory.
 
 - OSC 52 copy can't confirm success. The status line says so.
 - Values show as they are, so a frame left on a terminal without an
-  alternate screen (GNU screen's default) keeps them after sb exits (the
-  maintainer's choice, 2026-11-18).
+  alternate screen (GNU screen's default) keeps them after sb exits. It
+  follows from showing every value (2026-11-18); blanking the screen
+  before leaving is an open question for the maintainer.
 - A commit across several roles has no rollback. A failure leaves the
   earlier roles applied, and the outcome dialog says which.
 - A `;` line that doesn't continue a value (at column 0, say) is a
@@ -2065,16 +2066,19 @@ its tail says `q quit`.
   footer, so the two can't disagree. It lists every key that works on
   that screen, aliases included (`k j`, `b Space`, `g G`, `F`), and
   nothing that doesn't.
-- **Layout:** a tui-popup over the screen, rounded and titled
-  ` Keys: <screen> `, its body a `Paragraph` of groups (Move, Find,
-  Show, Save, Change, Leave), each a heading and two columns: the keys,
-  as wide as the widest, then the meaning. A last line names the mouse.
-  At 80 columns and wider the groups go in two columns of groups when
-  they don't fit one; narrower, one column, scrolled with tui-scrollview
-  when it is taller than the screen (the drift dialog's pattern), with
-  `↑↓ scroll` on its bottom border.
+- **Layout:** ratatui's popup pattern over the screen (`Clear`, then a
+  rounded `Block` over `Rect::centered`; tui-popup's `Popup` has no
+  bottom title), titled ` Keys: <screen> `, its body a `Paragraph` of
+  groups (Move, Find, Show, Save, Change, Leave), each a heading and two
+  columns: the keys, as wide as the column's widest, then the meaning. A
+  last line names the mouse. When one column is taller than the screen
+  and two fit, the groups go in two columns; otherwise one column,
+  wrapped, scrolled with tui-scrollview when it is taller than the
+  screen, with `↑↓ scroll` on its bottom border (`any key closes` when it
+  fits). The fact editor's fits in two columns at 80×24.
 - **Closing:** any key that doesn't scroll it closes it and does nothing
-  else, so `q` closes it (less's help habit) without quitting. Ctrl-C
+  else (drawn whole, the scroll keys close it too); a paste under it does
+  nothing, so `q` closes it (less's help habit) without quitting. Ctrl-C
   still stops sb. The screen behind keeps running (following, the live
   picker).
 - **Mouse:** a click outside it closes it; the wheel scrolls it.
@@ -2243,12 +2247,14 @@ nothing.
 ### Testing
 
 - **One key table per screen** in sb-tui, each row a key, its meaning
-  and its group; the footer, the overlay and the key handling read it.
+  and its group; the overlay draws it and the footers take its help key
+  (`?`, or F1 where the table has no `?`). Each footer names a subset of
+  the table in its own words.
   A test over all the tables checks rule 1: a key has the same meaning
   wherever it appears (with rule 7's arrows as the one declared class).
-- **Each screen, on `TestBackend`:** every key in its table does what
-  its row says, and a key not in it changes nothing (`Flow::Unchanged`).
-  In each text box, `?`, `q`, `s` and `r` type.
+- **Each screen, on `TestBackend`:** every key in its table acts (not
+  `Flow::Unchanged`), and a sample of keys not in it change nothing. In
+  each text box, `?`, `q`, `s` and `r` type.
 - **The footer:** snapshots at 120, 80 and 50 for every screen and
   state above; a test over every width from 10 to 240 that no hint is
   cut, the row is never wider than the screen, and the tail is there
@@ -2298,11 +2304,13 @@ every value as it is. Masking stays wherever text leaves the screen:
 
 Removed, with no user left: the fact editor's dots, Show and Hide,
 the boxes' mask and Ctrl+S, the drift dialog's dots; the restore pane's
-mask, `s` and `a`; and sb-config's `facts::secret::is_secret` and
-`is_secret_value` (the value rule, a URL with credentials), whose only
-caller was the restore pane. A frame left on a terminal without an
-alternate screen (GNU screen's default) now holds the values as shown;
-that is the maintainer's choice, recorded under Known limits.
+mask, `s` and `a`, and the masked last frame it drew as it closed.
+sb-config's `facts::secret::is_secret` and `is_secret_value` (the value
+rule, a URL with credentials) stay, with no caller now: their only
+caller was the restore pane, and they are ready for output meant for
+sharing. A frame left on a terminal without an alternate screen (GNU
+screen's default) now holds the values as shown (Known limits; an open
+question).
 
 ### Decisions (the maintainer, 2026-11-18)
 
@@ -2316,6 +2324,16 @@ that is the maintainer's choice, recorded under Known limits.
 4. **Esc** leaves a top-level screen when nothing is open (option A).
 5. **The tail** `? keys · q quit` sits right-aligned on every screen
    (option A).
+
+### Open question
+
+1. **Blank the last frame?** A terminal without an alternate screen (GNU
+   screen's default, tmux with `alternate-screen off`) keeps the screen's
+   last frame after sb leaves, values included, in `sb fact` and
+   restore's viewer. A: leave it (today). B: blank the screen just before
+   leaving (ratatui's `Terminal::clear`), so nothing stays; nothing is
+   hidden while the screen is up. Raised by the security review of
+   2026-11-18.
 
 ## Verification notes
 
@@ -2615,9 +2633,10 @@ that is the maintainer's choice, recorded under Known limits.
 
 ## Open questions
 
-None. The key map's five questions were answered on 2026-11-18 ("Keys:
-one map for every screen", Decisions). decided.md settled the brief's nine; decisions 18 to 20 follow from
-recorded decisions. The editors' question (when `sb fact` takes a
+The key map's five questions were answered on 2026-11-18 ("Keys: one
+map for every screen", Decisions); its open question (blank the last
+frame?) waits for the maintainer. decided.md settled the brief's nine;
+decisions 18 to 20 follow from recorded decisions. The editors' question (when `sb fact` takes a
 role's lock) was decided on 2026-11-13 from recorded rules: decision 38.
 
 ## Amendments to other specs

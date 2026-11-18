@@ -138,36 +138,10 @@ fn spans(theme: &Theme, hints: &[Hint]) -> Vec<Span<'static>> {
     spans
 }
 
-/// `text` cut to `room` columns, an `…` at the cut.
-fn cut(text: &str, room: usize) -> String {
-    if width(text) <= room {
-        return text.to_owned();
-    }
-    let mut out = String::new();
-    for c in text.chars() {
-        if width(&out) + width(&c.to_string()) + 1 > room {
-            break;
-        }
-        out.push(c);
-    }
-    if room > 0 {
-        out.push('…');
-    }
-    out
-}
-
-/// The footer row, `width` columns wide: `lead` first (a trouble text,
-/// never dropped, cut with `…` only when it alone is wider than the room
-/// the tail leaves), then as many of `hints` as fit, in order, whole,
-/// then `tail` right-aligned. When even the tail doesn't fit, its first
-/// hint alone (`? keys`).
-pub(crate) fn footer(
-    theme: &Theme,
-    lead: Option<Span<'static>>,
-    hints: &[Hint],
-    tail: &[Hint],
-    width: u16,
-) -> Line<'static> {
+/// The footer row, `width` columns wide: as many of `hints` as fit, in
+/// order, whole, then `tail` right-aligned. When even the tail doesn't
+/// fit, its first hint alone (`? keys`).
+pub(crate) fn footer(theme: &Theme, hints: &[Hint], tail: &[Hint], width: u16) -> Line<'static> {
     let width = usize::from(width);
     let tail = if hints_width(tail) <= width {
         tail
@@ -175,31 +149,12 @@ pub(crate) fn footer(
         &tail[..tail.len().min(1)]
     };
     let tail_width = hints_width(tail);
-    let mut left: Vec<Span<'static>> = Vec::new();
-    let mut used = 0;
-    if let Some(lead) = lead {
-        let room = width.saturating_sub(tail_width + BEFORE_TAIL);
-        let text = cut(&lead.content, room);
-        used = self::width(&text);
-        left.push(Span::styled(text, lead.style));
-    }
-    let lead_gap = if used > 0 { BEFORE_TAIL } else { 0 };
     let mut shown = 0;
-    while shown < hints.len() {
-        let next = hints_width(&hints[..=shown]);
-        if used + lead_gap + next + BEFORE_TAIL + tail_width > width {
-            break;
-        }
+    while shown < hints.len() && hints_width(&hints[..=shown]) + BEFORE_TAIL + tail_width <= width {
         shown += 1;
     }
-    if shown > 0 {
-        if used > 0 {
-            left.push(Span::raw(" ".repeat(BEFORE_TAIL)));
-            used += BEFORE_TAIL;
-        }
-        left.extend(spans(theme, &hints[..shown]));
-        used += hints_width(&hints[..shown]);
-    }
+    let mut left = spans(theme, &hints[..shown]);
+    let used = hints_width(&hints[..shown]);
     let pad = width.saturating_sub(used + tail_width);
     left.push(Span::raw(" ".repeat(pad)));
     left.extend(spans(theme, tail));
@@ -213,10 +168,13 @@ pub(crate) struct Overlay {
     open: bool,
     scroll: ScrollViewState,
     area: Rect,
+    /// Whether the last frame scrolled it: drawn whole, the scroll keys
+    /// close it as any key does.
+    scrolling: bool,
 }
 
-/// Whether the scroll keys can move the overlay's text: it is taller than
-/// its pane.
+/// Whether `key` is one of the keys that scroll the overlay while it is
+/// taller than the screen.
 fn scrolls(key: KeyCode) -> bool {
     matches!(
         key,
@@ -254,13 +212,13 @@ impl Overlay {
         self.scroll = ScrollViewState::default();
     }
 
-    /// A key while open: the scroll keys scroll, any other closes it and
-    /// does nothing else.
+    /// A key while open: the scroll keys scroll it while it scrolls; any
+    /// other key closes it and does nothing else.
     pub(crate) fn key(&mut self, key: KeyEvent) -> Flow {
         let plain = !key
             .modifiers
             .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
-        if plain && scrolls(key.code) {
+        if plain && self.scrolling && scrolls(key.code) {
             match key.code {
                 KeyCode::Up | KeyCode::Char('k') => self.scroll.scroll_up(),
                 KeyCode::Down | KeyCode::Char('j') => self.scroll.scroll_down(),
@@ -299,7 +257,7 @@ impl Overlay {
         let room = screen.inner(Margin::new(1, 1));
         let style = |role| Style::from(theme.style(role));
         let mouse = Line::styled(format!(" Mouse: {}", keys.mouse), style(Role::Muted));
-        let mut one = column(keys, keys.groups, theme);
+        let mut one = column(keys.groups, theme);
         one.push(Line::raw(""));
         one.push(mouse.clone());
         let two = (rows(one.len()) > room.height)
@@ -326,6 +284,7 @@ impl Overlay {
             None => wrapped(&one, width.saturating_sub(2)),
         };
         let fits = rows(content_rows) <= room.height;
+        self.scrolling = !fits;
         let height = rows(content_rows).min(room.height);
         let area = screen.centered(Constraint::Length(width), Constraint::Length(height));
         self.area = area;
@@ -395,12 +354,11 @@ fn line_width(lines: &[Line<'_>]) -> usize {
     lines.iter().map(Line::width).max().unwrap_or(0)
 }
 
-/// `groups` as the overlay's lines: each heading, then its keys, the
-/// keys as wide as the widest of the whole table, then what they do.
-fn column(keys: &Keys, groups: &[Group], theme: &Theme) -> Vec<Line<'static>> {
+/// `groups` as the overlay's lines: each heading, then its keys, as wide
+/// as the column's widest, then what they do.
+fn column(groups: &[Group], theme: &Theme) -> Vec<Line<'static>> {
     let style = |role| Style::from(theme.style(role));
-    let keys_width = keys
-        .groups
+    let keys_width = groups
         .iter()
         .flat_map(|g| g.keys)
         .map(|k| width(&k.keys.join(" ")))
@@ -439,8 +397,8 @@ fn two_columns(
     (1..keys.groups.len())
         .map(|at| {
             (
-                column(keys, &keys.groups[..at], theme),
-                column(keys, &keys.groups[at..], theme),
+                column(&keys.groups[..at], theme),
+                column(&keys.groups[at..], theme),
             )
         })
         .min_by_key(|(left, right)| left.len().max(right.len()))
@@ -448,6 +406,49 @@ fn two_columns(
             line_width(left) + 3 + line_width(right) + 3 <= usize::from(room.width)
                 && rows(left.len().max(right.len()) + 2) <= room.height
         })
+}
+
+/// The key event a table's key name stands for, for the screens' tests
+/// that press every key of their table; none for Ctrl+C, which the event
+/// loop takes before any screen.
+#[cfg(test)]
+pub(crate) fn event(name: &str) -> Option<KeyEvent> {
+    let plain = |code| Some(KeyEvent::new(code, KeyModifiers::NONE));
+    match name {
+        "↑" => plain(KeyCode::Up),
+        "↓" => plain(KeyCode::Down),
+        "←" => plain(KeyCode::Left),
+        "→" => plain(KeyCode::Right),
+        "PgUp" => plain(KeyCode::PageUp),
+        "PgDn" => plain(KeyCode::PageDown),
+        "Home" => plain(KeyCode::Home),
+        "End" => plain(KeyCode::End),
+        "Enter" => plain(KeyCode::Enter),
+        "Esc" => plain(KeyCode::Esc),
+        "Tab" => plain(KeyCode::Tab),
+        "Shift-Tab" => Some(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT)),
+        "Space" => plain(KeyCode::Char(' ')),
+        "Menu" => plain(KeyCode::Menu),
+        "F1" => plain(KeyCode::F(1)),
+        "Ctrl+C" => None,
+        "Ctrl+S" => Some(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL)),
+        "Alt+Enter" => Some(KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT)),
+        one if one.chars().count() == 1 => plain(KeyCode::Char(one.chars().next()?)),
+        other => panic!("no key event for {other:?}"),
+    }
+}
+
+/// Every key of `keys`' groups whose titles `only` admits, as events, with
+/// its name.
+#[cfg(test)]
+pub(crate) fn events(keys: &Keys, only: impl Fn(&str) -> bool) -> Vec<(&'static str, KeyEvent)> {
+    keys.groups
+        .iter()
+        .filter(|g| only(g.title))
+        .flat_map(|g| g.keys)
+        .flat_map(|k| k.keys.iter())
+        .filter_map(|name| event(name).map(|e| (*name, e)))
+        .collect()
 }
 
 #[cfg(test)]

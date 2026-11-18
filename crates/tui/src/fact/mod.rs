@@ -207,12 +207,12 @@ pub(crate) const KEYS: Keys = Keys {
                 },
                 Key {
                     keys: &["Home", "End", "g", "G"],
-                    what: "the first, the last",
+                    what: "first, last",
                     meaning: Meaning::Ends,
                 },
                 Key {
                     keys: &["←", "→", "h", "l"],
-                    what: "fold, open the app",
+                    what: "fold, open",
                     meaning: Meaning::Direction,
                 },
             ],
@@ -230,7 +230,7 @@ pub(crate) const KEYS: Keys = Keys {
             keys: &[
                 Key {
                     keys: &["Enter"],
-                    what: "edit, or fold the app",
+                    what: "edit, or fold",
                     meaning: Meaning::Open,
                 },
                 Key {
@@ -291,6 +291,11 @@ pub(crate) const KEYS: Keys = Keys {
                     what: "cancel",
                     meaning: Meaning::Back,
                 },
+                Key {
+                    keys: &["Tab"],
+                    what: "leave the search box",
+                    meaning: Meaning::Part,
+                },
             ],
         },
         Group {
@@ -298,12 +303,12 @@ pub(crate) const KEYS: Keys = Keys {
             keys: &[
                 Key {
                     keys: &["Esc"],
-                    what: "clear the search, or quit",
+                    what: "clear search, or quit",
                     meaning: Meaning::Back,
                 },
                 Key {
                     keys: &["q"],
-                    what: "quit (asks with changes)",
+                    what: "quit, asks to save",
                     meaning: Meaning::Leave,
                 },
                 Key {
@@ -1342,6 +1347,7 @@ impl Screen for Page {
             }
             Input::Key(key) => self.key(key),
             Input::Mouse(mouse) => self.mouse(mouse),
+            Input::Paste(_) if self.overlay.is_open() => Flow::Unchanged,
             Input::Paste(text) => self.paste(&text),
             Input::Resize(..) => return Flow::Redraw,
             _ => return Flow::Unchanged,

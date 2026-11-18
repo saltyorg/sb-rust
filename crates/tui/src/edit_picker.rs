@@ -240,14 +240,23 @@ impl EditPicker {
     }
 
     /// The filter is `query` now: the files whose title or name match it
-    /// (the viewer's smart case, `search::matches`), the first selected.
+    /// (the viewer's smart case, `search::matches`). The selection stays
+    /// on its file while it is shown, as the log picker's does; else the
+    /// first is selected.
     fn filter(&mut self, query: String) {
+        let selected = self
+            .state
+            .selected()
+            .and_then(|row| self.shown.get(row))
+            .copied();
         let hit = |text: &str| !crate::search::matches(text, &query).is_empty();
         self.shown = (0..self.items.len())
             .filter(|&i| query.is_empty() || hit(self.items[i].title) || hit(self.items[i].shown))
             .collect();
         self.query = query;
-        self.state.select((!self.shown.is_empty()).then_some(0));
+        let row = selected.and_then(|i| self.shown.iter().position(|&s| s == i));
+        self.state
+            .select(row.or((!self.shown.is_empty()).then_some(0)));
     }
 
     /// Move the selection with `ListState`'s own `movement`, then clamp it
@@ -268,22 +277,14 @@ impl EditPicker {
     }
 
     /// Move the selection one row, stopping at either end (sb-go's list
-    /// doesn't wrap): `ListState::select_next` and `select_previous`, then
-    /// the clamp they leave to the next render (ratatui-widgets 0.3.2
-    /// `list/state.rs`), done now, so an Enter or a double click before
-    /// that render never sees a row past the end.
+    /// doesn't wrap): `ListState::select_next` and `select_previous`,
+    /// clamped at once ([`EditPicker::move_selection`]), so an Enter or a
+    /// double click before the next render never sees a row past the end.
     fn step(&mut self, down: bool) {
-        if self.shown.is_empty() {
-            return;
-        }
         if down {
-            self.state.select_next();
+            self.move_selection(ListState::select_next);
         } else {
-            self.state.select_previous();
-        }
-        let last = self.shown.len() - 1;
-        if let Some(i) = self.state.selected() {
-            self.state.select(Some(i.min(last)));
+            self.move_selection(ListState::select_previous);
         }
     }
 
@@ -490,7 +491,7 @@ impl EditPicker {
         }
         hints.extend([("/", "filter"), ("↑↓", "move")]);
         let tail = [(KEYS.help_key(), "keys"), ("q", "quit")];
-        crate::hints::footer(&self.theme, None, &hints, &tail, width)
+        crate::hints::footer(&self.theme, &hints, &tail, width)
     }
 }
 
@@ -505,6 +506,7 @@ impl App for EditPicker {
             }
             Input::Key(key) => self.key(key),
             Input::Mouse(mouse) => self.mouse(mouse),
+            Input::Paste(_) if self.overlay.is_open() => Flow::Unchanged,
             Input::Paste(text) => self.paste(&text),
             // A resize redraws: the rows may change between one and two
             // lines.
@@ -537,10 +539,24 @@ impl App for EditPicker {
         let selected = self
             .style(Role::SelectedFg)
             .patch(self.bg(Role::SelectedBg));
-        let widget = List::new(rows)
-            .highlight_symbol(MARK)
-            .highlight_style(selected);
-        frame.render_stateful_widget(widget, list, &mut self.state);
+        if self.shown.is_empty() && !self.items.is_empty() {
+            // The log picker's line for a filter that matches nothing, the
+            // query through term-ui's `DisplayText` as the log picker's.
+            let query = sb_term_ui::DisplayText::from_bytes(self.query.as_bytes(), false);
+            let text = format!(
+                "No files match \"{}\". Esc clears the filter.",
+                query.lines().next().unwrap_or_default()
+            );
+            frame.render_widget(
+                Paragraph::new(Span::styled(text, self.style(Role::Muted))),
+                list,
+            );
+        } else {
+            let widget = List::new(rows)
+                .highlight_symbol(MARK)
+                .highlight_style(selected);
+            frame.render_stateful_widget(widget, list, &mut self.state);
+        }
         if let Some(line) = &self.editing {
             // The log picker's filter line: its label, the line, its hint.
             let width = |text| u16::try_from(Span::raw(text).width()).unwrap_or(u16::MAX);

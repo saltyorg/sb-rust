@@ -377,7 +377,6 @@ impl Viewer {
         }
         let mut line = crate::hints::footer(
             &self.theme,
-            None,
             &hints,
             &[(KEYS.help_key(), "keys"), ("q", "close")],
             width,

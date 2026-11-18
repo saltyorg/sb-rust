@@ -1,7 +1,7 @@
 //! The shared hints (tui spec, "Keys: one map for every screen", Hints
-//! and The `?` overlay): the footer's fit at every width, the tail kept,
-//! the lead never dropped; the overlay's opening, closing, scrolling and
-//! layout; and rule 1 over every screen's table.
+//! and The `?` overlay): the footer's fit at every width, the tail kept;
+//! the overlay's opening, closing, scrolling and layout; and rule 1 over
+//! every screen's table.
 
 use crossterm::event::{KeyEvent, KeyModifiers};
 use ratatui::Terminal;
@@ -28,34 +28,31 @@ fn plain() -> Theme {
 
 #[test]
 fn the_footer_right_aligns_the_tail_and_drops_hints_whole_from_the_end() {
-    let line = footer(&plain(), None, &HINTS, &TAIL, 60);
+    let line = footer(&plain(), &HINTS, &TAIL, 60);
     assert_eq!(
         text(&line),
         "Esc back · / search · s save · p print       ? keys · q quit"
     );
-    let line = footer(&plain(), None, &HINTS, &TAIL, 50);
+    let line = footer(&plain(), &HINTS, &TAIL, 50);
     assert_eq!(
         text(&line),
         "Esc back · / search · s save       ? keys · q quit"
     );
     // Three spaces at least before the tail: 46 columns hold three
     // hints, 45 two.
-    let line = footer(&plain(), None, &HINTS, &TAIL, 46);
+    let line = footer(&plain(), &HINTS, &TAIL, 46);
     assert_eq!(
         text(&line),
         "Esc back · / search · s save   ? keys · q quit"
     );
-    let line = footer(&plain(), None, &HINTS, &TAIL, 45);
+    let line = footer(&plain(), &HINTS, &TAIL, 45);
     assert_eq!(text(&line), "Esc back · / search           ? keys · q quit");
     assert_eq!(
-        text(&footer(&plain(), None, &HINTS, &TAIL, 15)),
+        text(&footer(&plain(), &HINTS, &TAIL, 15)),
         "? keys · q quit"
     );
     // Narrower than the tail: `? keys` alone.
-    assert_eq!(
-        text(&footer(&plain(), None, &HINTS, &TAIL, 10)),
-        "    ? keys"
-    );
+    assert_eq!(text(&footer(&plain(), &HINTS, &TAIL, 10)), "    ? keys");
 }
 
 /// At every width the row is exactly that wide, each hint whole or
@@ -63,7 +60,7 @@ fn the_footer_right_aligns_the_tail_and_drops_hints_whole_from_the_end() {
 #[test]
 fn the_footer_fits_every_width_without_cutting_a_hint() {
     for width in 10..=240_u16 {
-        let line = footer(&plain(), None, &HINTS, &TAIL, width);
+        let line = footer(&plain(), &HINTS, &TAIL, width);
         assert_eq!(line.width(), usize::from(width), "{width}");
         let shown = text(&line);
         let whole: Vec<String> = HINTS.iter().map(|(k, w)| format!("{k} {w}")).collect();
@@ -76,25 +73,6 @@ fn the_footer_fits_every_width_without_cutting_a_hint() {
             assert_eq!(shown.trim_start(), "? keys", "{width}");
         }
     }
-}
-
-/// The lead (a trouble text) stays first, before the hints, and is cut
-/// with `…` only when it alone is too wide.
-#[test]
-fn the_lead_goes_first_and_is_never_dropped() {
-    let lead = || Some(Span::raw("Docker events stopped; retrying"));
-    let line = footer(&plain(), lead(), &HINTS, &TAIL, 80);
-    assert_eq!(
-        text(&line),
-        "Docker events stopped; retrying   Esc back · / search · s save   ? keys · q quit"
-    );
-    let line = footer(&plain(), lead(), &HINTS, &TAIL, 50);
-    assert_eq!(
-        text(&line),
-        "Docker events stopped; retrying    ? keys · q quit"
-    );
-    let line = footer(&plain(), lead(), &HINTS, &TAIL, 30);
-    assert_eq!(text(&line), "Docker even…   ? keys · q quit");
 }
 
 const GROUPS: &[Group] = &[
@@ -173,12 +151,16 @@ fn question_mark_and_f1_open_it() {
 }
 
 /// Any key that doesn't scroll closes it, `q` too, and nothing else
-/// happens (the screen never sees the key); the scroll keys keep it open.
+/// happens (the screen never sees the key); the scroll keys keep it open
+/// only while it scrolls: drawn whole, they close it too ("any key
+/// closes").
 #[test]
 fn any_other_key_closes_it() {
     let mut overlay = Overlay::default();
     assert!(!overlay.is_open());
     overlay.open();
+    // Too tall for 30×8: it scrolls.
+    drawn(&mut overlay, 30, 8);
     for code in [
         KeyCode::Down,
         KeyCode::Char('j'),
@@ -191,9 +173,17 @@ fn any_other_key_closes_it() {
     assert_eq!(overlay.key(plain_key(KeyCode::Char('q'))), Flow::Redraw);
     assert!(!overlay.is_open());
     overlay.open();
+    drawn(&mut overlay, 30, 8);
     let ctrl_j = KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL);
     overlay.key(ctrl_j);
     assert!(!overlay.is_open(), "Ctrl-J is no scroll key");
+    // Whole on 80×24: ↓ and Space close it as any key does.
+    for code in [KeyCode::Down, KeyCode::Char(' ')] {
+        overlay.open();
+        drawn(&mut overlay, 80, 24);
+        overlay.key(plain_key(code));
+        assert!(!overlay.is_open(), "{code:?}");
+    }
 }
 
 /// It lists every group and key of the screen, in a titled box, with the

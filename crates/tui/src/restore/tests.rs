@@ -1000,3 +1000,75 @@ fn the_keys_overlay_opens_in_each_part() {
     assert_eq!(key(&mut h, KeyCode::Char('q')), Flow::Redraw);
     assert_eq!(key(&mut h, KeyCode::Char('q')), Flow::Quit);
 }
+
+/// Every key each part's overlay lists does something there (tui spec,
+/// "Keys", Testing): the form's, the live list's, the viewer's from the
+/// menu; keys the viewer doesn't list do nothing.
+#[test]
+fn every_listed_key_acts_and_others_do_nothing() {
+    for (name, event) in crate::hints::events(&FORM_KEYS, |_| true) {
+        let mut h = harness(Prefill::default());
+        typed(&mut h, "someone");
+        assert_ne!(
+            h.screen.input(Input::Key(event)),
+            Flow::Unchanged,
+            "form {name}"
+        );
+    }
+    for (name, event) in crate::hints::events(&RUN_KEYS, |_| true) {
+        let mut h = harness(Prefill::default());
+        submit(&mut h, "someone", "pw");
+        assert_ne!(
+            h.screen.input(Input::Key(event)),
+            Flow::Unchanged,
+            "run {name}"
+        );
+    }
+    let review = || {
+        let mut h = harness(Prefill::default());
+        place(&h, "accounts.yml", "a: 1\n");
+        place(&h, "rclone.conf", &"line: x\n".repeat(80));
+        place(&h, "settings.yml", "c: 3\n");
+        submit(&mut h, "someone", "pw");
+        ended(&mut h, [Status::Done, Status::Done, Status::Done]);
+        key(&mut h, KeyCode::Down);
+        drawn(&mut h, 100, 30);
+        h
+    };
+    for (name, event) in crate::hints::events(&REVIEW_KEYS, |_| true) {
+        let mut h = review();
+        assert_ne!(
+            h.screen.input(Input::Key(event)),
+            Flow::Unchanged,
+            "review {name}"
+        );
+    }
+    for c in ['x', 'z', 'v', 'r', 's', 'a', 'c'] {
+        assert_eq!(key(&mut review(), KeyCode::Char(c)), Flow::Unchanged, "{c}");
+    }
+}
+
+/// At 50 columns each part's footer keeps its tail: how to get the keys
+/// and how to leave (tui spec, "Keys", success criterion 3).
+#[test]
+fn every_footer_keeps_its_tail_at_50_columns() {
+    let last = |h: &mut Harness| drawn(h, 50, 20).last().cloned().unwrap_or_default();
+    let mut h = harness(Prefill::default());
+    assert!(
+        last(&mut h).ends_with("F1 keys · Esc cancel"),
+        "{}",
+        last(&mut h)
+    );
+    place(&h, "accounts.yml", "a: 1\n");
+    submit(&mut h, "someone", "pw");
+    assert!(
+        last(&mut h).ends_with("? keys · Ctrl+C stop"),
+        "{}",
+        last(&mut h)
+    );
+    ended(&mut h, [Status::Done, Status::Ignored, Status::Ignored]);
+    assert_eq!(
+        last(&mut h),
+        "Enter open · Tab part · ← → file   ? keys · q quit"
+    );
+}

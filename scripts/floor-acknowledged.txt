@@ -769,3 +769,77 @@ assertion-removed	crates/motd/src/lib.rs	assert_eq!(	kept, reworded: motd's unse
 assertion-removed	crates/motd/src/lib.rs	assert_eq!(	kept, reworded: motd's unset slots take its built-in GitHub Dark Colorblind colours, not sb's palette roles (motd decision 5, amended 2026-11-19), so the same value, warning and error assertions stand on one line each against the built-in colour (paint_colours_values_and_warnings_only_with_colour_on)
 assertion-removed	crates/motd/src/lib.rs	assert_eq!(	kept, reworded: a slot motd.yml doesn't set takes motd's built-in colour, not sb's palette role (motd decision 5, amended 2026-11-19), so the value and error assertions stand on one line each against the built-in colour (motd_yml_colours_are_resolved_for_the_profile)
 assertion-removed	crates/motd/src/lib.rs	assert_eq!(	kept, reworded: a slot motd.yml doesn't set takes motd's built-in colour, not sb's palette role (motd decision 5, amended 2026-11-19), so the value and error assertions stand on one line each against the built-in colour (motd_yml_colours_are_resolved_for_the_profile)
+assertion-removed	crates/sb/tests/fact.rs	assert!(!page.contains(SECRET), "{page}");	the page shows the secret now (the maintainer, 2026-11-18: no masking in the TUIs); the PTY test asserts the value shows and no dot does
+assertion-removed	crates/sb/tests/fact.rs	assert!(log.contains("fact shown"), "{log}");	Show and its log record went with the masking; the tests still assert that fact copied is logged and the value never is
+assertion-removed	crates/tui/src/announcements/tests.rs	assert!(	the announcement footer is the shared fitted row; the test asserts its exact row, the legend's colour and the 50-column row
+assertion-removed	crates/tui/src/edit_picker/tests.rs	assert_eq!(rows[23], "↑↓ move · Enter open · q quit");	the edit picker's footer is the shared fitted row; the test asserts the new row
+assertion-removed	crates/tui/src/fact/tests.rs	assert!(!contains(&mut p));	secrets_are_masked_until_show went with the masking; every_value_shows_as_it_is asserts each value shows and no dot or Show does
+assertion-removed	crates/tui/src/fact/tests.rs	assert_eq!(p.selected(), Some(Row::Setting((1, 0, 0))));	secrets_are_masked_until_show went with the masking; every_value_shows_as_it_is asserts each value shows and no dot or Show does
+assertion-removed	crates/tui/src/fact/tests.rs	assert!(contains(&mut p));	secrets_are_masked_until_show went with the masking; every_value_shows_as_it_is asserts each value shows and no dot or Show does
+assertion-removed	crates/tui/src/fact/tests.rs	assert!(shows(&mut p, 80, 24, "Hide (s)"));	secrets_are_masked_until_show went with the masking; every_value_shows_as_it_is asserts each value shows and no dot or Show does
+assertion-removed	crates/tui/src/fact/tests.rs	assert!(!shows(&mut p, 80, 24, "not-a-real-jwt-secret"));	secrets_are_masked_until_show went with the masking; every_value_shows_as_it_is asserts each value shows and no dot or Show does
+assertion-removed	crates/tui/src/fact/tests.rs	assert!(!contains(&mut p));	secrets_are_masked_until_show went with the masking; every_value_shows_as_it_is asserts each value shows and no dot or Show does
+assertion-removed	crates/tui/src/fact/tests.rs	assert!(!contains(&mut p));	secrets_are_masked_until_show went with the masking; every_value_shows_as_it_is asserts each value shows and no dot or Show does
+assertion-removed	crates/tui/src/fact/tests.rs	assert!(!contains(&mut p));	secrets_are_masked_until_show went with the masking; every_value_shows_as_it_is asserts each value shows and no dot or Show does
+assertion-removed	crates/tui/src/fact/tests.rs	assert!(shows(&mut p, 80, 24, "Pick a setting to show"));	Show went with the masking; the test keeps Copy's message on a heading
+assertion-removed	crates/tui/src/fact/tests.rs	assert!(!rows.iter().any(|row| row.contains(SECRET)));	Copy's value was asserted still masked; nothing is masked now
+assertion-removed	crates/tui/src/fact/tests.rs	assert!(text.contains("fact shown"), "{text}");	Show and its log record went with the masking; the tests still assert that fact copied is logged and the value never is
+assertion-removed	crates/tui/src/fact/tests.rs	assert_eq!(p.selected(), Some(Row::Setting((0, 0, 1))));	the test of Show on a value that isn't hidden went with Show
+assertion-removed	crates/tui/src/fact/tests.rs	assert_eq!(p.shown, None);	the test of Show on a value that isn't hidden went with Show
+assertion-removed	crates/tui/src/fact/tests.rs	assert!(shows(&mut p, 80, 24, "This value isn't hidden"));	the test of Show on a value that isn't hidden went with Show
+assertion-removed	crates/tui/src/fact/tests.rs	assert!(!shows(&mut p, 80, 24, "Hide (s)"));	the test of Show on a value that isn't hidden went with Show
+assertion-removed	crates/tui/src/fact/tests.rs	assert_eq!(cell(buffer, 34, 23), faint);	the Show button went; the test checks the same buttons' cells at 100 columns, where every button shows
+assertion-removed	crates/tui/src/fact/tests.rs	assert_eq!(cell(buffer, 45, 23), on);	the Show button went; the test checks the same buttons' cells at 100 columns, where every button shows
+assertion-removed	crates/tui/src/fact/tests.rs	assert_eq!(cell(buffer, 34, 23), on);	the Show button went; the test checks the same buttons' cells at 100 columns, where every button shows
+assertion-removed	crates/tui/src/fact/tests.rs	assert!(shows(&mut f.page, 100, 40, "Ctrl+S show"));	the edit box no longer masks a secret; a_secret_s_edit_box_shows_its_value asserts it shows and no Ctrl+S is named
+assertion-removed	crates/tui/src/fact/tests.rs	assert!(!shows(&mut f.page, 100, 40, SECRET));	the edit box no longer masks a secret; a_secret_s_edit_box_shows_its_value asserts it shows and no Ctrl+S is named
+assertion-removed	crates/tui/src/fact/tests.rs	assert!(!shows(&mut f.page, 100, 40, SECRET));	the edit box no longer masks a secret; a_secret_s_edit_box_shows_its_value asserts it shows and no Ctrl+S is named
+assertion-removed	crates/tui/src/fact/tests.rs	assert!(!rows.contains(SECRET), "{rows}");	the drift dialog shows values now; the test asserts the secret shows and no dot does
+assertion-removed	crates/tui/src/fact/tests.rs	assert!(shows(&mut f.page, 100, 40, "Save changes (v)"));	save moved from v to s; the same assertion with (s)
+assertion-removed	crates/tui/src/fact/tests.rs	assert!(shows(&mut f.page, 100, 40, "Ctrl+S show"));	a new secret's value box no longer masks; the test asserts the typed text shows
+assertion-removed	crates/tui/src/fact/tests.rs	assert!(!shows(&mut f.page, 100, 40, "typed-secret"));	a new secret's value box no longer masks; the test asserts the typed text shows
+assertion-removed	crates/tui/src/fact/tests.rs	assert!(rows[y + 2].contains("Show"), "{rows:?}");	the menu's first item is Copy now that Show went; the test asserts it
+assertion-removed	crates/tui/src/fact/tests.rs	assert_eq!(f.page.menu.expect("open").lit, 3);	Show left the menu, so Delete is its third item; the test asserts lit 2
+assertion-removed	crates/tui/src/restore/tests.rs	assert!(screen_text(&mut h).contains("Ctrl-C stop"));	restore's footers are the shared fitted row; the same checks on ? keys · Ctrl+C stop
+assertion-removed	crates/tui/src/restore/tests.rs	assert!(!text.contains("Ctrl-C stop"), "{text}");	restore's footers are the shared fitted row; the same checks on ? keys · Ctrl+C stop
+assertion-removed	crates/tui/src/restore/tests.rs	assert_eq!(h.screen.focus_on, Focus::File);	← → move between files now (rule 7), not into and out of the pane; Enter and Esc still do, asserted
+assertion-removed	crates/tui/src/restore/tests.rs	assert_eq!(h.screen.focus_on, Focus::Menu);	← → move between files now (rule 7), not into and out of the pane; Enter and Esc still do, asserted
+assertion-removed	crates/tui/src/restore/tests.rs	assert_eq!(key(&mut h, KeyCode::Char('c')), Flow::Quit);	c no longer continues (it copies elsewhere); the test asserts c does nothing and Enter continues
+assertion-removed	crates/tui/src/restore/tests.rs	assert!(text.contains("type = drive"), "{text}");	the same check, in every_value_shows_as_it_is's loop
+assertion-removed	crates/tui/src/restore/tests.rs	assert!(text.contains("token = ••••••••"), "{text}");	the masking test went with the masking; every_value_shows_as_it_is asserts each line shows and s and a do nothing
+assertion-removed	crates/tui/src/restore/tests.rs	assert!(text.contains("client_secret = ••••••••"), "{text}");	the masking test went with the masking; every_value_shows_as_it_is asserts each line shows and s and a do nothing
+assertion-removed	crates/tui/src/restore/tests.rs	assert!(	the masking test went with the masking; every_value_shows_as_it_is asserts each line shows and s and a do nothing
+assertion-removed	crates/tui/src/restore/tests.rs	assert!(!text.contains("abc123") && !text.contains("shh") && !text.contains("u:pw"));	the masking test went with the masking; every_value_shows_as_it_is asserts each line shows and s and a do nothing
+assertion-removed	crates/tui/src/restore/tests.rs	assert!(text.contains("a show all"), "{text}");	the masking test went with the masking; every_value_shows_as_it_is asserts each line shows and s and a do nothing
+assertion-removed	crates/tui/src/restore/tests.rs	assert!(text.contains("token = abc123"), "{text}");	the masking test went with the masking; every_value_shows_as_it_is asserts each line shows and s and a do nothing
+assertion-removed	crates/tui/src/restore/tests.rs	assert!(!text.contains("shh"), "only the cursor's line: {text}");	the masking test went with the masking; every_value_shows_as_it_is asserts each line shows and s and a do nothing
+assertion-removed	crates/tui/src/restore/tests.rs	assert!(	the masking test went with the masking; every_value_shows_as_it_is asserts each line shows and s and a do nothing
+assertion-removed	crates/tui/src/restore/tests.rs	assert!(text.contains("abc123") && text.contains("shh") && text.contains("u:pw"));	the masking test went with the masking; every_value_shows_as_it_is asserts each line shows and s and a do nothing
+assertion-removed	crates/tui/src/restore/tests.rs	assert!(text.contains("secrets shown"), "{text}");	the masking test went with the masking; every_value_shows_as_it_is asserts each line shows and s and a do nothing
+assertion-removed	crates/tui/src/restore/tests.rs	assert!(text.contains("a hide all"), "{text}");	the masking test went with the masking; every_value_shows_as_it_is asserts each line shows and s and a do nothing
+assertion-removed	crates/tui/src/restore/tests.rs	assert!(!screen_text(&mut h).contains("abc123"));	the masking test went with the masking; every_value_shows_as_it_is asserts each line shows and s and a do nothing
+assertion-removed	crates/tui/src/restore/tests.rs	assert_eq!(secret_value("token: abc", secret), Some(7));	secret_value went with the pane's masking
+assertion-removed	crates/tui/src/restore/tests.rs	assert_eq!(secret_value("  api_key = xyz", secret), Some(12));	secret_value went with the pane's masking
+assertion-removed	crates/tui/src/restore/tests.rs	assert_eq!(secret_value("- password: p", secret), Some(12));	secret_value went with the pane's masking
+assertion-removed	crates/tui/src/restore/tests.rs	assert_eq!(secret_value("pass=x", secret), Some(5));	secret_value went with the pane's masking
+assertion-removed	crates/tui/src/restore/tests.rs	assert_eq!(secret_value("url: https://u:p@h", secret), Some(5));	secret_value went with the pane's masking
+assertion-removed	crates/tui/src/restore/tests.rs	assert_eq!(secret_value("  - mailto://u:p@h", secret), Some(4));	secret_value went with the pane's masking
+assertion-removed	crates/tui/src/restore/tests.rs	assert_eq!(secret_value("https://u:p@h", secret), Some(0));	secret_value went with the pane's masking
+assertion-removed	crates/tui/src/restore/tests.rs	assert_eq!(secret_value("- \"https://u:p@h\"", secret), Some(2));	secret_value went with the pane's masking
+assertion-removed	crates/tui/src/restore/tests.rs	assert_eq!(secret_value("- https://example.test", secret), None);	secret_value went with the pane's masking
+assertion-removed	crates/tui/src/restore/tests.rs	assert_eq!(secret_value("user: someone", secret), None);	secret_value went with the pane's masking
+assertion-removed	crates/tui/src/restore/tests.rs	assert_eq!(secret_value("token:", secret), None);	secret_value went with the pane's masking
+assertion-removed	crates/tui/src/restore/tests.rs	assert_eq!(secret_value("token:   ", secret), None);	secret_value went with the pane's masking
+assertion-removed	crates/tui/src/restore/tests.rs	assert_eq!(secret_value("no separator token", secret), None);	secret_value went with the pane's masking
+assertion-removed	crates/tui/src/restore/tests.rs	assert_eq!(secret_value(": token", secret), None);	secret_value went with the pane's masking
+assertion-removed	crates/tui/src/restore/tests.rs	assert_eq!(lines[0].0, "a: b");	read_lines returns plain lines; the same assertion on lines[0]
+assertion-removed	crates/tui/src/restore/tests.rs	assert!(screen_text(&mut h).contains("abc123"));	the masked last frame went with the masking
+assertion-removed	crates/tui/src/restore/tests.rs	assert!(!screen_text(&mut h).contains("abc123"));	the masked last frame went with the masking
+assertion-removed	crates/tui/src/restore/tests.rs	assert!(!h.screen.show_all);	the masked last frame went with the masking
+assertion-removed	crates/tui/src/restore/tests.rs	assert!(h.screen.pane.as_ref().is_some_and(|p| !p.revealed));	the masked last frame went with the masking
+assertion-removed	crates/tui/src/restore/tests.rs	assert!(!text.contains("s show the value"), "{text}");	the footer names the shared keys now; the test asserts the new row and that no show key is named
+assertion-removed	crates/tui/src/restore/tests.rs	assert!(text.contains("a show all"), "{text}");	the footer names the shared keys now; the test asserts the new row and that no show key is named
+assertion-removed	crates/tui/src/restore/tests.rs	assert!(screen_text(&mut h).contains("s show the value"));	the footer names the shared keys now; the test asserts the new row and that no show key is named
+assertion-removed	crates/tui/src/restore/tests.rs	assert!(screen_text(&mut h).contains("token: abc123"));	the test of a value shown until the cursor moves went with the masking
+assertion-removed	crates/tui/src/restore/tests.rs	assert!(screen_text(&mut h).contains("token: abc123"), "still shown");	the test of a value shown until the cursor moves went with the masking
+assertion-removed	crates/tui/src/restore/tests.rs	assert!(	the test of a value shown until the cursor moves went with the masking

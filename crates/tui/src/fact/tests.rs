@@ -2445,3 +2445,40 @@ fn snapshot_keys_50x19() {
     press(&mut p, KeyCode::Char('?'));
     assert_snapshot!(drawn(&mut p, 50, 19).backend());
 }
+
+/// Every key the overlay lists does something: the page's on the page,
+/// the boxes' in the search box; keys it doesn't list do nothing, and in
+/// a box `s` and `r` are typed (tui spec, "Keys", Testing).
+#[test]
+fn every_listed_key_acts_and_others_do_nothing() {
+    for (name, event) in crate::hints::events(&KEYS, |title| title != "In a box") {
+        let mut p = page();
+        drawn(&mut p, 80, 24);
+        down(&mut p, 5);
+        assert_ne!(p.input(Input::Key(event)), Flow::Unchanged, "{name}");
+    }
+    for (name, event) in crate::hints::events(&KEYS, |title| title == "In a box") {
+        let mut p = page();
+        press(&mut p, KeyCode::Char('/'));
+        type_text(&mut p, "pass");
+        assert_ne!(p.input(Input::Key(event)), Flow::Unchanged, "{name}");
+    }
+    for c in ['x', 'z', 'v', 'r', 'y'] {
+        assert_eq!(press(&mut page(), KeyCode::Char(c)), Flow::Unchanged, "{c}");
+    }
+    let mut p = page();
+    press(&mut p, KeyCode::Char('/'));
+    type_text(&mut p, "sr");
+    assert_eq!(p.query, "sr");
+}
+
+/// A paste while the keys show does nothing, not even in the search box
+/// under them.
+#[test]
+fn a_paste_under_the_keys_does_nothing() {
+    let mut p = page();
+    press(&mut p, KeyCode::Char('/'));
+    press(&mut p, KeyCode::F(1));
+    assert_eq!(p.input(Input::Paste("komodo".into())), Flow::Unchanged);
+    assert_eq!(p.query, "");
+}

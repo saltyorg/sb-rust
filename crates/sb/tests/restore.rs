@@ -744,6 +744,9 @@ fn on_a_terminal_the_form_asks_and_the_list_shows() {
         assert!(!screen.contains(secret), "{secret:?} left:\n{screen}");
         assert!(!log.contains(secret), "{secret:?} logged:\n{log}");
     }
+    // The restored file showed in the viewer, as it is; its content never
+    // reaches the run log (ops spec, "No masking on screen").
+    assert!(!log.contains("synthetic: true"), "{log}");
     pty.assert_restored();
     assert_eq!(
         std::fs::read(world.root().join("settings.yml")).expect("restored"),
