@@ -70,6 +70,16 @@ impl Login {
             Login::Dockerhub(_) => Validator::ValidateDockerhubConfig,
         }
     }
+
+    /// The key path of a value the login takes from outside its own
+    /// section: Cloudflare's zone, accounts.yml's `user.domain`.
+    #[must_use]
+    pub fn reads(&self) -> Option<&'static str> {
+        match self {
+            Login::Cloudflare { .. } => Some("user.domain"),
+            Login::Dockerhub(_) => None,
+        }
+    }
 }
 
 /// What a validator found.
@@ -116,6 +126,9 @@ pub struct Report {
     pub requests: Vec<Request>,
     /// Credential checks with no credentials set.
     pub skipped: Vec<Validator>,
+    /// Credential checks left out because a value they read from another
+    /// section has an issue: the check and that value's path.
+    pub blocked: Vec<(Validator, &'static str)>,
 }
 
 /// `root`, the file shown as `file`, checked against `rules`.
@@ -126,7 +139,25 @@ pub fn validate(file: &str, root: &Node, rules: &Rules, validators: &dyn Validat
         report: Report::default(),
     };
     walk.object(root, rules, None, "", (1, 1));
-    walk.report.issues.sort();
+    let report = &mut walk.report;
+    report.issues.sort();
+    // A check whose login reads another section's value waits for that
+    // value's issue to be fixed (config spec, "When the checks run"), as
+    // one waits for its own section's.
+    let issues = &report.issues;
+    let (blocked, requests) = std::mem::take(&mut report.requests)
+        .into_iter()
+        .partition::<Vec<_>, _>(|request| {
+            request
+                .login
+                .reads()
+                .is_some_and(|path| issues.iter().any(|issue| issue.path == path))
+        });
+    report.requests = requests;
+    report.blocked = blocked
+        .iter()
+        .filter_map(|request| Some((request.validator(), request.login.reads()?)))
+        .collect();
     walk.report
 }
 

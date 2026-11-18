@@ -144,7 +144,11 @@ pass; and confirms that their Cloudflare and Docker Hub credentials work.
   inside `cloudflare:` or `dockerhub:` skips that check too). Structure
   errors (a scoped token mixed with a global key, `api` without `email`, no
   `user.domain`, a half-set Docker Hub login) are accounts.yml issues, and
-  that check is then skipped. (sb-go starts the checks during the walk,
+  that check is then skipped. The same rule covers a value a check reads
+  from another section: an issue on `user.domain`, the zone the
+  Cloudflare check asks about, skips that check with the notice
+  `Cloudflare check skipped: fix user.domain first`, so a mistyped
+  domain isn't reported as a token that can't see its zone. (sb-go starts the checks during the walk,
   loses their results when the walk fails, and reports the structure errors
   from the checks' own steps.)
 - **Issues:** `<file>:<line>:<column>: <key path>: <message>`, the file
@@ -356,8 +360,9 @@ pass; and confirms that their Cloudflare and Docker Hub credentials work.
       warning of the parse is an issue with `severity` `warning`,
       `line` and `column` `null` and `path` `""`.
   - **A check:** `check` (`cloudflare`, `dockerhub`), `outcome`
-    (`validated`, `skipped`: no credentials set, with `reason`; `failed`,
-    with `message`, the step's error).
+    (`validated`; `skipped`, with `reason`: no credentials set, or a
+    value it reads has an issue, `Cloudflare check skipped: fix
+    user.domain first`; `failed`, with `message`, the step's error).
   - **Exit code:** unchanged: 0 when every file validated or skipped, 1
     otherwise, with the failed files' blocks on stderr.
   - **No output** on stdout when the run stops (Ctrl-C, SIGTERM, an
@@ -412,6 +417,9 @@ pass; and confirms that their Cloudflare and Docker Hub credentials work.
   characters in echoed values and remote text escaped.
 - Cloudflare failures show the HTTP status and Cloudflare's own messages
   (sb-go: cloudflare-go's error text) before sb-go's guidance.
+- An issue on `user.domain` skips the Cloudflare check with a notice
+  (sb-go asked Cloudflare about the bad zone and showed the token
+  guidance).
 - `SB_SALTBOX_DIR`, `SB_DOCKERHUB_URL` and `SB_BACKUPS_DIR` (motd.yml's
   migration backups; tests and debugging; sb-go hard-codes the first
   two and has no migration; sudo's relaunch drops them).

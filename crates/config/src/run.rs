@@ -590,6 +590,17 @@ async fn validate_checked(
             step.info(reason);
         }
     }
+    for (validator, path) in &report.blocked {
+        if let Some((id, name)) = credential_check(*validator) {
+            let reason = format!("{name} check skipped: fix {path} first");
+            check_results.push(CheckResult {
+                check: id,
+                outcome: Outcome::Skipped,
+                detail: Some(reason.clone()),
+            });
+            step.info(reason);
+        }
+    }
     let checks_failed = match checks {
         Checks::Run => {
             let ran = run_checks(step, settings, &report.requests).await;
@@ -1984,6 +1995,49 @@ mod tests {
         assert!(!screen.contains("Cloudflare API credentials"), "{screen}");
         assert!(!screen.contains("not-a-real-key"), "{screen}");
         assert_eq!(fake.seen().len(), 1);
+    }
+
+    /// A `user.domain` with an issue skips the Cloudflare check, whose zone
+    /// it names, with a notice; Docker Hub's still runs (config spec,
+    /// "When the checks run").
+    #[tokio::test]
+    async fn a_bad_domain_skips_the_cloudflare_check() {
+        let root = saltbox_root("valid").expect("root");
+        let accounts = std::fs::read_to_string(root.path().join("accounts.yml")).expect("read");
+        write(
+            root.path(),
+            "accounts.yml",
+            &accounts.replace("domain: example.com", "domain: https://example.com/"),
+        );
+        let fake = healthy();
+        let (result, screen) = run_on(root.path(), &fake).await;
+        assert!(matches!(result, Err(Exit(1))), "{screen}");
+        assert!(screen.contains("user.domain: "), "{screen}");
+        assert!(
+            screen.contains("Cloudflare check skipped: fix user.domain first"),
+            "{screen}"
+        );
+        assert!(!screen.contains("Cloudflare API credentials"), "{screen}");
+        assert_eq!(fake.seen().len(), 1, "{screen}");
+
+        // `--json` lists it as skipped, with the notice as its reason.
+        let fake = healthy();
+        let (_, results) = record_on(root.path(), &fake).await;
+        assert_eq!(
+            results.checks,
+            [
+                CheckResult {
+                    check: "cloudflare",
+                    outcome: Outcome::Skipped,
+                    detail: Some("Cloudflare check skipped: fix user.domain first".into()),
+                },
+                CheckResult {
+                    check: "dockerhub",
+                    outcome: Outcome::Validated,
+                    detail: None,
+                },
+            ]
+        );
     }
 
     /// Duplicate keys stop a schema-backed file: no rules, no checks.
