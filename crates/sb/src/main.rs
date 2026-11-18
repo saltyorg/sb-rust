@@ -579,7 +579,7 @@ impl Command {
             // tag cache and completion's files are written atomically.
             Command::Version { .. }
             | Command::Docker { .. }
-            | Command::ValidateConfig
+            | Command::ValidateConfig { .. }
             | Command::Edit { .. }
             | Command::Fact
             | Command::Motd(_)
