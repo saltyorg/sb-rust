@@ -135,13 +135,18 @@ pub fn validate(file: &str, root: &Node, rules: &Rules, validators: &dyn Validat
 /// run: through properties, `[n]` items and `additionalProperties`. A path
 /// the schema doesn't reach (a key in a structure it doesn't expect, such
 /// as a list where a mapping belongs) is secret by its key's name: the
-/// name of a credential key or of any `type: password` field (config-L2).
+/// name of a credential key or of any `type: password` field (config-L2),
+/// or a name the shared key-name rule calls secret, as on the schema.
 pub fn secret_paths(rules: &Rules) -> impl Fn(&str) -> bool + '_ {
     let mut names: BTreeSet<&str> = secret::credential_names().collect();
     password_names(rules, &mut names);
-    move |path| match rule_at(rules, path) {
-        Some(rule) => secret::is_secret(path, rule.kind),
-        None => names.contains(secret::key_name(path)),
+    move |path| {
+        if let Some(rule) = rule_at(rules, path) {
+            secret::is_secret(path, rule.kind)
+        } else {
+            let key = secret::key_name(path);
+            names.contains(key) || crate::facts::secret::is_secret_key(key)
+        }
     }
 }
 
@@ -1497,8 +1502,29 @@ mod tests {
         assert!(secret("pass"));
         assert!(!secret("user[0].name"));
         assert!(secret("elsewhere[0].deep"));
-        // On the schema, its type decides: a string named `pass` shows.
-        assert!(!secret("other.pass"));
+        // On the schema too, a credential's key name is secret whatever
+        // its type: a string named `pass` doesn't show.
+        assert!(secret("other.pass"));
+    }
+
+    /// A field the pinned list doesn't know, typed `string` (a new
+    /// provider's `apikey`), is secret by its key's name, on the schema as
+    /// off it: the shared key-name rule (`facts::secret::is_secret_key`).
+    #[test]
+    fn a_new_credential_field_is_secret_by_its_name() {
+        let rules = schema::parse(
+            "s.schema.yml",
+            "newapp:\n  type: object\n  properties:\n    apikey: {type: string}\n    api_key: {type: string}\n    url: {type: string}\n",
+        )
+        .expect("schema");
+        let secret = secret_paths(&rules);
+        assert!(secret("newapp.apikey"));
+        assert!(secret("newapp.api_key"));
+        assert!(!secret("newapp.url"));
+        // Off the schema, the same names.
+        assert!(secret("newapp[0].api_key"));
+        assert!(secret("elsewhere.client_secret"));
+        assert!(!secret("elsewhere.url"));
     }
 
     /// The pinned Saltbox schemas (tests/fixtures/saltbox-schemas).
@@ -1543,10 +1569,11 @@ mod tests {
 
     /// The credential paths (`secret`'s list) each reach a `type: string`
     /// field of exactly one pinned schema, and every `string` or `url`
-    /// field of a pinned schema whose name looks like a credential's
-    /// (`api`, `pass`, `token`, `key`, `secret`, `auth`, `hook` or
-    /// `apprise` in it, any case) is on the list (Task 60): a schema pin that moves one, or
-    /// adds one under such a name, fails here and forces a decision.
+    /// field of a pinned schema whose name looks like a credential's (the
+    /// shared key-name rule, `facts::secret::is_secret_key`) is on the
+    /// list (Task 60). Such a field is masked by its name already
+    /// (2026-11-18); a schema pin that moves one, or adds one, fails here
+    /// so the list, which documents Saltbox's credentials, keeps up.
     #[test]
     fn the_credential_paths_match_the_pinned_schemas() {
         let schemas = pinned_schemas();
@@ -1560,14 +1587,7 @@ mod tests {
             assert_eq!(found.len(), 1, "{path}: {found:?}");
             assert_eq!(found[0].1, Some(Kind::String), "{path}");
         }
-        let credential_like = |key: &str| {
-            let key = key.to_ascii_lowercase();
-            [
-                "api", "pass", "token", "key", "secret", "auth", "hook", "apprise",
-            ]
-            .iter()
-            .any(|part| key.contains(part))
-        };
+        let credential_like = crate::facts::secret::is_secret_key;
         let listed: BTreeSet<_> = secret::credential_paths().collect();
         let mut checked = 0;
         for (name, rules) in &schemas {

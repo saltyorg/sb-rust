@@ -520,6 +520,28 @@ mod tests {
         );
     }
 
+    /// A credential the schema types `string` and no list names (a new
+    /// provider's `apikey`) is hidden by its key's name, through the
+    /// schema's secret paths as validate-config builds the tree.
+    #[test]
+    fn a_new_credential_fields_tag_error_hides_the_value() {
+        let rules = crate::schema::parse(
+            "s.schema.yml",
+            "newapp:\n  type: object\n  properties:\n    apikey: {type: string}\n",
+        )
+        .expect("schema");
+        let root = parse("t.yml", "newapp:\n  apikey: !!int abc123\n").expect("parses");
+        let issues: Vec<String> = build("t.yml", &root, &crate::rules::secret_paths(&rules))
+            .expect_err("fails")
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(
+            issues,
+            ["t.yml:2:11: newapp.apikey: cannot decode !!str `[REDACTED]` as a !!int"]
+        );
+    }
+
     /// Everything under a secret key is secret too: a list or a mapping
     /// under one hides its values as well.
     #[test]

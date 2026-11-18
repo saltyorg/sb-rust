@@ -17,7 +17,10 @@ pub const REDACTED: &str = "[REDACTED]";
 /// Docker Hub credentials and its Apprise URL (which carries a token),
 /// `backup_config.yml`'s restore password, and motd.yml's tokens, API keys
 /// and passwords. The schemas type these `string`; a test checks the list
-/// against the pinned schemas (`rules`' tests).
+/// against the pinned schemas (`rules`' tests). Each ends in a key the
+/// shared key-name rule masks as well (2026-11-18), so the list documents
+/// Saltbox's known credentials and keeps them masked should that rule
+/// narrow; masking no longer waits for it to grow.
 const SECRET_PATHS: [&str; 16] = [
     "apprise",
     "backup.restore_service.pass",
@@ -38,9 +41,16 @@ const SECRET_PATHS: [&str; 16] = [
 ];
 
 /// Whether the value at `path`, of type `kind`, is secret.
+///
+/// A password field, a credential path, or a key whose name says it holds
+/// a secret (the editors' and restore's rule,
+/// `facts::secret::is_secret_key`): a provider field Saltbox's schema adds
+/// as a `string` (`apikey`) is masked before the list knows it.
 #[must_use]
 pub fn is_secret(path: &str, kind: Option<Kind>) -> bool {
-    kind == Some(Kind::Password) || SECRET_PATHS.contains(&any_item(path).as_ref())
+    kind == Some(Kind::Password)
+        || SECRET_PATHS.contains(&any_item(path).as_ref())
+        || crate::facts::secret::is_secret_key(key_name(path))
 }
 
 /// The credential paths, as [`SECRET_PATHS`] writes them.
@@ -130,6 +140,9 @@ mod tests {
         assert!(!is_secret("user.name", Some(Kind::String)));
         assert!(!is_secret("dockerhub.user", Some(Kind::String)));
         assert!(!is_secret("cloudflare.email", None));
+        // A credential's key name, typed `string` and on no list.
+        assert!(is_secret("newapp.instances[0].apikey", Some(Kind::String)));
+        assert!(is_secret("newapp.client_secret", Some(Kind::String)));
     }
 
     /// The credentials the schemas type `string`, at any item of a list
@@ -153,8 +166,12 @@ mod tests {
             "backup.restore_service.user",
             Some(Kind::String)
         ));
-        assert!(!is_secret("plex.instances.token[", Some(Kind::String)));
-        assert!(!is_secret("plex.instances[x].token", Some(Kind::String)));
+        // Only `[n]` items match the list; such paths are still secret
+        // by their key's name.
+        for path in ["plex.instances.token[", "plex.instances[x].token"] {
+            assert!(!SECRET_PATHS.contains(&any_item(path).as_ref()), "{path}");
+            assert!(is_secret(path, Some(Kind::String)), "{path}");
+        }
     }
 
     #[test]

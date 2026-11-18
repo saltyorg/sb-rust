@@ -4,7 +4,9 @@
 //! the key's name decides (proto-facts `looks_secret`), or a value that
 //! is a URL carrying credentials. Masking too much is harmless; a secret
 //! under another name shows until the list grows (Known limits). One
-//! rule for the fact editor and restore's viewer (ops decision 32).
+//! rule for the fact editor and restore's viewer (ops decision 32);
+//! validate-config masks by the key-name half too, on its schemas' fields
+//! and off them (config spec, "Secrets").
 
 /// The words that make a key secret, in any case: the fact editor's
 /// five, then `apprise` (its URLs carry tokens), `auth`, `credential` and

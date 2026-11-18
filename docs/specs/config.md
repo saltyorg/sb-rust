@@ -161,7 +161,15 @@ pass; and confirms that their Cloudflare and Docker Hub credentials work.
   secret too where the schema doesn't place it (`user: [{pass: …}]`;
   *amended by hardening Task 46*): no issue, notice, output line or log
   record prints their values (an issue on one names the key, never the
-  value), and `not_equals` never prints the value it compared.
+  value), and `not_equals` never prints the value it compared. A key
+  whose name holds a secret word (the editors' rule, tui spec
+  "Editors", Secrets: `pass`, `secret`, `token`, `key`, `api`,
+  `apprise`, `auth`, `credential`, `hook`, in any case) is a secret as
+  well, on the schema and off it, whatever its type: a provider field
+  Saltbox's schema adds as a `string` (`apikey`) is masked before the
+  list above names it (2026-11-18). It masks a few values that aren't
+  secret (`ssh_key`; the `authelia` section, tag errors under it
+  included); masking too much is harmless.
 - **Parsing:** one YAML document, as Ansible's loader wants (a second
   is refused); an
   empty file is an empty mapping (every required key missing, as sb-go);
