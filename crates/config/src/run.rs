@@ -1588,7 +1588,7 @@ mod tests {
         );
         assert!(
             screen.contains(
-                "docker hub authentication failed (HTTP 401): Incorrect authentication credentials"
+                "Docker Hub authentication failed (HTTP 401): Incorrect authentication credentials"
             ),
             "{screen}"
         );
@@ -1611,7 +1611,8 @@ mod tests {
         let (result, screen) = run_on(root.path(), &healthy()).await;
         assert!(result.is_ok(), "{screen}");
         assert!(
-            screen.contains("WARNING: Password is shorter than 12 characters (6)."),
+            screen.contains("! Password is shorter than 12 characters (6).")
+                && !screen.contains("WARNING:"),
             "{screen}"
         );
     }

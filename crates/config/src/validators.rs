@@ -141,12 +141,13 @@ impl Validators for Saltbox {
         }
     }
 
-    /// sb-go's `passwordStrengthWarning`: a password under 12 bytes.
+    /// sb-go's `passwordStrengthWarning`: a password under 12 bytes, its
+    /// text without sb-go's `WARNING: ` (the notice's `!` marks it).
     fn password_warning(&self, value: &Node) -> Option<String> {
         let length = string(value)?.len();
         (1..12).contains(&length).then(|| {
             format!(
-                "WARNING: Password is shorter than 12 characters ({length}). It's recommended to use a stronger password as some automated application setup flows may require it (Portainer skips user setup as an example)."
+                "Password is shorter than 12 characters ({length}). It's recommended to use a stronger password as some automated application setup flows may require it (Portainer skips user setup as an example)."
             )
         })
     }
@@ -896,7 +897,7 @@ mod tests {
         assert_eq!(
             saltbox.password_warning(&s("short")).as_deref(),
             Some(
-                "WARNING: Password is shorter than 12 characters (5). It's recommended to use a stronger password as some automated application setup flows may require it (Portainer skips user setup as an example)."
+                "Password is shorter than 12 characters (5). It's recommended to use a stronger password as some automated application setup flows may require it (Portainer skips user setup as an example)."
             )
         );
         assert_eq!(saltbox.password_warning(&s("twelve-chars")), None);

@@ -24,10 +24,11 @@ use semver::Version;
 use crate::lookup::cut;
 use crate::{Arch, ElfError, GithubRepo, Release, Releases, Stage, Track, activate, check_elf};
 
-/// The question, as sb-go asks it.
-const QUESTION: &str = "Do you want to update";
+/// The question, sb-go's with a question mark, as sb's other questions
+/// have.
+const QUESTION: &str = "Do you want to update?";
 /// The question when `--channel` switches to another channel.
-const SWITCH_QUESTION: &str = "Do you want to switch";
+const SWITCH_QUESTION: &str = "Do you want to switch?";
 /// The staged file's name before it replaces sb (sb-go's pattern).
 const PREFIX: &str = ".sb-update-";
 /// The largest sb binary accepted (sb-go's cap).

@@ -61,12 +61,12 @@ pub async fn login(http: &Http, url: &str, login: &DockerhubLogin) -> Result<(),
     });
     Err(match reason {
         Some(reason) => format!(
-            "docker hub authentication failed (HTTP {}): {}",
+            "Docker Hub authentication failed (HTTP {}): {}",
             status.as_u16(),
             remote_text(&hide(&reason, token))
         ),
         None => format!(
-            "docker Hub authentication failed (HTTP {})",
+            "Docker Hub authentication failed (HTTP {})",
             status.as_u16()
         ),
     })
@@ -132,7 +132,7 @@ mod tests {
         assert_eq!(
             run(&fake, "seed", "t").await,
             Err(
-                "docker hub authentication failed (HTTP 401): Incorrect authentication credentials"
+                "Docker Hub authentication failed (HTTP 401): Incorrect authentication credentials"
                     .into()
             )
         );
@@ -147,7 +147,7 @@ mod tests {
         );
         assert_eq!(
             run(&fake, "seed", "t").await,
-            Err("docker hub authentication failed (HTTP 429): too many \\u{1b} requests".into())
+            Err("Docker Hub authentication failed (HTTP 429): too many \\u{1b} requests".into())
         );
     }
 
@@ -158,7 +158,7 @@ mod tests {
         fake.script(PATH, Answer::json(500, "<html>oops</html>"));
         assert_eq!(
             run(&fake, "seed", "t").await,
-            Err("docker Hub authentication failed (HTTP 500)".into())
+            Err("Docker Hub authentication failed (HTTP 500)".into())
         );
     }
 
@@ -194,7 +194,7 @@ mod tests {
             .expect_err("refused");
         assert_eq!(
             err,
-            "docker hub authentication failed (HTTP 401): bad token [REDACTED]"
+            "Docker Hub authentication failed (HTTP 401): bad token [REDACTED]"
         );
     }
 
@@ -228,7 +228,7 @@ mod tests {
         let first = run(&fake, "seed", token).await.expect_err("refused");
         assert_eq!(
             first,
-            "docker hub authentication failed (HTTP 401): bad token [REDACTED]."
+            "Docker Hub authentication failed (HTTP 401): bad token [REDACTED]."
         );
         let second = run(&fake, "seed", token).await.expect_err("refused");
         assert!(!second.contains("s3cret"), "{second}");
@@ -245,7 +245,7 @@ mod tests {
         );
         assert_eq!(
             run(&fake, "seed", "t").await,
-            Err("docker Hub authentication failed (HTTP 307)".into())
+            Err("Docker Hub authentication failed (HTTP 307)".into())
         );
         assert_eq!(fake.seen().len(), 1);
     }

@@ -103,7 +103,8 @@ pass; and confirms that their Cloudflare and Docker Hub credentials work.
   that lets every sibling finish (decision 3). A check with no credentials
   set isn't started: an info notice under accounts.yml's step says it was
   skipped ("no Cloudflare credentials set; skipped"). Warnings (sb-go's
-  short-password text) are notices under their file's step. A failed
+  short-password text, without its `WARNING:`: the notice's `!` marks
+  it already) are notices under their file's step. A failed
   file's block has no log pointer: when the run failed, the pointer comes
   once after the tree (`details: <file> (run <id>)`, cli-core's label),
   then `Fix with: sb edit accounts, sb edit settings`, naming the `sb
@@ -428,6 +429,10 @@ pass; and confirms that their Cloudflare and Docker Hub credentials work.
   (sb-go: cloudflare-go's error text) before sb-go's guidance.
 - A failed run ends with the run log's pointer and a `Fix with: sb edit
   ...` line for the files with issues (sb-go: neither).
+- The short-password warning drops sb-go's `WARNING: ` (the notice's
+  `!` is the marker), and a failed Docker Hub login reads `Docker Hub
+  authentication failed` (sb-go: `docker hub`, and `docker Hub` without
+  a reason).
 - An issue on `user.domain` skips the Cloudflare check with a notice
   (sb-go asked Cloudflare about the bad zone and showed the token
   guidance).

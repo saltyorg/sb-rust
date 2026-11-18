@@ -310,7 +310,7 @@ fn both_checks_finish_when_one_fails() {
     assert_eq!(out.status.code(), Some(1), "{text}");
     for line in [
         "✗ Docker Hub credentials validation",
-        "docker hub authentication failed (HTTP 401): Incorrect authentication credentials",
+        "Docker Hub authentication failed (HTTP 401): Incorrect authentication credentials",
         "✓ Cloudflare API credentials validated",
         "✗ Validating accounts.yml   sub-step failed",
     ] {
@@ -359,7 +359,7 @@ fn warnings_and_skipped_checks_are_notices() {
     let text = String::from_utf8_lossy(&out.stderr);
     assert_eq!(out.status.code(), Some(0), "{text}");
     for line in [
-        "! WARNING: Password is shorter than 12 characters (6).",
+        "! Password is shorter than 12 characters (6).",
         "› no Docker Hub credentials set; skipped",
         "› inventories/host_vars/localhost.yml not found; skipped",
     ] {

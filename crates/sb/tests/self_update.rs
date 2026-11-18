@@ -261,12 +261,12 @@ fn the_question_is_answered_on_the_terminal() {
         let before = setup.sb_bytes();
         let out = on_a_terminal(&setup, "", keys);
         assert!(
-            out.contains("Do you want to update [y/N]"),
+            out.contains("Do you want to update? [y/N]"),
             "{keys:?}: {out}"
         );
         let answer = if updated { "yes" } else { "no" };
         assert!(
-            out.contains(&format!("Do you want to update {answer}")),
+            out.contains(&format!("Do you want to update? {answer}")),
             "{keys:?}: {out}"
         );
         if updated {
@@ -315,7 +315,7 @@ fn ctrl_c_at_the_question_shows_the_cursor() {
     if let Some(hidden) = out.rfind("\x1b[?25l") {
         assert!(shown > hidden, "{out:?}");
     }
-    assert!(!out.contains("Do you want to update no"), "{out}");
+    assert!(!out.contains("Do you want to update? no"), "{out}");
     assert!(out.contains("EXIT=130"), "{out}");
     assert!(out.contains("interrupted"), "{out}");
     assert!(!setup.downloaded());
@@ -354,7 +354,7 @@ fn on_a_terminal_typing(setup: &Setup, prefix: &str, early: &str, keys: &str) ->
         prefix,
         "",
         early,
-        "Do you want to update [y/N]",
+        "Do you want to update? [y/N]",
         keys,
     )
 }
@@ -527,7 +527,7 @@ fn channel_beta_installs_the_beta_asset() {
 }
 
 /// A switch to a lower version says so before its own question, "Do you
-/// want to switch"; declined, sb is left as it was.
+/// want to switch?"; declined, sb is left as it was.
 #[test]
 fn a_lower_switch_is_said_before_its_question() {
     if !root_gate::requested() {
@@ -546,11 +546,11 @@ fn a_lower_switch_is_said_before_its_question() {
         "",
         "--channel beta",
         "",
-        "Do you want to switch [y/N]",
+        "Do you want to switch? [y/N]",
         "n\r",
     );
     let older = out.find(&format!("0.0.1-rc.1 is older than the running {CURRENT}"));
-    let question = out.find("Do you want to switch [y/N]");
+    let question = out.find("Do you want to switch? [y/N]");
     assert!(
         older.is_some() && question.is_some() && older < question,
         "{out}"

@@ -161,7 +161,8 @@ channels"); `--force-update` only in builds where self-update is off
    `sb_linux_arm64` by `std::env::consts::ARCH` (decision 9); missing:
    `release <tag> is missing <asset>`.
 3. **Ask:** info `New sb CLI version available: <new> (current: <cur>)`,
-   then term-ui's confirm `Do you want to update` (default no).
+   then term-ui's confirm `Do you want to update?` (default no; sb-go's
+   text had no question mark, which sb's other questions have).
    `--yes` answers it. No terminal and no `--yes`: an error naming
    `--yes`, exit 1. Declined: warning `Update of sb CLI cancelled`,
    exit 0.
@@ -223,7 +224,7 @@ The maintainer's decisions of 2026-11-18.
     <channel> channel: <new> (current: <cur>, <channel>)`.
   - A lower version is said before the question (warning `<new> is
     older than the running <cur>`), and the question becomes `Do you
-    want to switch`.
+    want to switch?`.
   - From then on the new binary's own baked channel decides; nothing is
     stored on the host.
   - `--channel` naming the baked channel is a normal update. In a
