@@ -864,6 +864,18 @@ mod tests {
             "Traefik container is running but API is not accessible"
         );
         assert_eq!(api.seen(), Vec::new());
+        // A proxy reqwest can't take builds no client: the same line, and
+        // nothing asked.
+        let mut broken = settings(&engine, api.url());
+        broken.proxy = Proxy::Via("not a proxy url \u{0}".into());
+        assert!(traefik_client(&broken.proxy).is_err());
+        assert_eq!(
+            traefik(&Containers::new(broken), &Paint::plain())
+                .await
+                .text,
+            "Traefik container is running but API is not accessible"
+        );
+        assert_eq!(api.seen(), Vec::new());
     }
 
     /// Every state through `ps::status`: the Problem and Warn roles need

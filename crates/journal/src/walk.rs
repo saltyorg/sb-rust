@@ -3098,6 +3098,67 @@ mod tests {
         });
     }
 
+    /// A file broken between a filtered page's two header reads (its
+    /// signature overwritten in place, or cut short) keeps the first
+    /// read's count: its entries are read as that header gave them (gone
+    /// when cut short), and the second read's failure is reported with the
+    /// file's path.
+    #[test]
+    fn a_file_broken_between_header_reads_keeps_the_first_reads_count() {
+        fn overwritten(p: &Path) {
+            let mut b = std::fs::read(p).expect("read");
+            b[0] = b'X';
+            std::fs::write(p, b).expect("write");
+        }
+        fn cut(p: &Path) {
+            let f = std::fs::OpenOptions::new()
+                .write(true)
+                .open(p)
+                .expect("open");
+            f.set_len(100).expect("cut");
+        }
+        // Overwritten, the entries are still there to read; cut short,
+        // they are gone.
+        // How the file is broken, the error, and the entries shown.
+        type Case = (fn(&Path), &'static str, &'static [&'static str]);
+        let cases: [Case; 2] = [
+            (overwritten, ": not a journal file", &["m0", "m2"]),
+            (cut, "read the header", &[]),
+        ];
+        each_format(|format| {
+            let (in_a, in_c): (Row, Row) = (&[b"A=1"], &[b"C=1"]);
+            let (whole, _e) = crafted::journal_of_in(format, &[in_a, in_c, in_a]);
+            for (break_it, why, shown) in cases {
+                let t = tempfile::NamedTempFile::new().expect("temp file");
+                counted(&whole, t.path(), 3);
+                let mut j = one(t.path());
+                let groups = vec![vec![vec![b"A=1".to_vec()]]];
+                let reads = std::rc::Rc::new(std::cell::Cell::new(0));
+                let seen = std::rc::Rc::clone(&reads);
+                let pg = crate::testing::seam::between_header_reads(
+                    move |p| {
+                        seen.set(seen.get() + 1);
+                        break_it(p);
+                    },
+                    || j.page(&groups, 10, &Position::Tail),
+                );
+                assert_eq!(reads.get(), 1, "{why}");
+                assert_eq!(messages(&pg.records), shown, "{why}");
+                // The count handed over is the first read's, not one the
+                // broken header gave.
+                assert_eq!(pg.counts, [3], "{why}");
+                assert!(
+                    j.errors
+                        .shown
+                        .iter()
+                        .any(|e| e.to_string().contains(why) && e.path() == Some(t.path())),
+                    "{why}: {:?}",
+                    texts(&j.errors)
+                );
+            }
+        });
+    }
+
     /// A zero slot in a value's list (a crash before journald wrote it)
     /// doesn't hide the list's other entries going forward: the walk's
     /// start is found around it, and the zero is skipped (Difference 8).

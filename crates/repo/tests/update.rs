@@ -287,6 +287,84 @@ async fn the_current_branch_outside_a_repository_is_sb_gos_error() {
     assert!(text.contains("exited with code 128"), "{text}");
 }
 
+/// A git that can't be started is each read's own error: the branch's
+/// and the refspec's, naming the program.
+#[tokio::test]
+async fn a_git_that_cant_start_is_named_by_each_read() {
+    let fixture = Fixture::new();
+    let repo = fixture.repo().with_git("/nonexistent/git");
+    let branch = repo.current_branch(&token()).await.expect_err("no git");
+    assert!(matches!(branch, RepoError::CurrentBranch(_)), "{branch:?}");
+    assert!(branch.to_string().contains("/nonexistent/git"), "{branch}");
+    let fetch = repo
+        .ensure_fetch_all_branches(&token())
+        .await
+        .expect_err("no git");
+    assert!(matches!(fetch, RepoError::ReadFetch(_)), "{fetch:?}");
+    assert!(
+        fetch
+            .to_string()
+            .starts_with("failed to read remote.origin.fetch: "),
+        "{fetch}"
+    );
+    assert!(fetch.to_string().contains("/nonexistent/git"), "{fetch}");
+}
+
+/// `script` written to `path`, executable, by a child (`sh`, fed on
+/// stdin): no thread of this process holds a write descriptor to it that
+/// another test's spawned child could inherit and make its exec fail with
+/// ETXTBSY (other tests here spawn git without `SPAWNS`).
+fn written_by_a_child(path: &Path, script: &str) {
+    use std::io::Write as _;
+    let mut child = std::process::Command::new("sh")
+        .args(["-c", "cat > \"$1\" && chmod 755 \"$1\"", "sh"])
+        .arg(path)
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .expect("sh");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(script.as_bytes())
+        .expect("script");
+    assert!(
+        child.wait().expect("wait").success(),
+        "writing {}",
+        path.display()
+    );
+}
+
+/// `git config --get-all` failing other than "unset" (exit 1), as a
+/// config file git can't read does (exit 3), is the read's error with
+/// git's words, and nothing is added.
+#[tokio::test]
+async fn a_failed_refspec_read_adds_nothing() {
+    let _spawns = SPAWNS.lock().await;
+    let fixture = Fixture::new();
+    let bin = tempfile::tempdir().expect("bin");
+    let path = bin.path().join("git-bad-config");
+    written_by_a_child(
+        &path,
+        "#!/bin/sh\nif [ \"$1 $2\" = 'config --get-all' ]; then echo 'fatal: bad config line 1' >&2; exit 3; fi\n\
+         exec git \"$@\"\n",
+    );
+    let repo = fixture.repo().with_git(path);
+    let error = repo
+        .ensure_fetch_all_branches(&token())
+        .await
+        .expect_err("refused");
+    assert!(matches!(error, RepoError::ReadFetch(_)), "{error:?}");
+    assert!(
+        error.to_string().contains("fatal: bad config line 1"),
+        "{error}"
+    );
+    assert_eq!(
+        fixture.fetch_values(),
+        ["+refs/heads/master:refs/remotes/origin/master"]
+    );
+}
+
 #[tokio::test]
 async fn branch_names_are_checked_before_use() {
     let fixture = Fixture::new();

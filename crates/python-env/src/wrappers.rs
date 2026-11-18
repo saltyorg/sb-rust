@@ -255,4 +255,42 @@ mod tests {
         );
         drop(dir);
     }
+
+    /// A directory where a wrapper goes is never replaced, and isn't read
+    /// as a stale wrapper: each is the wrapper's error, naming it; the
+    /// directory stays, and no temporary file is left beside it.
+    #[test]
+    fn a_directory_at_a_wrappers_path_is_its_error() {
+        let (dir, layout) = tree();
+        let path = layout.wrappers.join("ansible");
+        std::fs::create_dir(&path).expect("dir");
+        std::fs::write(path.join("inside"), "x").expect("inside");
+        let err = write_all(&layout, &names(&["ansible"])).expect_err("a directory");
+        assert!(
+            err.to_string()
+                .starts_with(&format!("activate wrapper {}: ", path.display())),
+            "{err}"
+        );
+        let err = remove_stale(&layout, &names(&["ansible"]), &[]).expect_err("a directory");
+        assert!(
+            err.to_string()
+                .starts_with(&format!("read wrapper {}: ", path.display())),
+            "{err}"
+        );
+        assert!(path.join("inside").exists());
+        // The new wrapper's temporary file went with the failure.
+        let left: Vec<String> = std::fs::read_dir(&layout.wrappers)
+            .expect("list")
+            .map(|entry| {
+                entry
+                    .expect("entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .filter(|name| name.starts_with(".sb-wrapper-"))
+            .collect();
+        assert_eq!(left, Vec::<String>::new());
+        drop(dir);
+    }
 }

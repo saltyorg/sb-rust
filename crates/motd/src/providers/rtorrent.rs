@@ -420,6 +420,29 @@ mod tests {
         );
         fake.script("/g", Reply::new(200, "<html>not xml-rpc</html>"));
         assert!(ask("/g").await.starts_with("Error: could not connect to rtorrent: system.hostname XMLRPC call failed: unexpected answer"));
+        // Each later call's failure names its call.
+        fake.script("/h", answer("<string>h</string>"));
+        fake.script("/h", Reply::new(500, "busy"));
+        assert_eq!(
+            ask("/h").await,
+            "Error: could not get torrents: d.multicall2 XMLRPC call failed: rTorrent returned status code 500"
+        );
+        fake.script("/i", answer("<string>h</string>"));
+        fake.script("/i", answer("<array><data></data></array>"));
+        fake.script("/i", Reply::new(503, "busy"));
+        assert_eq!(
+            ask("/i").await,
+            "Error: could not get download rate: throttle.global_down.rate XMLRPC call failed: rTorrent returned status code 503"
+        );
+        // An answer that carries no value at all.
+        fake.script(
+            "/j",
+            Reply::new(200, "<methodResponse><params></params></methodResponse>"),
+        );
+        assert_eq!(
+            ask("/j").await,
+            "Error: could not connect to rtorrent: system.hostname XMLRPC call failed: an answer without a value"
+        );
         let refused = refused();
         let gone = section(vec![instance("rTorrent", &refused)]);
         let text = rtorrent(Some(&gone), &shared, &Paint::plain()).await.text;

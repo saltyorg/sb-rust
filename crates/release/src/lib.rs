@@ -286,6 +286,17 @@ mod tests {
         assert_eq!(text, "builder error: failed to parse header value");
     }
 
+    /// A base that isn't a URL is the client's error, naming the base.
+    #[test]
+    fn a_base_that_isnt_a_url_is_named() {
+        let Err(Error::Client(text)) =
+            Releases::with(builder("sb/1"), ["not a url", API, DOWNLOAD])
+        else {
+            panic!("the client was made");
+        };
+        assert_eq!(text, "base not a url: relative URL without a base");
+    }
+
     #[test]
     fn the_architecture_is_std_s_name() {
         assert_eq!(Arch::named("x86_64").expect("amd64"), Arch::Amd64);

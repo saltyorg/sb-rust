@@ -157,3 +157,69 @@ async fn a_directory_at_the_path_is_no_file() {
         None
     );
 }
+
+/// A git at `path` that runs `then` (shell) when its arguments match the
+/// shell pattern `when`, and the host's git otherwise. It is written by a
+/// child (`sh`, fed on stdin), so no thread of this process holds a write
+/// descriptor to it that another test's spawned child could inherit and
+/// make its exec fail with ETXTBSY; each stand-in has its own path.
+fn git_that(path: &Path, when: &str, then: &str) -> std::path::PathBuf {
+    use std::io::Write as _;
+    let script = format!("#!/bin/sh\ncase \"$*\" in\n  {when}) {then} ;;\nesac\nexec git \"$@\"\n");
+    let mut child = Command::new("sh")
+        .args(["-c", "cat > \"$1\" && chmod 755 \"$1\"", "sh"])
+        .arg(path)
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .expect("sh");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(script.as_bytes())
+        .expect("script");
+    assert!(
+        child.wait().expect("wait").success(),
+        "writing {}",
+        path.display()
+    );
+    path.to_path_buf()
+}
+
+/// git failing at any step after the ref is known is git's failure, its
+/// words kept, never "no file"; a size git gives that isn't a number is
+/// named with the object.
+#[tokio::test]
+async fn a_failing_step_is_gits_error_never_no_file() {
+    let dir = fixture();
+    let bin = tempfile::tempdir().expect("bin");
+    let refused = "echo 'fatal: refused' >&2; exit 1";
+    let steps = ["ls-tree*", "\"cat-file -s\"*", "\"cat-file blob\"*"];
+    for (n, when) in steps.into_iter().enumerate() {
+        let git = git_that(&bin.path().join(format!("git-{n}")), when, refused);
+        let repo = Repo::open("Saltbox", dir.path())
+            .expect("open")
+            .with_git(git);
+        let err = repo
+            .file_at("HEAD", "announcements.yml", &token())
+            .await
+            .expect_err(when);
+        assert!(matches!(err, RepoError::Git(_)), "{when}: {err:?}");
+        assert!(err.to_string().contains("fatal: refused"), "{when}: {err}");
+    }
+    let repo = Repo::open("Saltbox", dir.path())
+        .expect("open")
+        .with_git(git_that(
+            &bin.path().join("git-size"),
+            "\"cat-file -s\"*",
+            "echo many; exit 0",
+        ));
+    let err = repo
+        .file_at("HEAD", "announcements.yml", &token())
+        .await
+        .expect_err("not a size");
+    assert_eq!(
+        err.to_string(),
+        "git cat-file -s HEAD:announcements.yml: \"many\\n\""
+    );
+}

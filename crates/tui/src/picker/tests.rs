@@ -1064,3 +1064,37 @@ fn a_paste_goes_into_the_filter_line_whole() {
     assert!(p.editing.is_some());
     assert_eq!(names(&p), ["radarr", "radarr"]);
 }
+
+/// Every container gone while the last one is selected, with the
+/// services unavailable: the row at its place is the services' notice,
+/// and nothing above it is a source, so nothing is selected and Enter
+/// chooses nothing.
+#[tokio::test]
+async fn nothing_is_selected_when_no_source_is_left() {
+    let (tx, rx) = watch::channel(Snapshot::default());
+    let mut p = picker(&[])
+        .with_no_services("gone")
+        .with_containers(&containers(), now())
+        .with_updates(rx);
+    press(&mut p, KeyCode::End);
+    assert_eq!(selected(&p).as_deref(), Some("sonarr"));
+    tx.send_replace(Snapshot {
+        rows: Some(Vec::new()),
+        trouble: None,
+    });
+    assert_eq!(p.wake(), Flow::Redraw);
+    assert_eq!(names(&p), Vec::<String>::new());
+    // What is left: the Services section's notice, unindented as no row
+    // is selected; the empty Containers section is left out.
+    let rows = screen(&drawn(&mut p, 80, 8));
+    assert_eq!(rows[0], " ◆ Logs   0 containers · all healthy");
+    assert!(rows[2].starts_with("Services ───"), "{rows:?}");
+    assert_eq!(rows[3], "Services unavailable: gone");
+    assert!(
+        !rows.iter().any(|row| row.contains("Containers")),
+        "{rows:?}"
+    );
+    assert_eq!(p.state.selected(), None);
+    assert_eq!(press(&mut p, KeyCode::Enter), Flow::Unchanged);
+    assert_eq!(p.take_choice(), None);
+}

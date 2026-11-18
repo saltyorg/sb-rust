@@ -517,3 +517,37 @@ fn the_listing_is_each_instances_value_or_error() {
         json!({ "down": "1.0 KB/s", "up": "0 B/s", "downloading": 1, "seeding": 2, "stopped": 3, "errored": 4 })
     );
 }
+
+/// The providers' shared part never shows a credential in its debug
+/// form (a log line or a panic message could carry it): the secrets are
+/// counted, not listed, and the proxy, which may hold a login, is left
+/// out.
+#[test]
+fn the_shared_parts_debug_form_hides_the_credentials() {
+    let shared = Shared::new(
+        Proxy::Via("http://user:proxy-canary-pass@127.0.0.1:1".to_string()),
+        Instant::now() + crate::run::CAP,
+        Secrets::from_values(["debug-canary-token"]),
+    );
+    let shown = format!("{shared:?}");
+    assert!(shown.starts_with("Shared { deadline: "), "{shown}");
+    assert!(!shown.contains("debug-canary-token"), "{shown}");
+    assert!(!shown.contains("proxy-canary-pass"), "{shown}");
+    assert!(shown.contains("secrets: Secrets(1)"), "{shown}");
+}
+
+/// A credential that can't be a header (a newline in motd.yml's token)
+/// is the instance's error line, sb-go's words, and nothing is sent.
+#[tokio::test]
+async fn a_token_that_cant_be_a_header_is_the_error_line() {
+    let fake = Fake::start().unwrap();
+    let one = section(vec![with_token("Plex", fake.url(), "bad\ntoken")]);
+    let text = plex::plex(Some(&one), &shared(&[]), &Paint::plain())
+        .await
+        .text;
+    assert!(
+        text.starts_with("Error: failed to create request: "),
+        "{text}"
+    );
+    assert_eq!(fake.seen().len(), 0);
+}

@@ -537,6 +537,27 @@ mod tests {
             invalid_status(199, b"{}"),
             "invalid status code, 199 < 200, {}"
         );
+        // starr's validation answers: one property, or a list whose first
+        // names the field; a property without a name is its message alone.
+        assert_eq!(
+            invalid_status(400, br#"{"propertyName":"Path","errorMessage":"is empty"}"#),
+            "invalid status code, 400 >= 300, Path: is empty"
+        );
+        assert_eq!(
+            invalid_status(
+                400,
+                br#"[{"propertyName":"Path","errorMessage":"is empty"},{"errorMessage":"later"}]"#
+            ),
+            "invalid status code, 400 >= 300, Path: is empty"
+        );
+        assert_eq!(
+            invalid_status(400, br#"[{"propertyName":"","errorMessage":"is empty"}]"#),
+            "invalid status code, 400 >= 300, is empty"
+        );
+        assert_eq!(
+            invalid_status(400, br#"{"errorMessage":"is empty"}"#),
+            "invalid status code, 400 >= 300, is empty"
+        );
         assert_eq!(
             invalid_status(404, &[b'x'; 500]),
             format!("invalid status code, 404 >= 300, {}", "x".repeat(400))
