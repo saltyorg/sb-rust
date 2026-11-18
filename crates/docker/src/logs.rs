@@ -424,7 +424,10 @@ pub async fn scan(
 /// The first `n` entries of the log (the log viewer's Home, tui spec,
 /// "Home and End"): one read from the creation (when known, else the
 /// log's start), stopped at one more than `n` (which sets `more`), the
-/// daemon's stream dropped there, so only the log's start is read.
+/// daemon's stream dropped there, so only the log's start is read. Why
+/// not `tail`: it counts from the newest end, and the Engine API has no
+/// head option (`LogsOptions` is follow, stdout, stderr, since, until,
+/// timestamps and tail).
 ///
 /// # Errors
 ///
@@ -1308,6 +1311,9 @@ mod tests {
         let whole = head(&daemon, ID, 1_000, created).await.expect("head");
         assert_eq!(whole.lines, all);
         assert!(!whole.more);
+        let exactly = head(&daemon, ID, all.len(), created).await.expect("head");
+        assert_eq!(exactly.lines.len(), all.len());
+        assert!(!exactly.more, "a page of exactly the log has nothing more");
         // A page after the head's last entry goes on from there.
         let on = newer(&daemon, ID, first.lines[49].position, 5)
             .await

@@ -299,6 +299,9 @@ fn home_and_end_reach_a_containers_ends() {
         "{}",
         pty.contents()
     );
+    // The whole frame: the marker on the top row, the window's last row
+    // 27 entries on.
+    assert!(pty.showing("stdout: line 27"), "{}", pty.contents());
     assert!(!pty.contents().contains("following"), "{}", pty.contents());
     pty.send(b"G");
     assert!(pty.showing("stdout: line 2999"), "{}", pty.contents());

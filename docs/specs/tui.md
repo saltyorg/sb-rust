@@ -898,7 +898,11 @@ alike.
     newer pages as usual, and the start marker heads the view.
   - While the page is read, the header shows `going to the start…`.
     The read is one page, not the whole log (below), so it shows for a
-    frame or two at most.
+    frame or two at most. Meanwhile no page of the old place is asked
+    for, and End gives Home up: its page, when it comes, is dropped.
+    The page starts at the first column (wrap off), the log's start.
+  - Home then `n` during a whole-log search goes to the log's first
+    match, once the older side has read to the start.
 - **End/`G`** go to the newest line and follow, as today: when the
   newest line isn't loaded, the viewer reads the tail first (`Tail`,
   then `Follow`).
@@ -926,9 +930,10 @@ alike.
   search's matches stay, numbered as before.
 
 **Tests:**
-- sb-journal: `Head` on one file, on 8 files of 25,000 entries each
-  across boots in the release's order (22.04, 24.04 and 26.04), with a
-  query, and against a scan's last step (the same entries).
+- sb-journal: `Head` on one file, on 8 files of one boot each (300
+  entries a file in the test; 25,000 in the timing) in the release's
+  order (22.04, 24.04 and 26.04) against a scan's oldest entries, its
+  preads against a tail page's, and with a query.
 - sb-docker: `head` against `All`'s first entries, and a log shorter
   than a page.
 - The viewer: Home loads the head and starts the buffer again, not
@@ -2827,7 +2832,9 @@ fails without clearing when no answer comes.
     heavy load), and the lines' places stay kept. It is kept only for
     lines still wanted, within 4 MiB; a frame asks for at most 32 lines
     at once, and a panic on the worker ends the screen as before. `viewer/tests.rs`'s `first_sight_*`
-    tests check that a page up, Home and End there build nothing;
+    tests check that a page up, Home (with the log's start loaded) and
+    End there build nothing; Home's own page, when it asks for one,
+    starts at the first column, and the frame-cost test times its frame;
     `ahead/tests.rs` the worker, its bound and which texts serve. A
     jump to lines none of that covers, or one sooner than the worker
     finishes, still builds each line from its start once

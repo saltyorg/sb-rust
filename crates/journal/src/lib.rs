@@ -406,7 +406,8 @@ pub enum Position {
     Tail,
     /// The oldest entries: each file's matching entries from their lists'
     /// heads, merged forward as `After` merges them (the log viewer's
-    /// Home).
+    /// Home). A scan from `Head` is every entry, newest first, as from
+    /// `Tail`.
     Head,
     /// The entries before this one, which isn't shown.
     Before(Cursor),
@@ -3715,6 +3716,35 @@ mod tests {
             let head = preads() - start;
             assert!(head <= 2 * tail, "{v}: head {head} preads, tail {tail}");
         }
+    }
+
+    /// A head page past its held limit says so; one that holds all the
+    /// journal's entries, or exactly as many as asked for, doesn't.
+    #[test]
+    fn a_heads_held_limit_is_reported_when_it_cuts() {
+        let (mut c, _l) = crafted::journal(20);
+        let t = c.file();
+        let j = files(&[t.path()]);
+        let q = Query::every();
+        let held_limit = |page: &Page| {
+            page.errors
+                .shown
+                .iter()
+                .any(|e| matches!(e.kind(), ReadErrorKind::HeldLimitNewer))
+        };
+        // About two candidates' room.
+        let small = Limits::with_output(100);
+        let cut = j.page(&q, &Position::Head, 1_000, &small);
+        assert!(cut.more_newer);
+        assert!(held_limit(&cut), "{:?}", cut.errors);
+        let asked = j.page(&q, &Position::Head, 5, &Limits::default());
+        assert!(asked.more_newer);
+        assert!(!held_limit(&asked), "{:?}", asked.errors);
+        let (mut c, _l) = crafted::journal(1);
+        let t = c.file();
+        let one = files(&[t.path()]).page(&q, &Position::Head, 1_000, &small);
+        assert!(!one.more_newer);
+        assert!(!held_limit(&one), "{:?}", one.errors);
     }
 
     /// A query's head leaves out the entries that don't match.

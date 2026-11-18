@@ -657,6 +657,9 @@ fn home_and_end_reach_a_services_ends() {
     assert!(pty.showing("app[42]: line 0"), "{}", pty.contents());
     assert!(pty.showing("--- start of log ---"), "{}", pty.contents());
     assert!(pty.showing("at the start · "), "{}", pty.contents());
+    // The whole frame: the marker on the top row, the window's last row
+    // 27 entries on.
+    assert!(pty.showing("app[42]: line 27"), "{}", pty.contents());
     assert!(!pty.contents().contains("following"), "{}", pty.contents());
     pty.send(b"G");
     assert!(pty.showing("app[42]: line 2999"), "{}", pty.contents());

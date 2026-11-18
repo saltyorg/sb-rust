@@ -616,6 +616,16 @@ impl Viewer {
         more_older: bool,
         more_newer: bool,
     ) {
+        // A jump's page given up since it was asked for (End, Esc, a new
+        // search) changes nothing.
+        let given_up = match kind {
+            PageKind::Head => !self.heading,
+            PageKind::Around => self.around.is_none(),
+            PageKind::Tail | PageKind::Older | PageKind::Newer => false,
+        };
+        if given_up {
+            return;
+        }
         self.last_page = Some(kind);
         match kind {
             PageKind::Tail | PageKind::Around | PageKind::Head => {
@@ -662,8 +672,10 @@ impl Viewer {
                     }
                 } else if kind == PageKind::Head {
                     // Home's page: the start marker at the window's top,
-                    // the first match from there.
+                    // the first column (the log's start, left), the first
+                    // match from there.
                     self.heading = false;
+                    self.column = 0;
                     self.anchor = Anchor {
                         item: self.first_item(),
                         skip: 0,
@@ -1153,6 +1165,10 @@ impl Viewer {
     /// End, `G`, `f`: follow again at the bottom, loading the tail first
     /// when the newest line isn't loaded.
     fn resume(&mut self) {
+        // A jump's page asked for and not come yet is given up: the tail
+        // goes in its place.
+        self.heading = false;
+        self.around = None;
         if self.newer.more {
             self.source.send(Request::Tail);
             self.newer.asked = false;
@@ -1165,7 +1181,9 @@ impl Viewer {
 
     /// Ask for the next page at either end within 5 screens of it.
     fn prefetch(&mut self) {
-        if !self.loaded || self.height == 0 {
+        // While a jump's page is awaited, a page of the old place would
+        // land in the new buffer.
+        if !self.loaded || self.height == 0 || self.heading || self.around.is_some() {
             return;
         }
         let reach = self.height * PREFETCH_SCREENS;
@@ -1473,6 +1491,16 @@ impl Viewer {
                 Some(i)
             }
             (Some(i), false) => (0..=i).rev().find(|&j| !held(j)),
+            // At the log's start (Home's buffer) every match is after it:
+            // the first, once the older side has read to the start.
+            (None, true) if !self.older.more => {
+                if whole.older_side.running {
+                    self.waiting = Some(true);
+                    return;
+                }
+                Some(0)
+            }
+            (None, false) if !self.older.more => None,
             (None, true) => Some(whole.start_gap()),
             (None, false) => whole.start_gap().checked_sub(1),
         };
@@ -1935,11 +1963,10 @@ impl Viewer {
         TextLine::from(vec![
             Span::styled(self.name.clone(), self.format.style(self.kind.role())),
             Span::styled(format!("  {}", self.kind.word()), muted),
-            Span::styled(
-                format!("{state}{}{wrap}", self.start_state()),
-                self.format.style(Role::Accent),
-            ),
+            Span::styled(format!("{state}{wrap}"), self.format.style(Role::Accent)),
             Span::styled(self.search_state(), self.format.style(Role::Highlight)),
+            // After the search's: at 80 columns the count goes first.
+            Span::styled(self.start_state(), self.format.style(Role::Accent)),
             Span::styled(format!("   {keys}"), muted),
         ])
     }

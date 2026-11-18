@@ -1408,6 +1408,34 @@ fn frame_costs(n: u64) -> Vec<(usize, usize, std::time::Duration)> {
     frame_costs_searching(n, false)
 }
 
+/// What the frame Home's page brings costs (tui spec, "Home and End"):
+/// a buffer of 20,000 long records paged up, Home, then the log's first
+/// 500 records as its page, the frame's texts built and its time.
+fn home_page_cost() -> (usize, std::time::Duration) {
+    let limits = Limits {
+        entries: 20_000,
+        bytes: usize::MAX,
+    };
+    let mut h = open(240, 70, limits);
+    h.send(long_tail(20_000));
+    h.key(KeyCode::PageUp);
+    h.key(KeyCode::Home);
+    let Event::Page { lines, newest, .. } = long_tail(500) else {
+        unreachable!("a page")
+    };
+    h.viewer.built.set(0);
+    let started = std::time::Instant::now();
+    h.send(Event::Page {
+        kind: PageKind::Head,
+        oldest: lines.first().map(|l| l.position.clone()),
+        newest,
+        lines,
+        more_older: false,
+        more_newer: true,
+    });
+    (h.viewer.built.get(), started.elapsed())
+}
+
 /// [`frame_costs`], with a whole-log search reading when `searching`:
 /// 9,999 matches outside the buffer known and the progress in the
 /// header, its query matching none of the buffer (tui spec, "Whole-log
@@ -1596,7 +1624,26 @@ fn first_sight_costs(column: u16, words: &str, format: Format) -> Vec<Cost> {
         bytes: usize::MAX,
     };
     let mut h = open_with(240, 70, limits, format);
-    h.send(tail_of(2_000, words));
+    // The log's start loaded: Home moves within the buffer, as it did
+    // before it could ask for the log's first page.
+    let Event::Page {
+        lines,
+        oldest,
+        newest,
+        more_newer,
+        ..
+    } = tail_of(2_000, words)
+    else {
+        unreachable!("a page")
+    };
+    h.send(Event::Page {
+        kind: PageKind::Tail,
+        lines,
+        oldest,
+        newest,
+        more_older: false,
+        more_newer,
+    });
     h.key(KeyCode::Char('w'));
     h.key(KeyCode::PageUp);
     h.viewer.column = column;
@@ -1768,6 +1815,11 @@ fn a_frames_cost_doesnt_grow_with_the_buffer() {
         times[times.len() / 2],
         times[times.len() - 1]
     );
+    // Home past the buffer: the frame its page brings, the log's first
+    // 500 records at the first column, a window's worth of texts built.
+    let (built, time) = home_page_cost();
+    eprintln!("frame cost at 240x70, Home's page of 500 long records: {time:?}, {built} built");
+    assert!(built <= 69, "{built}");
     // While a whole-log search reads, each frame does the same work, and
     // the header's count and progress cost a look at the matches.
     let searching = frame_costs_searching(20_000, true);
@@ -2507,6 +2559,8 @@ fn a_search_off_the_end_reads_the_newer_side() {
     h.requests();
     h.send(tail(40..50, true));
     h.key(KeyCode::Char('f'));
+    // Paged away from the end, as after a jump to a match.
+    h.viewer.around = Some((position(25), 0));
     h.send(around(20..30, 25, "x"));
     h.requests();
     h.search("x");
@@ -2699,6 +2753,8 @@ fn back_at_the_end_a_search_reads_older_only() {
     h.requests();
     h.send(tail(40..50, true));
     h.key(KeyCode::Char('f'));
+    // Paged away from the end, as after a jump to a match.
+    h.viewer.around = Some((position(25), 0));
     h.send(around(20..30, 25, "x"));
     h.requests();
     h.search("x");
@@ -2774,6 +2830,8 @@ fn home_loads_the_logs_first_page_and_end_goes_back() {
 #[test]
 fn the_start_header_names_the_first_lines_time() {
     let mut h = open(100, 8, Limits::default());
+    h.send(tail(40..50, true));
+    h.key(KeyCode::Home);
     let mut first = line(0, "m0");
     first.time = Some("2026-11-13T09:04:05Z".parse().expect("a time"));
     h.send(Event::Page {
@@ -2803,4 +2861,91 @@ fn a_head_that_cant_be_read_gives_up_the_ask() {
     h.requests();
     h.key(KeyCode::Home);
     assert!(h.requests().contains(&Request::Head));
+}
+
+/// End while Home's page is read gives up Home: the page that comes
+/// after is dropped, and the view follows the tail.
+#[test]
+fn end_while_going_to_the_start_gives_it_up() {
+    let mut h = open(70, 8, Limits::default());
+    h.send(tail(40..50, true));
+    h.key(KeyCode::Home);
+    h.key(KeyCode::End);
+    h.send(head_page(0..10, true));
+    assert!(h.viewer.following(), "{}", h.header());
+    assert!(!h.log().iter().any(|row| row == "m0"), "{:?}", h.log());
+    assert!(!h.header().contains("going to"), "{}", h.header());
+}
+
+/// No paging is asked for while a jump's page is awaited: an older or
+/// newer page of the old place would land in the new buffer.
+#[test]
+fn no_paging_while_going_to_the_start() {
+    let mut h = open(70, 8, Limits::default());
+    h.send(tail(40..50, true));
+    h.key(KeyCode::Home);
+    h.requests();
+    // The first frame's page back comes in while Home's page is read.
+    h.send(older(30..40, true));
+    h.key(KeyCode::PageUp);
+    let requests = h.requests();
+    assert!(
+        !requests
+            .iter()
+            .any(|r| matches!(r, Request::Older(_) | Request::Newer(_))),
+        "{requests:?}"
+    );
+}
+
+/// After Home, with the buffer at the log's start and none of the
+/// search's matches in it, `n` goes to the log's first match, once the
+/// older side has read to the start, and waits while it reads.
+#[test]
+fn n_after_home_goes_to_the_logs_first_match() {
+    let mut h = open(70, 8, Limits::default());
+    h.send(tail(40..50, true));
+    h.search("m45");
+    let id = searches(&h.requests()).0[0].id;
+    h.send(step(id, Side::Older, Order::NearestFirst, &[30, 20], None));
+    h.key(KeyCode::Home);
+    h.send(head_page(0..10, true));
+    h.requests();
+    h.key(KeyCode::Char('n'));
+    assert_eq!(jumps(&h.requests()), [], "the oldest isn't read yet");
+    h.send(step(
+        id,
+        Side::Older,
+        Order::NearestFirst,
+        &[15],
+        Some(SearchEnd::Done),
+    ));
+    assert_eq!(jumps(&h.requests()), [Request::Around(position(15))]);
+}
+
+/// Following at the bottom of a short log, its start in view, the header
+/// adds nothing.
+#[test]
+fn no_start_header_while_following_at_the_bottom() {
+    let mut h = open(70, 8, Limits::default());
+    h.send(tail(1..3, false));
+    assert!(h.viewer.following());
+    assert!(!h.header().contains("at the start"), "{}", h.header());
+}
+
+/// No paging is asked for while a match's page is awaited either.
+#[test]
+fn no_paging_while_a_matchs_page_is_awaited() {
+    let mut h = open(70, 8, Limits::default());
+    h.send(tail(40..50, true));
+    h.viewer.around = Some((position(5), 0));
+    h.requests();
+    h.send(older(30..40, true));
+    h.key(KeyCode::PageUp);
+    let requests = h.requests();
+    assert!(
+        !requests
+            .iter()
+            .any(|r| matches!(r, Request::Older(_) | Request::Newer(_))),
+        "{requests:?}"
+    );
 }
