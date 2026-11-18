@@ -1020,3 +1020,26 @@ fn debug_writes_the_prefills_shape() {
         "Prefill { user: None, password: None }"
     );
 }
+
+/// A cursor line taller than the pane shows from its top, and stays so
+/// from one draw to the next (the view didn't jump between its bottom
+/// and its top).
+#[test]
+fn a_tall_cursor_line_keeps_its_view() {
+    let mut h = harness(Prefill::default());
+    place(&h, "accounts.yml", "a: 1\n");
+    submit(&mut h, "someone", "pw");
+    ended(&mut h, [Status::Done, Status::Ignored, Status::Ignored]);
+    drawn(&mut h, 100, 30);
+    let inner = h.screen.pane.as_ref().expect("pane").inner;
+    let tall = "t".repeat(usize::from(inner.width) * usize::from(inner.height + 2));
+    place(&h, "accounts.yml", &format!("{tall}\nnext: x\n"));
+    h.screen.load();
+    let offsets: Vec<u16> = (0..4)
+        .map(|_| {
+            drawn(&mut h, 100, 30);
+            h.screen.pane.as_ref().expect("pane").scroll.offset().y
+        })
+        .collect();
+    assert_eq!(offsets, [0, 0, 0, 0]);
+}

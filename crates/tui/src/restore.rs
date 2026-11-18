@@ -1057,7 +1057,11 @@ impl Pane {
         let height = row;
         if let (Some(start), Some(rows)) = (starts.get(self.cursor), heights.get(self.cursor)) {
             let mut offset = self.scroll.offset();
-            if *start < offset.y {
+            // A line taller than the pane shows from its top, draw after
+            // draw: moving to its last rows would send the next draw back
+            // to its first (`start < offset`), the view jumping on every
+            // redraw.
+            if *start < offset.y || *rows > inner.height {
                 offset.y = *start;
             } else if start.saturating_add(*rows) > offset.y.saturating_add(inner.height) {
                 offset.y = start.saturating_add(*rows).saturating_sub(inner.height);
