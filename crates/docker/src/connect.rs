@@ -276,7 +276,22 @@ const INSPECTS_AT_ONCE: usize = 16;
 ///
 /// When the container list call fails; a failed inspect is kept in the
 /// listing instead.
-pub async fn list(daemon: &Daemon) -> anyhow::Result<Listing> {
+// Boxed (`FutureExt::boxed`,
+// <https://docs.rs/futures-util/0.3.34/futures_util/future/trait.FutureExt.html#method.boxed>),
+// so sb-docker alone compiles the listing: an `async fn`'s body is
+// compiled in each crate that awaits it, bollard's, serde-json's and
+// hyper's code under it with it, and sb, sb-tui and sb-motd each had a
+// copy (about 0.5 MB of the binary; ADR-026). Not inlined, so link-time
+// optimisation can't copy it back. The box is one allocation per
+// listing; the commands' instruction counts didn't move (ADR-026).
+#[inline(never)]
+pub fn list(daemon: &Daemon) -> futures_util::future::BoxFuture<'_, anyhow::Result<Listing>> {
+    use futures_util::FutureExt as _;
+    listing(daemon).boxed()
+}
+
+/// [`list`]'s listing.
+async fn listing(daemon: &Daemon) -> anyhow::Result<Listing> {
     let started = std::time::Instant::now();
     let docker = &daemon.docker;
     let options = ListContainersOptionsBuilder::default().all(true).build();

@@ -118,6 +118,14 @@ deny = [
     # its self dev-dependency, which turns `testing` on for its tests (as
     # sb-python-env's).
     { crate = "sb-ops", wrappers = ["sb", "sb-ops"] },
+    # psl: one crate compiles the public suffix lookup (ADR-026), sb's
+    # one call into it being sb-config's `cloudflare::registrable_domain`;
+    # its lookup is generic and inlined, so each crate calling it would
+    # compile the list again.
+    { crate = "psl", wrappers = ["sb-config"] },
+    # tui-markdown: rendered in sb-tui only, through its non-generic
+    # functions (ADR-026), for the same reason.
+    { crate = "tui-markdown", wrappers = ["sb-tui"] },
     # completion: Tab completion through clap_complete's engine, the tag
     # completer over ansible's cache, and the shells' registration files
     # (completion spec), used by the binary (and later ops' refresh).

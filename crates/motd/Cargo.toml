@@ -46,9 +46,6 @@ form_urlencoded.workspace = true
 # `--banner-file-toilet`'s arguments split as shell words (motd decision
 # 22; stack table "Shell quoting").
 shlex.workspace = true
-# `--share`'s known hosts' registrable domains (motd decision 7), as
-# sb-config takes them.
-psl.workspace = true
 # Every child: update-notifier's scripts, apt, loginctl and last
 # (CONSTRAINTS.md).
 sb-exec.workspace = true

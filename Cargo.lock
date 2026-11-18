@@ -3665,7 +3665,6 @@ dependencies = [
  "insta",
  "jiff",
  "procfs",
- "psl",
  "quick-xml",
  "regex",
  "reqwest",

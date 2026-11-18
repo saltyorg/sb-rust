@@ -90,8 +90,7 @@ fn write_one(
     let message = sanitized(announcement.message);
     if theme.profile() == Profile::Ascii {
         writeln!(out, "# {heading}\n")?;
-        let options = with_width(Options::default(), width);
-        let text = render(&message, &options);
+        let text = render_plain(&message, width);
         for line in &text.lines {
             for span in &line.spans {
                 out.write_all(safe(&span.content).as_bytes())?;
@@ -107,9 +106,27 @@ fn write_one(
     )));
     write_styled(out, &heading, theme.profile())?;
     out.write_all(b"\n")?;
-    let options = with_width(Options::new(sheet), width);
-    let text = render(&message, &options);
+    let text = render_sheet(&message, sheet, width);
     write_styled(out, &text, theme.profile())
+}
+
+/// [`render`] with tui-markdown's own sheet, laid out to `width`. This and
+/// [`render_sheet`] aren't generic, so sb-tui alone compiles tui-markdown
+/// and pulldown-cmark: [`write_inline`] is generic over its writer, so it
+/// is compiled in each caller's crate (sb-ops), and a generic `render`
+/// called from it was compiled there again (about 110 KB of the binary;
+/// ADR-026).
+/// Not inlined, so link-time optimisation can't copy them back.
+#[inline(never)]
+fn render_plain(message: &str, width: Option<u16>) -> Text<'_> {
+    render(message, &with_width(Options::default(), width))
+}
+
+/// [`render`] with the palette's sheet, laid out to `width`; not generic,
+/// as [`render_plain`].
+#[inline(never)]
+fn render_sheet(message: &str, sheet: Sheet, width: Option<u16>) -> Text<'_> {
+    render(message, &with_width(Options::new(sheet), width))
 }
 
 /// tui-markdown's rendering of `message`, with no subscriber: it warns

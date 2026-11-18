@@ -434,6 +434,14 @@ To discuss with the maintainer once every module is done, not before:
     Kept: opt-level 3 (speed), panic unwinding (motd's sections and the
     runner's steps report a panic and go on; an abort would end the
     run), and syntax highlighting (CONSTRAINTS.md exception E1).
+  - **Duplicate generic code folded and routed** (maintainer,
+    2026-11-18: no size change may cost any performance). lld's
+    identical code folding for the sb binary, and one crate compiling
+    psl's lookup, the Markdown rendering and Docker's container listing,
+    took 1,071,392 bytes (4.9%) off the production binary at f726634,
+    with the commands' instruction counts unchanged (ADR-026). Left for
+    later: hyper's client, still compiled in each of the four crates
+    that call bollard (about 0.5 MB).
 - **A phase exploring alternative output designs** (maintainer,
   2026-11-14). The maintainer's design canvas "sb list: refined columns"
   (https://claude.ai/artifact/FLU6EQNhqSh2BHD9NkeHv2) is the starting point, one of the designs to weigh, not a spec. It

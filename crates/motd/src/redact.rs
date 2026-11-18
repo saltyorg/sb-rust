@@ -256,10 +256,10 @@ impl Share {
             .iter()
             .map(|name| {
                 // The registrable domain, as sb-config's Cloudflare check
-                // takes it (<https://docs.rs/psl/2.1.241/psl/fn.domain_str.html>):
+                // takes it (`registrable_domain`, psl's list):
                 // `mine.co.uk` stays whole, an unlisted `home.lan` is its
                 // own domain.
-                let domain = psl::domain_str(name).unwrap_or(name);
+                let domain = sb_config::cloudflare::registrable_domain(name).unwrap_or(name);
                 format!(r"(?:\*\.|\b(?:[a-z0-9-]+\.)*){}\b", regex::escape(domain))
             })
             .collect();

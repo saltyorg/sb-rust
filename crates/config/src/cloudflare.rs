@@ -356,6 +356,20 @@ pub async fn check(
     Ok(())
 }
 
+/// The registrable domain of `name`, from psl's compiled-in list
+/// (<https://docs.rs/psl/2.1.241/psl/fn.domain_str.html>), or `None`
+/// when it has none.
+///
+/// sb's one call into psl: its lookup is generic, so each crate that
+/// called `psl::domain_str` compiled its own copy of the list into the
+/// binary (159 KB, this crate's and sb-motd's; ADR-026). Not inlined, so
+/// link-time optimisation can't copy it into a caller again.
+#[inline(never)]
+#[must_use]
+pub fn registrable_domain(name: &str) -> Option<&str> {
+    psl::domain_str(name)
+}
+
 /// sb-go's `getRootDomain` with x/net's `EffectiveTLDPlusOne`: empty
 /// labels and addresses refused in x/net's words, then the registrable
 /// domain from psl, both sections
@@ -376,7 +390,7 @@ fn root_domain(domain: &str) -> Result<String, String> {
     if domain.parse::<std::net::IpAddr>().is_ok() {
         return Err(refused("cannot derive eTLD+1 for domain"));
     }
-    psl::domain_str(domain)
+    registrable_domain(domain)
         .map(str::to_string)
         .ok_or_else(|| refused("cannot derive eTLD+1 for domain"))
 }
