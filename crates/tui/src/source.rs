@@ -47,10 +47,10 @@ impl Generation {
 
 /// Where a line is in its source: opaque to the viewer, which hands an
 /// edge's position back in [`Request::Older`] and [`Request::Newer`].
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Position(pub(crate) Inner);
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Inner {
     /// A journal entry, by its cursor.
     Journal(sb_host::journal::Cursor),
@@ -122,6 +122,99 @@ pub enum Request {
     /// follows; a `Newer` from below the newest line sent already makes
     /// the next follow read the tail first.
     Follow(bool),
+    /// The entry at this position with its surroundings: up to 250
+    /// entries before it, it, and up to 249 after (tui spec, "Whole-log
+    /// search"), as an [`Event::Page`] of [`PageKind::Around`]. It ends a
+    /// follow, and the source forgets the lines it sent, as `Tail` does.
+    Around(Position),
+    /// Search the log outside the viewer's buffer (tui spec, "Whole-log
+    /// search"), stopping any search before it.
+    Search(Search),
+    /// Stop the search in progress, if any.
+    StopSearch,
+}
+
+/// A whole-log search: its id, the viewer's match, and where each side
+/// starts (`None`: that side isn't read).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Search {
+    /// The viewer's count of its searches: [`Event::Found`] carries it,
+    /// so the viewer drops what an earlier search sends.
+    pub id: u64,
+    pub matcher: Matcher,
+    /// Read the entries before this position (the buffer's oldest edge).
+    pub older: Option<Position>,
+    /// Read the entries after this position (the buffer's newest edge).
+    pub newer: Option<Position>,
+}
+
+/// How many matches of the viewer's search a line holds, as the screen
+/// shows it (`line::hits`): the same test inside the buffer and out.
+/// Compared by identity.
+#[derive(Clone)]
+pub struct Matcher(Arc<dyn Fn(&Line) -> usize + Send + Sync>);
+
+impl Matcher {
+    #[must_use]
+    pub fn new(matches: impl Fn(&Line) -> usize + Send + Sync + 'static) -> Self {
+        Self(Arc::new(matches))
+    }
+
+    /// The matches in `line`.
+    #[must_use]
+    pub fn count(&self, line: &Line) -> usize {
+        (self.0)(line)
+    }
+}
+
+impl fmt::Debug for Matcher {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Matcher")
+    }
+}
+
+impl PartialEq for Matcher {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for Matcher {}
+
+/// Which side of the buffer a search reads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Side {
+    Older,
+    Newer,
+}
+
+/// The order a side's matches come in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Order {
+    /// Nearest the buffer first: the side stops itself at its cap.
+    NearestFirst,
+    /// Farthest from the buffer first: the viewer keeps the nearest.
+    FarthestFirst,
+}
+
+/// A match outside the buffer: where its entry is, when it was written,
+/// and how many matches it holds.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Found {
+    pub position: Position,
+    pub time: Option<Timestamp>,
+    pub count: usize,
+}
+
+/// How a side of a search ended.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SearchEnd {
+    /// It read to the end of the log on its side.
+    Done,
+    /// It stopped at its cap of matches ([`Order::NearestFirst`]).
+    Capped,
+    /// It couldn't read on: the cause.
+    Failed(String),
 }
 
 /// Which request a page answers.
@@ -133,6 +226,9 @@ pub enum PageKind {
     Older,
     /// Entries after the buffer.
     Newer,
+    /// An entry and its surroundings ([`Request::Around`]): the buffer
+    /// starts again with these, not following.
+    Around,
 }
 
 /// What a source sends the viewer.
@@ -157,6 +253,17 @@ pub enum Event {
     },
     /// New entries while following, oldest first.
     Followed(Vec<Line>),
+    /// A step of a search's side: the matches it found, in `order`, the
+    /// time of the last entry it read, and, at its last step, how it
+    /// ended.
+    Found {
+        search: u64,
+        side: Side,
+        order: Order,
+        found: Vec<Found>,
+        reached: Option<Timestamp>,
+        end: Option<SearchEnd>,
+    },
     /// Something to show as its own row, never in a log line.
     Notice(Notice),
 }

@@ -711,3 +711,174 @@ fn an_inotify_limit_is_named_in_the_follows_notice() {
         OpenError::NothingToWatch.to_string()
     );
 }
+
+/// Every entry's message by its position: what a search's matches name.
+fn by_position(j: &Journal, n: usize) -> std::collections::HashMap<Position, String> {
+    let page = j.page(
+        &every_entry(),
+        &journal::Position::Tail,
+        n,
+        &Limits::default(),
+    );
+    page.records
+        .iter()
+        .map(|r| {
+            let line = line(r);
+            let message = String::from_utf8_lossy(&line.message).into_owned();
+            (line.position, message)
+        })
+        .collect()
+}
+
+/// The viewer's stand-in match: one in a message ending `00`.
+fn hundreds() -> Matcher {
+    Matcher::new(|line: &Line| usize::from(line.message.ends_with(b"00")))
+}
+
+fn search_settings(step: usize, matches: usize) -> Settings {
+    Settings {
+        search_step: step,
+        matches,
+        ..Settings::default()
+    }
+}
+
+impl Viewer {
+    /// One side's `Found` events for `search` until it ends: the matches'
+    /// messages in the order sent, the steps, and how it ended.
+    async fn found(
+        &mut self,
+        names: &std::collections::HashMap<Position, String>,
+        search: u64,
+        side: Side,
+    ) -> (Vec<String>, usize, Order, SearchEnd) {
+        let (mut shown, mut steps) = (Vec::new(), 0);
+        loop {
+            match self.next().await {
+                Event::Found {
+                    search: id,
+                    side: s,
+                    order,
+                    found,
+                    end,
+                    ..
+                } if id == search && s == side => {
+                    steps += 1;
+                    shown.extend(found.iter().map(|f| {
+                        assert_eq!(f.count, 1);
+                        names[&f.position].clone()
+                    }));
+                    if let Some(end) = end {
+                        return (shown, steps, order, end);
+                    }
+                }
+                other => panic!("not this side's step: {other:?}"),
+            }
+        }
+    }
+}
+
+/// A search reads past the tail: the older side's matches come nearest
+/// the buffer first, a step at a time, to the start of the log.
+#[tokio::test]
+async fn a_search_finds_the_older_matches_nearest_first() {
+    let (_t, j) = journal_of(3_000);
+    let by = by_position(&j, 3_000);
+    let mut v = Viewer::on(Arc::clone(&j), every_entry(), search_settings(400, 10_000));
+    let tail = v.page(Request::Tail).await;
+    assert_eq!(tail.messages, names(2_500..3_000));
+    v.handle.send(Request::Search(Search {
+        id: 7,
+        matcher: hundreds(),
+        older: tail.oldest.clone(),
+        newer: None,
+    }));
+    let (found, steps, order, end) = v.found(&by, 7, Side::Older).await;
+    let expected: Vec<String> = (1..25).rev().map(|i| format!("m{i}00")).collect();
+    assert_eq!(found, expected);
+    assert_eq!(order, Order::NearestFirst);
+    assert_eq!(end, SearchEnd::Done);
+    // 2,500 entries in steps of 400, then the end.
+    assert_eq!(steps, 7 + 1);
+}
+
+/// A jump's page: the entry, 250 before it and 249 after, a new buffer
+/// with more on both sides; then the newer side's matches come farthest
+/// first, to the end of the log.
+#[tokio::test]
+async fn around_a_match_then_the_newer_side_farthest_first() {
+    let (_t, j) = journal_of(3_000);
+    let by = by_position(&j, 3_000);
+    let at = by
+        .iter()
+        .find(|(_, m)| m.as_str() == "m1000")
+        .map(|(p, _)| p.clone())
+        .expect("m1000");
+    let mut v = Viewer::on(Arc::clone(&j), every_entry(), search_settings(400, 10_000));
+    let around = v.page(Request::Around(at)).await;
+    assert_eq!(around.kind, PageKind::Around);
+    assert_eq!(around.messages, names(750..1_250));
+    assert!(around.more_older && around.more_newer, "{around:?}");
+    v.handle.send(Request::Search(Search {
+        id: 8,
+        matcher: hundreds(),
+        older: None,
+        newer: around.newest.clone(),
+    }));
+    let (found, _, order, end) = v.found(&by, 8, Side::Newer).await;
+    let expected: Vec<String> = (13..30).rev().map(|i| format!("m{i}00")).collect();
+    assert_eq!(found, expected);
+    assert_eq!(order, Order::FarthestFirst);
+    assert_eq!(end, SearchEnd::Done);
+}
+
+/// The older side stops at its cap, the nearest kept.
+#[tokio::test]
+async fn the_older_side_stops_at_its_cap() {
+    let (_t, j) = journal_of(3_000);
+    let by = by_position(&j, 3_000);
+    let mut v = Viewer::on(Arc::clone(&j), every_entry(), search_settings(400, 5));
+    let tail = v.page(Request::Tail).await;
+    v.handle.send(Request::Search(Search {
+        id: 9,
+        matcher: hundreds(),
+        older: tail.oldest.clone(),
+        newer: None,
+    }));
+    let (found, _, _, end) = v.found(&by, 9, Side::Older).await;
+    assert_eq!(found, ["m2400", "m2300", "m2200", "m2100", "m2000"]);
+    assert_eq!(end, SearchEnd::Capped);
+    v.quiet().await;
+}
+
+/// A stopped search sends no more and never ends as done: its scan stops
+/// at its next step.
+#[tokio::test]
+async fn a_stopped_search_goes_quiet() {
+    let (_t, j) = journal_of(3_000);
+    let mut v = Viewer::on(Arc::clone(&j), every_entry(), search_settings(1, 10_000));
+    let tail = v.page(Request::Tail).await;
+    let slow = Matcher::new(|_: &Line| {
+        std::thread::sleep(Duration::from_millis(2));
+        0
+    });
+    v.handle.send(Request::Search(Search {
+        id: 10,
+        matcher: slow,
+        older: tail.oldest.clone(),
+        newer: None,
+    }));
+    assert!(matches!(v.next().await, Event::Found { search: 10, .. }));
+    v.handle.send(Request::StopSearch);
+    loop {
+        let got = tokio::time::timeout(Duration::from_millis(300), v.events.recv()).await;
+        match got {
+            Err(_) => break,
+            Ok(Some(Tagged {
+                event: Event::Found { end, .. },
+                ..
+            })) => assert_eq!(end, None),
+            Ok(other) => panic!("{other:?}"),
+        }
+    }
+}

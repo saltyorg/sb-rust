@@ -598,6 +598,7 @@ impl Viewer {
                 }
                 self.append(lines);
             }
+            Event::Found { .. } => {}
             Event::Notice(notice) => {
                 // The follow has stopped or never started (follow-L4): the
                 // view stays where it is, paged, and `f` retries.
@@ -633,7 +634,7 @@ impl Viewer {
     ) {
         self.last_page = Some(kind);
         match kind {
-            PageKind::Tail => {
+            PageKind::Tail | PageKind::Around => {
                 self.entries.clear();
                 self.bytes = 0;
                 self.total = 0;

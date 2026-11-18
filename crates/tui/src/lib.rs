@@ -335,6 +335,8 @@ async fn stream_log(
                         save::write_line(out, line, format).map_err(exit::output_error)?;
                     }
                 }
+                // The stream asks for no search.
+                Event::Found { .. } => {}
                 Event::Notice(Notice::CantFollow(cause)) => {
                     out.flush().map_err(exit::output_error)?;
                     anyhow::bail!("can't follow the log: {cause}");

@@ -44,8 +44,13 @@
 //! (tui spec, "The run log").
 
 use std::collections::{HashSet, VecDeque};
+use std::ops::ControlFlow;
+use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
+
+use futures_util::FutureExt as _;
 
 use rustix::io::Errno;
 use sb_cli_core::exit::chain;
@@ -55,8 +60,12 @@ use sb_host::journal::{
 };
 use tokio::sync::mpsc;
 use tokio::time::MissedTickBehavior;
+use tracing::Instrument as _;
 
-use super::{Event, Inner, Line, Notice, Outbox, PageKind, Position, Request, SourceHandle};
+use super::{
+    Event, Found, Inner, Line, Matcher, Notice, Order, Outbox, PageKind, Position, Request, Search,
+    SearchEnd, Side, SourceHandle,
+};
 
 /// The page size: the tail's 500 lines (tui spec, "Opening"), and each
 /// older and newer page.
@@ -73,6 +82,15 @@ const REMEMBERED: usize = 20_000;
 /// How often a follow drains with no wake: the screen's 4/s tick
 /// (follow-L1).
 const RETRY: Duration = Duration::from_millis(250);
+
+/// A search's step: the entries one scan step reads and matches, and its
+/// output limit (tui spec, "Whole-log search", "Journal").
+const SEARCH_STEP: usize = 5_000;
+const SEARCH_OUTPUT: usize = 16 << 20;
+
+/// The most matches a side of a search keeps (tui spec, "Matches
+/// kept").
+pub(crate) const MATCHES: usize = 10_000;
 
 /// A source task for `unit`'s journal: one [`Journal::unit_query`] for
 /// every page and the follow. `journal` is the run's one journal, opened
@@ -96,6 +114,10 @@ struct Settings {
     remembered: usize,
     /// How often a follow drains with no wake (follow-L1).
     retry: Duration,
+    /// A search's step, its output limit, and its cap of matches a side.
+    search_step: usize,
+    search_limits: Limits,
+    matches: usize,
 }
 
 impl Default for Settings {
@@ -105,6 +127,9 @@ impl Default for Settings {
             limits: Limits::with_output(OUTPUT),
             remembered: REMEMBERED,
             retry: RETRY,
+            search_step: SEARCH_STEP,
+            search_limits: Limits::with_output(SEARCH_OUTPUT),
+            matches: MATCHES,
         }
     }
 }
@@ -124,6 +149,7 @@ fn spawn_query(
             follow_from: None,
             sent: Sent::new(settings.remembered),
             follow: None,
+            search: None,
         }
         .run(requests)
     })
@@ -217,6 +243,16 @@ struct Adapter {
     follow_from: Option<PageEnd>,
     sent: Sent,
     follow: Option<Following>,
+    /// The search in progress: its sides' stop flag.
+    search: Option<Arc<AtomicBool>>,
+}
+
+/// A source that goes stops its search: the scans see the flag at their
+/// next step.
+impl Drop for Adapter {
+    fn drop(&mut self) {
+        self.stop_search();
+    }
 }
 
 impl Adapter {
@@ -294,8 +330,17 @@ impl Adapter {
                 self.page(PageKind::Newer, journal::Position::After(cursor))
                     .await
             }
+            Request::Around(Position(Inner::Journal(cursor))) => self.around(cursor).await,
             // Another source's position: none of this one's entries.
-            Request::Older(_) | Request::Newer(_) => true,
+            Request::Older(_) | Request::Newer(_) | Request::Around(_) => true,
+            Request::Search(search) => {
+                self.start_search(search);
+                true
+            }
+            Request::StopSearch => {
+                self.stop_search();
+                true
+            }
             Request::Follow(true) => self.start_following().await,
             Request::Follow(false) => {
                 self.stop_following();
@@ -359,6 +404,93 @@ impl Adapter {
             more_newer,
         };
         self.outbox.send(event) && self.errors(&page.errors)
+    }
+
+    /// The entry at `cursor` with its surroundings (`Request::Around`): the
+    /// page ending with it (`AtOrBefore`) and the one after it, as one
+    /// page that starts a new buffer, so the follow ends and the cycle
+    /// guard forgets what it sent, as for a tail. A cursor that has gone
+    /// (rotated away) still reads the entries on either side of where it
+    /// was.
+    async fn around(&mut self, cursor: Cursor) -> bool {
+        self.stop_following();
+        self.sent.clear();
+        let started = Instant::now();
+        let at_or_before = self.settings.page / 2 + 1;
+        let after_n = self.settings.page.saturating_sub(at_or_before);
+        let before = journal::page(
+            Arc::clone(&self.journal),
+            self.query.clone(),
+            journal::Position::AtOrBefore(cursor),
+            at_or_before,
+            self.settings.limits,
+        )
+        .await;
+        let after = journal::page(
+            Arc::clone(&self.journal),
+            self.query.clone(),
+            journal::Position::After(cursor),
+            after_n,
+            self.settings.limits,
+        )
+        .await;
+        if !after.more_newer {
+            self.follow_from = Some(after.end.clone());
+        }
+        let records: Vec<&Record> = before.records.iter().chain(&after.records).collect();
+        for r in &records {
+            self.sent.remember(r.cursor());
+        }
+        tracing::info!(
+            direction = ?PageKind::Around,
+            count = records.len(),
+            more_older = before.more_older,
+            more_newer = after.more_newer,
+            millis = started.elapsed().as_millis(),
+            "journal page"
+        );
+        let event = Event::Page {
+            kind: PageKind::Around,
+            lines: records.iter().map(|r| line(r)).collect(),
+            oldest: before.oldest_chosen.or(after.oldest_chosen).map(position),
+            newest: after.newest_chosen.or(before.newest_chosen).map(position),
+            more_older: before.more_older,
+            more_newer: after.more_newer,
+        };
+        self.outbox.send(event) && self.errors(&before.errors) && self.errors(&after.errors)
+    }
+
+    /// A search's sides, each one scan on the blocking pool in a task of
+    /// its own (`scan_side`), beside this task's pages and follow, so
+    /// neither waits for the other. The search before it stops.
+    fn start_search(&mut self, search: Search) {
+        self.stop_search();
+        let stop = Arc::new(AtomicBool::new(false));
+        self.search = Some(Arc::clone(&stop));
+        tracing::info!(search = search.id, "journal search started");
+        for (side, from) in [(Side::Older, search.older), (Side::Newer, search.newer)] {
+            let Some(Position(Inner::Journal(cursor))) = from else {
+                continue;
+            };
+            let side = SideScan {
+                journal: Arc::clone(&self.journal),
+                query: self.query.clone(),
+                side,
+                from: cursor,
+                search: search.id,
+                matcher: search.matcher.clone(),
+                stop: Arc::clone(&stop),
+                outbox: self.outbox.clone(),
+                settings: self.settings,
+            };
+            tokio::spawn(side.run().in_current_span());
+        }
+    }
+
+    fn stop_search(&mut self) {
+        if let Some(stop) = self.search.take() {
+            stop.store(true, Ordering::Relaxed);
+        }
     }
 
     /// Follow from the last page that held the newest entry, reading the
@@ -504,6 +636,130 @@ impl Adapter {
             others: shown.len() - 1 + errors.omitted,
         };
         self.outbox.send(Event::Notice(notice))
+    }
+}
+
+/// One side of a search: the entries before (or after) `from`, matched
+/// a scan step at a time on the blocking pool, each step's matches sent
+/// as an [`Event::Found`].
+struct SideScan {
+    journal: Arc<Journal>,
+    query: Query,
+    side: Side,
+    from: Cursor,
+    search: u64,
+    matcher: Matcher,
+    stop: Arc<AtomicBool>,
+    outbox: Outbox,
+    settings: Settings,
+}
+
+impl SideScan {
+    /// The scan walks newest first: the older side's matches come nearest
+    /// the buffer first, and stop at the cap; the newer side's farthest
+    /// first, all of them, the viewer keeping the nearest (tui spec,
+    /// "Matches kept"). A read error in a step is logged, and the scan
+    /// goes on, as a page's notice doesn't end paging; a scan that
+    /// panics ends its side as failed. The scan stops at the step after
+    /// the stop flag is set or the viewer has gone.
+    async fn run(self) {
+        let Self {
+            journal,
+            query,
+            side,
+            from,
+            search,
+            matcher,
+            stop,
+            outbox,
+            settings,
+        } = self;
+        let (at, order) = match side {
+            Side::Older => (journal::Position::Before(from), Order::NearestFirst),
+            Side::Newer => (journal::Position::After(from), Order::FarthestFirst),
+        };
+        let started = Instant::now();
+        let (step_outbox, step_stop) = (outbox.clone(), Arc::clone(&stop));
+        let mut kept = 0;
+        let each = move |records: Vec<Record>, errors: ReadErrors| {
+            if step_stop.load(Ordering::Relaxed) {
+                return ControlFlow::Break(());
+            }
+            if !errors.is_empty() {
+                tracing::warn!(
+                    errors = errors.shown.len() + errors.omitted,
+                    first = %errors.shown.first().map_or_default(|e| with_causes(e)),
+                    "journal search read errors"
+                );
+            }
+            let mut found = Vec::new();
+            let mut reached = None;
+            for record in &records {
+                let line = line(record);
+                reached = line.time.or(reached);
+                let count = matcher.count(&line);
+                if count > 0 {
+                    found.push(Found {
+                        position: line.position,
+                        time: line.time,
+                        count,
+                    });
+                }
+            }
+            let mut end = None;
+            if order == Order::NearestFirst && kept + found.len() >= settings.matches {
+                found.truncate(settings.matches - kept);
+                end = Some(SearchEnd::Capped);
+            }
+            kept += found.len();
+            let capped = end.is_some();
+            let event = Event::Found {
+                search,
+                side,
+                order,
+                found,
+                reached,
+                end,
+            };
+            if !step_outbox.send(event) || capped {
+                return ControlFlow::Break(());
+            }
+            ControlFlow::Continue(())
+        };
+        let scanned = AssertUnwindSafe(journal::scan(
+            journal,
+            query,
+            at,
+            settings.search_step,
+            settings.search_limits,
+            each,
+        ))
+        .catch_unwind()
+        .await;
+        let end = match scanned {
+            Ok(ControlFlow::Continue(())) => SearchEnd::Done,
+            Ok(ControlFlow::Break(())) => {
+                tracing::info!(
+                    search,
+                    ?side,
+                    millis = started.elapsed().as_millis(),
+                    "journal search side stopped"
+                );
+                return;
+            }
+            Err(_) => SearchEnd::Failed("the search failed".to_string()),
+        };
+        tracing::info!(search, ?side, millis = started.elapsed().as_millis(), outcome = ?end, "journal search side ended");
+        if !stop.load(Ordering::Relaxed) {
+            let _ = outbox.send(Event::Found {
+                search,
+                side,
+                order,
+                found: Vec::new(),
+                reached: None,
+                end: Some(end),
+            });
+        }
     }
 }
 

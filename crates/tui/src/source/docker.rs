@@ -242,7 +242,11 @@ impl Adapter {
             Request::Older(Position(Inner::Docker(before))) => self.older(before).await,
             Request::Newer(Position(Inner::Docker(after))) => self.newer(after).await,
             // Another source's position: none of this one's lines.
-            Request::Older(_) | Request::Newer(_) => true,
+            Request::Older(_)
+            | Request::Newer(_)
+            | Request::Around(_)
+            | Request::Search(_)
+            | Request::StopSearch => true,
             Request::Follow(true) => self.start_following(after_failed_tail).await,
             Request::Follow(false) => {
                 self.stop_following();
