@@ -97,8 +97,8 @@ fn plain_char(key: &KeyEvent, c: char) -> bool {
 
 impl Page {
     /// The menu's items for `row`, each with the key that does the same
-    /// without the menu (proto-facts' menu: Show or Hide on a secret,
-    /// Copy, Edit unless deleted, Undo change on an edited setting, and
+    /// without the menu (proto-facts' menu, without its Show and Hide: Copy,
+    /// Edit unless deleted, Undo change on an edited setting, and
     /// Delete or Keep; copies and apps have their Delete or Keep).
     pub(super) fn menu_items(&self, row: Row) -> Vec<Item> {
         let target = self.target(row);
@@ -112,11 +112,7 @@ impl Page {
         };
         let mut items = Vec::new();
         match row {
-            Row::Setting(id) => {
-                if self.secret(id) {
-                    let label = if self.is_shown(id) { "Hide" } else { "Show" };
-                    items.push((label.to_owned(), 's', Action::Show));
-                }
+            Row::Setting(_) => {
                 items.push(("Copy".to_owned(), 'c', Action::Copy));
                 if !self.deleted(&target) {
                     items.push(("Edit".to_owned(), 'e', Action::Edit));

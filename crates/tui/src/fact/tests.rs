@@ -1,7 +1,7 @@
 //! The fact editor's page (tui spec, editors, Testing Strategy, "Fact
 //! screen"): the headings and settings, folding, search with and without
-//! matches, masking and Show, Copy's OSC 52 payload, the run log without
-//! a value, and `TestBackend` snapshots at 110 and 80 columns (M54); the
+//! matches, every value shown as it is, Copy's OSC 52 payload, the run
+//! log without a value, and `TestBackend` snapshots at 110 and 80 columns (M54); the
 //! changes, the panel, the save and every dialog, on real facts
 //! directories through sb-config's session (M55).
 
@@ -19,7 +19,8 @@ use sb_config::facts::{Fact, Instance};
 
 use super::*;
 
-/// A known secret: no buffer holds it until Show, no log ever.
+/// A known secret: shown on screen as it is (tui spec, editors, Values),
+/// never in a log.
 const SECRET: &str = "not-a-real-password";
 
 fn fact(key: &str, value: &str) -> Fact {
@@ -255,21 +256,21 @@ fn each_app_is_a_heading_with_its_settings_and_values() {
             "    theme              dark",
             "    title              家庭メディア 🎬 Server",
             "  ▾ Komodo",
-            "    database_password  ••••••••",
-            "    jwt_secret         ••••••••",
+            "    database_password  not-a-real-password",
+            "    jwt_secret         not-a-real-jwt-secret",
             "  ▾ Plex",
             "    plex",
-            "      claim_token      ••••••••",
+            "      claim_token      claim-FAKE0000",
             "      transcode_path   /mnt/local/transcodes",
             "    plex2",
-            "      claim_token      ••••••••",
+            "      claim_token      claim-FAKE1111",
             "      transcode_path   /mnt/local/transcodes2",
             "",
         ]
     );
     assert_eq!(
         rows[23],
-        "  Edit (e)   Add (a)   Copy (c)   Show (s)   Delete (d)   Save (v)   Quit (q)"
+        "  Edit (e)   Add (a)   Copy (c)   Delete (d)   Save changes (v)   Quit (q)"
     );
 }
 
@@ -501,54 +502,32 @@ fn a_new_query_selects_the_first_row() {
     assert_eq!(p.selected(), None);
 }
 
-/// No known secret in any buffer drawn until Show, which reveals the
-/// selected value only, until the selection moves.
+/// Every value shows as it is, a secret's too (the maintainer,
+/// 2026-11-18: values are shown, not hidden): no dots anywhere,
+/// and `s` reveals nothing because nothing is hidden.
 #[test]
-fn secrets_are_masked_until_show_and_only_while_selected() {
+fn every_value_shows_as_it_is() {
     let mut p = page();
-    let contains = |p: &mut Page| {
-        drawn(p, 80, 24)
-            .backend()
-            .buffer()
-            .content()
-            .iter()
-            .map(ratatui::buffer::Cell::symbol)
-            .collect::<String>()
-            .contains(SECRET)
-    };
-    assert!(!contains(&mut p));
-    // Komodo's database_password: Show reveals it, Hide masks it again.
-    down(&mut p, 5);
-    assert_eq!(p.selected(), Some(Row::Setting((1, 0, 0))));
-    press(&mut p, KeyCode::Char('s'));
-    assert!(contains(&mut p));
-    assert!(shows(&mut p, 80, 24, "Hide (s)"));
-    // The other secret stays masked.
-    assert!(!shows(&mut p, 80, 24, "not-a-real-jwt-secret"));
-    press(&mut p, KeyCode::Char('s'));
-    assert!(!contains(&mut p));
-    // Shown, then the selection moves: masked again.
-    press(&mut p, KeyCode::Char('s'));
-    press(&mut p, KeyCode::Down);
-    assert!(!contains(&mut p));
-    press(&mut p, KeyCode::Up);
-    assert!(!contains(&mut p));
+    let rows = screen(&drawn(&mut p, 80, 24)).join("\n");
+    for value in [SECRET, "not-a-real-jwt-secret", "claim-FAKE0000"] {
+        assert!(rows.contains(value), "{value}: {rows}");
+    }
+    assert!(!rows.contains('•'), "{rows}");
+    assert!(!rows.contains("Show"), "{rows}");
 }
 
-/// Show and Copy act on settings only; on a heading they say so.
+/// Copy acts on settings only; on a heading it says so.
 #[test]
-fn show_and_copy_on_a_heading_say_to_pick_a_setting() {
+fn copy_on_a_heading_says_to_pick_a_setting() {
     let sink = Sink::default();
     let mut p = page_with(&roles(), &sink);
-    press(&mut p, KeyCode::Char('s'));
-    assert!(shows(&mut p, 80, 24, "Pick a setting to show"));
     press(&mut p, KeyCode::Char('c'));
     assert!(shows(&mut p, 80, 24, "Pick a setting to copy"));
     assert_eq!(sink.text(), "");
 }
 
-/// Copy sends exactly the value through OSC 52, masked or not, and says it
-/// can't confirm it worked.
+/// Copy sends exactly the value through OSC 52 and says it can't confirm
+/// it worked.
 #[test]
 fn copy_sends_the_value_through_osc_52() {
     let sink = Sink::default();
@@ -562,10 +541,8 @@ fn copy_sends_the_value_through_osc_52() {
     let rows = screen(&drawn(&mut p, 80, 24));
     assert_eq!(
         rows[22],
-        " Copied database_password (if your terminal allows it; otherwise use Show)"
+        " Copied database_password (if your terminal allows it)"
     );
-    // Still masked.
-    assert!(!rows.iter().any(|row| row.contains(SECRET)));
 }
 
 /// A copy that can't be written says why.
@@ -586,21 +563,19 @@ fn a_copy_that_fails_says_so() {
     assert_eq!(p.status, "Couldn't copy database_password: no terminal");
 }
 
-/// The run log gets what was shown and copied, by name, never a value.
+/// The run log gets what was copied, by name, never a value, though the
+/// screen shows it.
 #[test]
-fn the_log_names_what_was_shown_and_copied_without_a_value() {
+fn the_log_names_what_was_copied_without_a_value() {
     let text = logged(|| {
         let mut p = page();
         drawn(&mut p, 80, 24);
         down(&mut p, 5);
-        press(&mut p, KeyCode::Char('s'));
-        drawn(&mut p, 80, 24);
         press(&mut p, KeyCode::Char('c'));
         press(&mut p, KeyCode::Char('/'));
         type_text(&mut p, "pass");
         drawn(&mut p, 80, 24);
     });
-    assert!(text.contains("fact shown"), "{text}");
     assert!(text.contains("fact copied"), "{text}");
     assert!(
         text.contains("role=komodo copy=komodo key=database_password"),
@@ -636,21 +611,8 @@ fn a_narrow_screen_shows_the_changes_panel_at_the_bottom() {
     assert!(rows[27].starts_with("╰─"), "{rows:?}");
     assert_eq!(
         rows[29],
-        "  Edit (e)   Add (a)   Copy (c)   Show (s)   Delete (d)   Save changes (v)   Quit (q)"
+        "  Edit (e)   Add (a)   Copy (c)   Delete (d)   Save changes (v)   Quit (q)"
     );
-}
-
-/// Show on a value that isn't masked has nothing to do: it says so, logs
-/// nothing, and its button is faint.
-#[test]
-fn show_on_a_value_that_is_not_hidden_says_so() {
-    let mut p = page();
-    down(&mut p, 2);
-    assert_eq!(p.selected(), Some(Row::Setting((0, 0, 1))));
-    press(&mut p, KeyCode::Char('s'));
-    assert_eq!(p.shown, None);
-    assert!(shows(&mut p, 80, 24, "This value isn't hidden"));
-    assert!(!shows(&mut p, 80, 24, "Hide (s)"));
 }
 
 /// The buttons that can't act on the selected row are drawn faint; the
@@ -660,22 +622,20 @@ fn buttons_that_cannot_act_are_faint() {
     let mut p = EditStyle::page();
     let faint = colours(p.style(Role::Faint).patch(p.bg(Role::ButtonDisabledBg)));
     let on = colours(p.style(Role::Text).patch(p.bg(Role::ButtonBg)));
-    // On an app's heading: Edit (column 2), Copy (23) and Show (34)
-    // faint; Add (13, the app has one copy) and Delete (45) not.
+    // On an app's heading: Edit (column 2) and Copy (23) faint; Add
+    // (13, the app has one copy) and Delete (34) not.
     let terminal = drawn(&mut p, 80, 24);
     let buffer = terminal.backend().buffer();
     assert_eq!(cell(buffer, 2, 23), faint);
     assert_eq!(cell(buffer, 13, 23), on);
     assert_eq!(cell(buffer, 23, 23), faint);
-    assert_eq!(cell(buffer, 34, 23), faint);
-    assert_eq!(cell(buffer, 45, 23), on);
-    // On a secret: Edit, Copy and Show can act.
+    assert_eq!(cell(buffer, 34, 23), on);
+    // On a setting: Edit and Copy can act.
     down(&mut p, 5);
     let terminal = drawn(&mut p, 80, 24);
     let buffer = terminal.backend().buffer();
     assert_eq!(cell(buffer, 2, 23), on);
     assert_eq!(cell(buffer, 23, 23), on);
-    assert_eq!(cell(buffer, 34, 23), on);
 }
 
 /// The search box's border lights up while it has focus.
@@ -829,7 +789,6 @@ fn a_failed_copy_is_logged_as_not_copied() {
 fn the_page_s_debug_holds_no_value() {
     let mut p = page();
     down(&mut p, 5);
-    press(&mut p, KeyCode::Char('s'));
     let debug = format!("{p:?}");
     assert!(debug.contains("database_password"), "{debug}");
     assert!(!debug.contains(SECRET), "{debug}");
@@ -883,14 +842,6 @@ fn snapshot_search_without_matches_80x24() {
     let mut p = page();
     press(&mut p, KeyCode::Char('/'));
     type_text(&mut p, "sonarr");
-    assert_snapshot!(drawn(&mut p, 80, 24).backend());
-}
-
-#[test]
-fn snapshot_shown_80x24() {
-    let mut p = page();
-    down(&mut p, 5);
-    press(&mut p, KeyCode::Char('s'));
     assert_snapshot!(drawn(&mut p, 80, 24).backend());
 }
 
@@ -1071,18 +1022,18 @@ fn a_value_the_file_cannot_hold_is_refused() {
     );
 }
 
-/// A masked value's box hides its text until Ctrl+S.
+/// A secret's edit box shows its text as it is; Ctrl+S hides nothing.
 #[test]
-fn a_masked_value_s_box_hides_it_until_ctrl_s() {
+fn a_secret_s_edit_box_shows_its_value() {
     let mut f = Fixture::new(&roles());
     select(&mut f.page, "database_password");
     press(&mut f.page, KeyCode::Char('e'));
-    assert!(shows(&mut f.page, 100, 40, "Ctrl+S show"));
-    assert!(!shows(&mut f.page, 100, 40, SECRET));
+    let rows = screen(&drawn(&mut f.page, 100, 40)).join("\n");
+    assert!(rows.contains(SECRET), "{rows}");
+    assert!(!rows.contains('•'), "{rows}");
+    assert!(!rows.contains("Ctrl+S"), "{rows}");
     ctrl(&mut f.page, 's');
     assert!(shows(&mut f.page, 100, 40, SECRET));
-    ctrl(&mut f.page, 's');
-    assert!(!shows(&mut f.page, 100, 40, SECRET));
 }
 
 /// Add asks a name, then a value, and stages the new setting under the
@@ -1388,7 +1339,8 @@ fn quit_s_save_saves_then_quits() {
 }
 
 /// A role changed on disk since the open: the drift dialog shows before
-/// and after, masked; Reload takes the disk version and drops its change.
+/// and after, values as they are; Reload takes the disk version and drops
+/// its change.
 #[test]
 fn a_drift_reloads_on_r() {
     let mut f = Fixture::new(&roles());
@@ -1408,7 +1360,8 @@ fn a_drift_reloads_on_r() {
     assert!(rows.contains("Before"), "{rows}");
     assert!(rows.contains("On disk"), "{rows}");
     assert!(rows.contains("port = 1"), "{rows}");
-    assert!(!rows.contains(SECRET), "{rows}");
+    assert!(rows.contains(SECRET), "{rows}");
+    assert!(!rows.contains('•'), "{rows}");
     assert!(rows.contains("Reload (r)"), "{rows}");
     press(&mut f.page, KeyCode::Char('r'));
     f.settle();
@@ -1552,10 +1505,10 @@ fn the_log_names_each_change_without_its_value() {
 fn the_save_button_shortens_on_a_narrow_screen() {
     let mut f = Fixture::new(&roles());
     assert!(shows(&mut f.page, 100, 40, "Save changes (v)"));
-    let rows = screen(&drawn(&mut f.page, 80, 40));
+    let rows = screen(&drawn(&mut f.page, 70, 40));
     assert_eq!(
         rows[39],
-        "  Edit (e)   Add (a)   Copy (c)   Show (s)   Delete (d)   Save (v)   Quit (q)"
+        "  Edit (e)   Add (a)   Copy (c)   Delete (d)   Save (v)   Quit (q)"
     );
 }
 
@@ -1756,19 +1709,17 @@ fn a_lost_save_says_so() {
     );
 }
 
-/// A new secret's value box hides it until Ctrl+S, as the edit box does.
+/// A new secret's value box shows what is typed, as the edit box does.
 #[test]
-fn a_new_secret_s_value_box_hides_it_until_ctrl_s() {
+fn a_new_secret_s_value_box_shows_what_is_typed() {
     let mut f = Fixture::new(&roles());
     select(&mut f.page, "    plex2");
     press(&mut f.page, KeyCode::Char('a'));
     type_into(&mut f.page, "api_key");
     press(&mut f.page, KeyCode::Enter);
     type_into(&mut f.page, "typed-secret");
-    assert!(shows(&mut f.page, 100, 40, "Ctrl+S show"));
-    assert!(!shows(&mut f.page, 100, 40, "typed-secret"));
-    ctrl(&mut f.page, 's');
     assert!(shows(&mut f.page, 100, 40, "typed-secret"));
+    assert!(!shows(&mut f.page, 100, 40, "Ctrl+S"));
 }
 
 /// Inside a deleted app, Delete can't act (its button is faint); on the
@@ -1787,7 +1738,8 @@ fn delete_is_faint_inside_a_deleted_app() {
     let on = colours(f.page.style(Role::Text).patch(f.page.bg(Role::ButtonBg)));
     select(&mut f.page, "▾ Komodo");
     press(&mut f.page, KeyCode::Char('d'));
-    let at = |p: &mut Page| cell(drawn(p, 100, 40).backend().buffer(), 45, 39);
+    // Delete (or Keep), after Edit, Add and Copy.
+    let at = |p: &mut Page| cell(drawn(p, 100, 40).backend().buffer(), 34, 39);
     assert_eq!(at(&mut f.page), on);
     press(&mut f.page, KeyCode::Down);
     assert_eq!(at(&mut f.page), faint);
@@ -2069,25 +2021,25 @@ fn a_right_click_opens_the_row_s_menu() {
     let y = usize::from(at.y);
     assert!(rows[y].contains("database_password"), "{rows:?}");
     assert!(rows[y + 1].contains('╭'), "{rows:?}");
-    assert!(rows[y + 2].contains("Show"), "{rows:?}");
+    assert!(rows[y + 2].contains("Copy"), "{rows:?}");
     assert!(
         menu.iter().any(|r| r.contains("Copy") && r.contains('c')),
         "{rows:?}"
     );
-    // Show, Copy, Edit, Delete: no Undo change without a change.
+    // Copy, Edit, Delete: no Undo change without a change.
     assert_eq!(
         f.page
             .menu_items(Row::Setting((1, 0, 0)))
             .iter()
             .map(|(l, k, _)| (l.as_str(), *k))
             .collect::<Vec<_>>(),
-        [("Show", 's'), ("Copy", 'c'), ("Edit", 'e'), ("Delete", 'd')]
+        [("Copy", 'c'), ("Edit", 'e'), ("Delete", 'd')]
     );
     // A hover over Delete lights it; a click on it deletes.
     let delete = find(&mut f.page, "Delete d");
     f.page
         .input(mouse_at(crossterm::event::MouseEventKind::Moved, delete));
-    assert_eq!(f.page.menu.expect("open").lit, 3);
+    assert_eq!(f.page.menu.expect("open").lit, 2);
     left_click(&mut f.page, delete);
     assert!(f.page.menu.is_none());
     assert_eq!(

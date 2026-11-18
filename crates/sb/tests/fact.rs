@@ -403,8 +403,8 @@ fn a_second_editor_is_refused() {
     assert_open_error(&world, "another fact editor is active");
 }
 
-/// The page over the fixture: every app and its settings, the secret
-/// masked; `q` quits with exit 0, the terminal restored and the editor
+/// The page over the fixture: every app and its settings, the secret's
+/// value as it is (the maintainer, 2026-11-18); `q` quits with exit 0, the terminal restored and the editor
 /// lock released.
 #[test]
 fn the_page_shows_the_facts_and_q_quits() {
@@ -422,7 +422,7 @@ fn the_page_shows_the_facts_and_q_quits() {
         "first line …",
         "▾ Komodo",
         "database_password",
-        "••••••••",
+        SECRET,
         "▾ Plex",
         "plex2",
         "Unsaved changes (0)",
@@ -430,7 +430,7 @@ fn the_page_shows_the_facts_and_q_quits() {
     ] {
         assert!(page.contains(text), "{text}: {page}");
     }
-    assert!(!page.contains(SECRET), "{page}");
+    assert!(!page.contains('•'), "{page}");
     pty.send(b"q");
     let status = pty.exit();
     assert_eq!(status.exit_code(), 0, "{}", pty.contents());
@@ -456,10 +456,10 @@ fn ctrl_c_exits_130() {
     pty.assert_restored();
 }
 
-/// Show, then Copy, on the secret: the screen shows it once asked, the
-/// run log names the fact and never holds its value.
+/// Copy on the secret: the screen shows it, the run log names the fact
+/// and never holds its value.
 #[test]
-fn show_and_copy_never_reach_the_run_log() {
+fn a_shown_and_copied_secret_never_reaches_the_run_log() {
     if !root_gate::requested() {
         return;
     }
@@ -469,7 +469,6 @@ fn show_and_copy_never_reach_the_run_log() {
     // Homepage's heading and two settings, Komodo's heading, then its
     // password.
     pty.send(b"jjjj");
-    pty.send(b"s");
     assert!(pty.showing(SECRET), "{}", pty.contents());
     pty.send(b"c");
     assert!(
@@ -480,7 +479,6 @@ fn show_and_copy_never_reach_the_run_log() {
     pty.send(b"q");
     assert_eq!(pty.exit().exit_code(), 0, "{}", pty.contents());
     let log = world.log();
-    assert!(log.contains("fact shown"), "{log}");
     assert!(log.contains("fact copied"), "{log}");
     assert!(log.contains("key=database_password"), "{log}");
     assert!(!log.contains(SECRET), "{log}");

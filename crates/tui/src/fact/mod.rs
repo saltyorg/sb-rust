@@ -1,7 +1,7 @@
 //! The fact editor (tui spec, "Editors", `sb fact`, Screen; the settings
 //! page of docs/ideas/fact-editor.md and proto-facts' reviewed design):
-//! the apps and their settings, search, folding, masking, Show and Copy
-//! (module build M54); the changes, the changes panel with undo, saving
+//! the apps and their settings, search, folding and Copy (module build
+//! M54); the changes, the changes panel with undo, saving
 //! and the dialogs (M55); the mouse and the right-click menu ([`mouse`],
 //! M56).
 //!
@@ -29,13 +29,12 @@
 //!   spec, Testing Strategy). Enter on an app folds or opens it; Left
 //!   folds the selected row's app, Right opens it. While a search shows
 //!   every match open, these keys do nothing, so no fold changes unseen.
-//! - **Secrets** ([`is_secret_key`]) show as dots. **Show** (`s`) reveals
-//!   the selected one until the selection moves (on a value that isn't
-//!   masked it has nothing to do, and is drawn faint); **Copy** (`c`) sends
-//!   any value through crossterm's OSC 52 `CopyToClipboard`
-//!   (<https://docs.rs/crossterm/0.29.0/crossterm/clipboard/struct.CopyToClipboard.html>)
-//!   without showing it. Values, keys and names reach the screen through
-//!   term-ui's `DisplayText`, which drops control sequences.
+//! - **Values** show as they are, a secret's too (tui spec, editors,
+//!   Values: the maintainer, 2026-11-18). **Copy** (`c`) sends the
+//!   selected value through crossterm's OSC 52 `CopyToClipboard`
+//!   (<https://docs.rs/crossterm/0.29.0/crossterm/clipboard/struct.CopyToClipboard.html>).
+//!   Values, keys and names reach the screen through term-ui's
+//!   `DisplayText`, which drops control sequences.
 //! - **Changes** ([`changes`]): Edit (`e`, or Enter on a setting), Add a
 //!   setting to the selected copy (`a`: its name, then its value), Delete
 //!   or Keep a setting, a copy or an app (`d`; deleting an app or a copy
@@ -52,7 +51,7 @@
 //!   the drift dialog's text scrolls in a tui-scrollview
 //!   (<https://docs.rs/tui-scrollview/0.6.8/tui_scrollview/>).
 //! - **Never logged:** a fact's value. The run log gets the role, copy and
-//!   key of what is shown, copied and staged, the change's kind, and
+//!   key of what is copied and staged, the change's kind, and
 //!   whether the copy was sent; sb-config logs the save.
 
 mod changes;
@@ -80,7 +79,6 @@ use sb_cli_core::config::escape_controls;
 use sb_cli_core::theme::{Role, Theme};
 use sb_config::facts::Role as App;
 use sb_config::facts::apply::RoleOutcome;
-use sb_config::facts::secret::is_secret_key;
 use sb_config::facts::session::Session;
 use sb_term_ui::DisplayText;
 use tokio::sync::Notify;
@@ -93,9 +91,6 @@ use crate::term::{App as Screen, Ending, Flow, Tui};
 /// The selection's mark, as the pickers draw it: it shows the selection
 /// without colour too.
 const MARK: &str = "› ";
-
-/// A masked value: dots of a fixed length, whatever the value's.
-const DOTS: &str = "••••••••";
 
 /// The widest key column; longer keys push their value along.
 const KEY_WIDTH_CAP: usize = 28;
@@ -114,7 +109,7 @@ const BAND_ROWS: usize = 4;
 /// spec, Known limits).
 /// Short enough for an 80-column status line with most keys (the
 /// maintainer, 2026-11-16).
-const COPIED: &str = "(if your terminal allows it; otherwise use Show)";
+const COPIED: &str = "(if your terminal allows it)";
 
 /// How long Saltbox's lock is waited for before the waiting dialog shows:
 /// a shorter hold would only flash it.
@@ -178,7 +173,6 @@ enum Action {
     Edit,
     Add,
     Copy,
-    Show,
     Delete,
     Save,
     Quit,
@@ -213,9 +207,6 @@ struct Page {
     search: TextArea<'static>,
     query: String,
     searching: bool,
-    /// The one value Show reveals, until the selection moves, by name: an
-    /// addition can move the rows under it.
-    shown: Option<Target>,
     status: String,
     /// The staged changes, by what they are on.
     pending: BTreeMap<Target, Pending>,
@@ -318,7 +309,6 @@ impl Page {
             fold_decided: false,
             query: String::new(),
             searching: false,
-            shown: None,
             status: String::new(),
             pending: BTreeMap::new(),
             popup: Popup::None,
@@ -477,21 +467,6 @@ impl Page {
         }
     }
 
-    /// Whether setting `id`'s key names a secret: masked until Show.
-    fn secret(&self, id: Id) -> bool {
-        is_secret_key(&self.setting(id).key)
-    }
-
-    /// Whether Show has revealed setting `id`.
-    fn is_shown(&self, id: Id) -> bool {
-        self.shown.as_ref() == Some(&self.target(Row::Setting(id)))
-    }
-
-    /// Whether setting `id` shows as dots now.
-    fn masked(&self, id: Id) -> bool {
-        self.secret(id) && !self.is_shown(id)
-    }
-
     /// Move the selection with `ListState`'s own `movement`, then clamp it
     /// to the rows at once. With nothing selected it starts from the first
     /// row: `select_previous` would wrap to the last.
@@ -610,7 +585,6 @@ impl Page {
             KeyCode::Char('e') => return self.act(Action::Edit),
             KeyCode::Char('a') => return self.act(Action::Add),
             KeyCode::Char('c') => return self.act(Action::Copy),
-            KeyCode::Char('s') => return self.act(Action::Show),
             KeyCode::Char('d') => return self.act(Action::Delete),
             KeyCode::Char('v') => return self.act(Action::Save),
             KeyCode::Char('q') | KeyCode::Esc => return self.act(Action::Quit),
@@ -632,17 +606,6 @@ impl Page {
             Action::Undo => self.undo_selected(),
             Action::Add => self.start_add(),
             Action::Delete => self.toggle_delete(),
-            Action::Show => match self.selected_setting() {
-                Some(id) if self.is_shown(id) => self.shown = None,
-                Some(id) if self.secret(id) => {
-                    let target = self.target(Row::Setting(id));
-                    let (role, copy, key) = names(&target);
-                    self.shown = Some(target);
-                    tracing::info!(role = %role, copy = %copy, key = %key, "fact shown");
-                }
-                Some(_) => "This value isn't hidden".clone_into(&mut self.status),
-                None => "Pick a setting to show".clone_into(&mut self.status),
-            },
             Action::Copy => match self.selected_setting() {
                 Some(id) => self.copy(id),
                 None => "Pick a setting to copy".clone_into(&mut self.status),
@@ -651,8 +614,7 @@ impl Page {
         Flow::Redraw
     }
 
-    /// Copy setting `id`'s value to the clipboard through OSC 52, without
-    /// showing it.
+    /// Copy setting `id`'s value to the clipboard through OSC 52.
     fn copy(&mut self, id: Id) {
         let setting = self.setting(id);
         let copied = crossterm::execute!(
@@ -888,7 +850,6 @@ impl Page {
         }
         self.roles = session.catalog();
         self.session = Some(session);
-        self.shown = None;
         self.status.clear();
         self.clamp();
         // Saved only when every app's changes are on disk: a reload dropped
@@ -977,17 +938,13 @@ impl Page {
                 let setting = self.setting(id);
                 let key = one_line(&setting.key);
                 let pad = key_width.saturating_sub(indent.len() + Span::raw(key.as_str()).width());
-                let value = if self.masked(id) {
-                    Span::styled(DOTS, self.style(Role::Muted).add_modifier(strike))
-                } else {
-                    let shown = DisplayText::from_bytes(setting.value.as_bytes(), false);
-                    let mut lines = shown.lines();
-                    let mut first = lines.next().unwrap_or_default().to_owned();
-                    if lines.next().is_some() {
-                        first.push_str(" …");
-                    }
-                    Span::styled(first, self.style(Role::Text).add_modifier(strike))
-                };
+                let shown = DisplayText::from_bytes(setting.value.as_bytes(), false);
+                let mut lines = shown.lines();
+                let mut first = lines.next().unwrap_or_default().to_owned();
+                if lines.next().is_some() {
+                    first.push_str(" …");
+                }
+                let value = Span::styled(first, self.style(Role::Text).add_modifier(strike));
                 vec![
                     Span::raw(indent),
                     Span::styled(key, self.style(Role::Text).add_modifier(strike)),
@@ -1021,11 +978,6 @@ impl Page {
         let target = row.map(|row| self.target(row));
         let on_setting = self.selected_setting();
         let live = target.as_ref().is_some_and(|t| !self.deleted(t));
-        let show = if on_setting.is_some_and(|id| self.is_shown(id)) {
-            "Hide"
-        } else {
-            "Show"
-        };
         let delete = if target
             .as_ref()
             .is_some_and(|t| self.pending.get(t) == Some(&Pending::Delete))
@@ -1048,12 +1000,6 @@ impl Page {
                 ("Edit", "e", Action::Edit, on_setting.is_some() && live),
                 ("Add", "a", Action::Add, can_add),
                 ("Copy", "c", Action::Copy, on_setting.is_some()),
-                (
-                    show,
-                    "s",
-                    Action::Show,
-                    on_setting.is_some_and(|id| self.secret(id)),
-                ),
                 (delete, "d", Action::Delete, can_delete),
                 (save, "v", Action::Save, !self.pending.is_empty()),
                 ("Quit", "q", Action::Quit, true),
@@ -1216,13 +1162,10 @@ impl Screen for Page {
             Input::Resize(..) => return Flow::Redraw,
             _ => return Flow::Unchanged,
         };
-        // Show, and what the status line said, last until the selection
-        // moves; a message this key set stays.
-        if self.selected().map(|row| self.target(row)) != before {
-            self.shown = None;
-            if self.status == status {
-                self.status.clear();
-            }
+        // What the status line said lasts until the selection moves; a
+        // message this key set stays.
+        if self.selected().map(|row| self.target(row)) != before && self.status == status {
+            self.status.clear();
         }
         flow
     }

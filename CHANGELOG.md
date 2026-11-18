@@ -27,8 +27,8 @@ you could trip over.
 - **A new log viewer** for `sb logs`: one live picker for services and
   containers, search, wrap, mouse support, and saving the view to a
   file.
-- **`sb fact`'s editor** masks credentials, with Show and Copy (clipboard
-  through OSC 52).
+- **`sb fact`'s editor**, a settings page with search, a changes panel
+  and Copy (clipboard through OSC 52).
 - **`sb edit` validates the file you edited** and offers to edit it again.
 - **A Certificates line in `sb motd`** (with `--traefik`), from Traefik's
   API.

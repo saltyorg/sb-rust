@@ -1,6 +1,5 @@
 ---
 source: crates/tui/src/fact/tests.rs
-assertion_line: 1635
 expression: "drawn(&mut f.page, 80, 24).backend()"
 ---
 "╭ Saltbox settings ────────────────────────────────────────────────────────────╮"
@@ -11,14 +10,14 @@ expression: "drawn(&mut f.page, 80, 24).backend()"
 "    theme              dark                                                     "
 "    title              家庭メディア 🎬 Server                                   " Hidden by multi-width symbols: [(24, " "), (26, " "), (28, " "), (30, " "), (32, " "), (34, " "), (37, " ")]
 "  ▾ Komodo                                                                      "
-"    database_password  ••••••••                                                 "
+"    database_password  not-a-real-password                                      "
 "    ╭ Waiting for Saltbox ─────────────────────────────────────────────────╮    "
 "  ▾ │Saltbox is changing homepage's settings. Waiting for it to finish: 3 s│    "
 "    │of 30 s.                                                              │    "
 "    │                                                                      │    "
 "    │ Cancel (c)                                                           │    "
 "    ╰──────────────────────────────────────────────────────────────────────╯    "
-"      claim_token      ••••••••                                                 "
+"      claim_token      claim-FAKE1111                                           "
 "      transcode_path   /mnt/local/transcodes2                                   "
 "                                                                                "
 "                                                                                "
@@ -26,4 +25,4 @@ expression: "drawn(&mut f.page, 80, 24).backend()"
 "│ Nothing changed yet                                                          │"
 "╰──────────────────────────────────────────────────────────────────────────────╯"
 "                                                                                "
-"  Edit (e)   Add (a)   Copy (c)   Show (s)   Delete (d)   Save (v)   Quit (q)   "
+"  Edit (e)   Add (a)   Copy (c)   Delete (d)   Save changes (v)   Quit (q)      "

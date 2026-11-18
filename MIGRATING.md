@@ -101,8 +101,8 @@ completion files call a command sb doesn't have.
 - **The run log** at `/var/log/sb/sb.log`.
 - **A log viewer** for `sb logs`, services and containers together: a
   live picker, search, wrap, mouse support and saving to a file.
-- **Editors:** `sb edit` validates after editing, and `sb fact` masks
-  credentials, with Show and Copy.
+- **Editors:** `sb edit` validates after editing, and `sb fact` is a
+  settings page with search, a changes panel and Copy.
 - **motd** gains a Certificates line (with `--traefik`) and a safer
   `--share`.
 - **A theme file** for sb's colours.

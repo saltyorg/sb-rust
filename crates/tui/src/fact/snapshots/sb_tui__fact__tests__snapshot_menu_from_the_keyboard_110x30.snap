@@ -1,6 +1,5 @@
 ---
 source: crates/tui/src/fact/tests.rs
-assertion_line: 2190
 expression: "drawn(&mut f.page, 110, 30).backend()"
 ---
 "╭ Saltbox settings ──────────────────────────────────────────────────────────────────────────────────────────╮"
@@ -11,14 +10,14 @@ expression: "drawn(&mut f.page, 110, 30).backend()"
 "    theme              dark                                               │                                  │"
 "    title              家庭メディア 🎬 Server                             │                                  │" Hidden by multi-width symbols: [(24, " "), (26, " "), (28, " "), (30, " "), (32, " "), (34, " "), (37, " ")]
 "  ▾ Komodo                                                                │                                  │"
-"    database_password  ••••••••                                           │                                  │"
-"    jwt_secret         ••••••••                                           │                                  │"
+"    database_password  not-a-real-password                                │                                  │"
+"    jwt_secret         not-a-real-jwt-secret                              │                                  │"
 "  ▾ Plex                                                                  │                                  │"
 "    plex                                                                  │                                  │"
-"      claim_token      ••••••••                                           │                                  │"
+"      claim_token      claim-FAKE0000                                     │                                  │"
 "      transcode_path   /mnt/local/transcodes                              │                                  │"
 "›   plex2                                                                 │                                  │"
-"      claim_token      •••••••╭───────────────╮                           │                                  │"
+"      claim_token      claim-F╭───────────────╮                           │                                  │"
 "      transcode_path   /mnt/lo│ Delete copy d │                           │                                  │"
 "                              ╰───────────────╯                           │                                  │"
 "                                                                          │                                  │"
@@ -32,4 +31,4 @@ expression: "drawn(&mut f.page, 110, 30).backend()"
 "                                                                          │                                  │"
 "                                                                          ╰──────────────────────────────────╯"
 "                                                                                                              "
-"  Edit (e)   Add (a)   Copy (c)   Show (s)   Delete (d)   Save changes (v)   Quit (q)                         "
+"  Edit (e)   Add (a)   Copy (c)   Delete (d)   Save changes (v)   Quit (q)                                    "

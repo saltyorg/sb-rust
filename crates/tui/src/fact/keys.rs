@@ -1,12 +1,10 @@
 //! The fact editor's dialogs' keys (tui spec, editors, `sb fact`,
-//! Screen): the edit box (Enter stages, Alt+Enter adds a line, Ctrl+S
-//! shows a masked value, Esc cancels), the add boxes (the name, then the
-//! value), the save and quit questions, the waiting, drift and outcome
-//! dialogs. The boxes are ratatui-textarea's
+//! Screen): the edit box (Enter stages, Alt+Enter adds a line, Esc
+//! cancels), the add boxes (the name, then the value), the save and quit
+//! questions, the waiting, drift and outcome dialogs. The boxes are
+//! ratatui-textarea's
 //! (<https://docs.rs/ratatui-textarea/0.9.3/ratatui_textarea/struct.TextArea.html>),
-//! a masked value hidden with its `set_mask_char`, as its own password
-//! example does
-//! (<https://github.com/ratatui/ratatui-textarea/blob/v0.9.3/examples/password.rs>).
+//! their text shown as it is, a secret's too (tui spec, editors, Values).
 
 use std::sync::mpsc::Sender;
 
@@ -16,7 +14,6 @@ use ratatui::text::Span;
 use ratatui::widgets::{Block, BorderType};
 use ratatui_textarea::{CursorMove, TextArea};
 use sb_cli_core::theme::Role;
-use sb_config::facts::secret::is_secret_key;
 use sb_config::facts::session::{Drift, DriftChoice};
 use tui_scrollview::ScrollViewState;
 
@@ -24,18 +21,6 @@ use super::changes::{self, Pending, Target};
 use super::dialog::Popup;
 use super::{Page, Row, names, newline, one_line};
 use crate::term::Flow;
-
-/// Ctrl+S in a box with a masked value: the text shown, or hidden again;
-/// shown values are logged by name, as the page's Show.
-fn toggle_mask(line: &mut TextArea<'static>, target: &Target) {
-    if line.mask_char().is_some() {
-        line.clear_mask_char();
-        let (role, copy, key) = names(target);
-        tracing::info!(role = %role, copy = %copy, key = %key, "fact shown");
-    } else {
-        line.set_mask_char('•');
-    }
-}
 
 impl Page {
     /// A paste (bracketed paste): into the box up, or the search box, whole
@@ -63,8 +48,7 @@ impl Page {
         Flow::Redraw
     }
 
-    /// `e`: the edit box for the selected setting, its value hidden while
-    /// masked.
+    /// `e`: the edit box for the selected setting.
     pub(super) fn start_edit(&mut self) {
         let Some(id) = self.selected_setting() else {
             "Pick a setting to edit".clone_into(&mut self.status);
@@ -81,17 +65,11 @@ impl Page {
         let mut line = TextArea::new(setting.value.split('\n').map(str::to_owned).collect());
         line.move_cursor(CursorMove::Bottom);
         line.move_cursor(CursorMove::End);
-        let masked = self.secret(id);
         let title = format!(" Edit {} ", one_line(&setting.key));
-        let keys = if masked {
-            " Enter save · Alt+Enter new line · Ctrl+S show · Esc cancel "
-        } else {
-            " Enter save · Alt+Enter new line · Esc cancel "
-        };
+        let keys = " Enter save · Alt+Enter new line · Esc cancel ";
         self.popup = Popup::Edit {
-            line: Box::new(self.dialog_line(line, masked, title, keys)),
+            line: Box::new(self.dialog_line(line, title, keys)),
             target,
-            masked,
         };
     }
 
@@ -116,12 +94,7 @@ impl Page {
             return;
         }
         let title = format!(" Add a setting to {} ", self.label(&target));
-        let line = self.dialog_line(
-            TextArea::default(),
-            false,
-            title,
-            " Enter next · Esc cancel ",
-        );
+        let line = self.dialog_line(TextArea::default(), title, " Enter next · Esc cancel ");
         self.popup = Popup::AddKey {
             line: Box::new(line),
             copy: target,
@@ -129,12 +102,10 @@ impl Page {
     }
 
     /// A dialog's text box in the page's colours under `title`, its keys
-    /// on the bottom border (proto-facts' edit box), its text hidden when
-    /// `masked`.
+    /// on the bottom border (proto-facts' edit box).
     fn dialog_line(
         &self,
         mut line: TextArea<'static>,
-        masked: bool,
         title: String,
         keys: &str,
     ) -> TextArea<'static> {
@@ -151,9 +122,6 @@ impl Page {
         line.set_style(self.style(Role::Text));
         line.set_cursor_line_style(Style::default());
         line.set_cursor_style(Style::default().add_modifier(Modifier::REVERSED));
-        if masked {
-            line.set_mask_char('•');
-        }
         line
     }
 
@@ -217,18 +185,12 @@ impl Page {
             return None;
         }
         self.status.clear();
-        let masked = is_secret_key(key);
         let title = format!(" Value for {} ", self.label(&target));
-        let keys = if masked {
-            " Enter add · Alt+Enter new line · Ctrl+S show · Esc cancel "
-        } else {
-            " Enter add · Alt+Enter new line · Esc cancel "
-        };
-        let line = self.dialog_line(TextArea::default(), masked, title, keys);
+        let keys = " Enter add · Alt+Enter new line · Esc cancel ";
+        let line = self.dialog_line(TextArea::default(), title, keys);
         Some(Popup::AddValue {
             line: Box::new(line),
             target,
-            masked,
         })
     }
 
@@ -237,17 +199,9 @@ impl Page {
         let popup = std::mem::replace(&mut self.popup, Popup::None);
         let (popup, flow) = match popup {
             Popup::None => (Popup::None, Flow::Unchanged),
-            Popup::Edit {
-                line,
-                target,
-                masked,
-            } => self.edit_key(key, line, target, masked),
+            Popup::Edit { line, target } => self.edit_key(key, line, target),
             Popup::AddKey { line, copy } => self.add_key_key(key, line, copy),
-            Popup::AddValue {
-                line,
-                target,
-                masked,
-            } => self.add_value_key(key, line, target, masked),
+            Popup::AddValue { line, target } => self.add_value_key(key, line, target),
             Popup::ConfirmSave => match key.code {
                 KeyCode::Enter | KeyCode::Char('y') => return self.start_save(),
                 KeyCode::Esc | KeyCode::Char('n') => (Popup::None, Flow::Redraw),
@@ -297,23 +251,18 @@ impl Page {
         flow
     }
 
-    /// A key in the edit box: Enter stages, Alt+Enter adds a line, Ctrl+S
-    /// shows or hides a masked value, Esc cancels; the rest is the box's
-    /// (ratatui-textarea's `input`).
+    /// A key in the edit box: Enter stages, Alt+Enter adds a line, Esc
+    /// cancels; the rest is the box's (ratatui-textarea's `input`).
     fn edit_key(
         &mut self,
         key: KeyEvent,
         mut line: Box<TextArea<'static>>,
         target: Target,
-        masked: bool,
     ) -> (Popup, Flow) {
         match key.code {
             KeyCode::Esc => {
                 "Edit cancelled".clone_into(&mut self.status);
                 return (Popup::None, Flow::Redraw);
-            }
-            KeyCode::Char('s') if masked && key.modifiers.contains(KeyModifiers::CONTROL) => {
-                toggle_mask(&mut line, &target);
             }
             _ if newline(&key) && !key.modifiers.contains(KeyModifiers::ALT) => {
                 let value = line.lines().join("\n");
@@ -325,14 +274,7 @@ impl Page {
                 line.input(key);
             }
         }
-        (
-            Popup::Edit {
-                line,
-                target,
-                masked,
-            },
-            Flow::Redraw,
-        )
+        (Popup::Edit { line, target }, Flow::Redraw)
     }
 
     /// A key in the name box: Enter goes on to the value box, Esc cancels.
@@ -364,13 +306,9 @@ impl Page {
         key: KeyEvent,
         mut line: Box<TextArea<'static>>,
         target: Target,
-        masked: bool,
     ) -> (Popup, Flow) {
         match key.code {
             KeyCode::Esc => return (Popup::None, Flow::Redraw),
-            KeyCode::Char('s') if masked && key.modifiers.contains(KeyModifiers::CONTROL) => {
-                toggle_mask(&mut line, &target);
-            }
             _ if newline(&key) && !key.modifiers.contains(KeyModifiers::ALT) => {
                 let value = line.lines().join("\n");
                 if self.stage(&target, &Pending::Set(value)) {
@@ -382,14 +320,7 @@ impl Page {
                 line.input(key);
             }
         }
-        (
-            Popup::AddValue {
-                line,
-                target,
-                masked,
-            },
-            Flow::Redraw,
-        )
+        (Popup::AddValue { line, target }, Flow::Redraw)
     }
 
     /// A key in the drift dialog: `r` reloads, `c` or Esc cancels (the

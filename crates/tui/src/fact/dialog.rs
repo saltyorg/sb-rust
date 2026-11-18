@@ -24,35 +24,30 @@ use ratatui_textarea::TextArea;
 use sb_cli_core::theme::Role;
 use sb_config::facts::Role as App;
 use sb_config::facts::apply::RoleOutcome;
-use sb_config::facts::secret::is_secret_key;
 use sb_config::facts::session::{Drift, DriftChoice, LOCK_TIMEOUT};
 use tui_popup::{KnownSizeWrapper, Popup as TuiPopup, PopupState};
 use tui_scrollview::{ScrollView, ScrollViewState, ScrollbarVisibility};
 
 use super::changes::{Pending, Target};
-use super::{DOTS, Page, REGENERATED, one_line};
+use super::{Page, REGENERATED, one_line};
 
 /// The dialog up, if any.
 pub(super) enum Popup {
     None,
-    /// The edit box for `target`, its text hidden while `masked` until
-    /// Ctrl-S.
+    /// The edit box for `target`.
     Edit {
         line: Box<TextArea<'static>>,
         target: Target,
-        masked: bool,
     },
     /// The name of a setting to add to `copy`.
     AddKey {
         line: Box<TextArea<'static>>,
         copy: Target,
     },
-    /// The value of the setting `target` to add, hidden while `masked`
-    /// until Ctrl-S.
+    /// The value of the setting `target` to add.
     AddValue {
         line: Box<TextArea<'static>>,
         target: Target,
-        masked: bool,
     },
     ConfirmSave,
     /// Quit with staged changes: Save, Discard or Cancel.
@@ -194,8 +189,7 @@ fn confirm(
     targets
 }
 
-/// `role`'s facts as the drift dialog lists them, the secret ones masked
-/// (no Show here).
+/// `role`'s facts as the drift dialog lists them, values as they are.
 fn facts(page: &Page, role: &App) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     for instance in &role.instances {
@@ -204,15 +198,11 @@ fn facts(page: &Page, role: &App) -> Vec<Line<'static>> {
             page.style(Role::Accent),
         ));
         for fact in &instance.facts {
-            let value = if is_secret_key(&fact.key) {
-                DOTS.to_owned()
+            let shown = one_line(&fact.value);
+            let value = if fact.value.contains('\n') {
+                format!("{shown} …")
             } else {
-                let shown = one_line(&fact.value);
-                if fact.value.contains('\n') {
-                    format!("{shown} …")
-                } else {
-                    shown
-                }
+                shown
             };
             lines.push(Line::from(format!("    {} = {value}", one_line(&fact.key))));
         }

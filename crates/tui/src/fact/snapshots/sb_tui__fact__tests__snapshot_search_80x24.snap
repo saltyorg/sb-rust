@@ -1,6 +1,5 @@
 ---
 source: crates/tui/src/fact/tests.rs
-assertion_line: 880
 expression: "drawn(&mut p, 80, 24).backend()"
 ---
 "╭ Saltbox settings ────────────────────────────────────────────────────────────╮"
@@ -8,9 +7,9 @@ expression: "drawn(&mut p, 80, 24).backend()"
 "╰──────────────────────────────────────────────────────────────────────────────╯"
 "› ▾ Plex                                                                        "
 "    plex                                                                        "
-"      claim_token      ••••••••                                                 "
+"      claim_token      claim-FAKE0000                                           "
 "    plex2                                                                       "
-"      claim_token      ••••••••                                                 "
+"      claim_token      claim-FAKE1111                                           "
 "                                                                                "
 "                                                                                "
 "                                                                                "
@@ -26,4 +25,4 @@ expression: "drawn(&mut p, 80, 24).backend()"
 "│ Nothing changed yet                                                          │"
 "╰──────────────────────────────────────────────────────────────────────────────╯"
 "                                                                                "
-"  Edit (e)   Add (a)   Copy (c)   Show (s)   Delete (d)   Save (v)   Quit (q)   "
+"  Edit (e)   Add (a)   Copy (c)   Delete (d)   Save changes (v)   Quit (q)      "
