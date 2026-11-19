@@ -368,8 +368,8 @@ pub enum Range {
 const YIELD_EVERY: usize = 256 * 1024;
 
 /// Every entry of `range`, oldest first, each to `each` until it breaks:
-/// one read of the log, for the log viewer's whole-log search and its
-/// save. The Engine API has no search, and its `since` reads from the
+/// one read of the log, for the log viewer's whole-log search. The
+/// Engine API has no search, and its `since` reads from the
 /// log's start anyway (the platform note), so the read is one window:
 /// from `created` (when known, else the log's start) to the second after
 /// `Before`'s position, or from `After`'s second on, filtered here as

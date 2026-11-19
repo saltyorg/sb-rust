@@ -25,8 +25,8 @@ you could trip over.
   each record and a pointer to it when a command fails (not under a
   failed playbook, whose own output on the screen says why).
 - **A new log viewer** for `sb logs`: one live picker for services and
-  containers, search, wrap, mouse support, and saving the view to a
-  file.
+  containers, search across the whole log, wrap and mouse support. A log's text comes from `journalctl -u` or `docker
+  logs`, as Saltbox's docs use.
 - **`sb fact`'s editor**, a settings page with search, a changes panel
   and Copy (clipboard through OSC 52).
 - **`sb edit` validates the file you edited** and offers to edit it again.

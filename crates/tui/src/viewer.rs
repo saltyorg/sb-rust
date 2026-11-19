@@ -43,15 +43,11 @@
 //!   shows the column; `w` resets it. A log line is drawn cut at the
 //!   column ([`columns`]), so a frame doesn't walk what lies left of it;
 //!   markers and notices with `Paragraph::scroll`'s x offset.
-//! - **Pasteable output** (tui spec, "Pasteable output"): `s` saves the
-//!   loaded lines as plain text to a new file in the run log's directory
-//!   (`save`) and shows where in the footer, with the review line, until
-//!   the next key; `p` quits with [`Leave::Print`], and the caller prints
-//!   [`Viewer::plain`] once the screen is gone.
+//! - **No save and no print** (tui spec, decision 24): a log's text comes
+//!   from `journalctl -u` or `docker logs`.
 
 use std::cell::Cell;
 use std::collections::VecDeque;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use crossterm::event::{
@@ -64,7 +60,6 @@ use ratatui::style::Style;
 use ratatui::text::{Line as TextLine, Span, Text};
 use ratatui::widgets::{Paragraph, Wrap};
 use ratatui_textarea::{CursorMove, TextArea};
-use sb_cli_core::config;
 use sb_cli_core::theme::Role;
 use sb_term_ui::DisplayText;
 use tokio::sync::{Notify, mpsc};
@@ -73,7 +68,6 @@ use crate::ahead::{self, Ahead, Window};
 use crate::columns::{self, Marks};
 use crate::line::{self, Format};
 use crate::resume::{self, Resumes};
-use crate::save;
 use crate::source::{
     Event, Generation, Line, Matcher, Notice, Outbox, PageKind, Position, Request, Search,
     SearchEnd, SourceHandle, Tagged,
@@ -146,8 +140,6 @@ pub enum Leave {
     Back,
     /// `q`: quit, exit 0.
     Quit,
-    /// `p`: quit, the loaded lines printed on stdout, exit 0.
-    Print,
 }
 
 /// One entry of the buffer. Not `Clone`: a copy would share its log
@@ -434,12 +426,6 @@ pub struct Viewer {
     /// The match a jump asked the source's surroundings of
     /// (`Request::Around`), and the match within its entry to show.
     around: Option<(Position, usize)>,
-    /// Where `s` saves: the run log's directory; `s` does nothing
-    /// without one.
-    save_dir: Option<PathBuf>,
-    /// The footer's notice after `s` (its text, and whether it is an
-    /// error), until the next key.
-    saved: Option<(String, bool)>,
     /// Log lines measured since the count was last taken: the frame-cost
     /// test's (tui spec, Testing Strategy, "Frame cost").
     #[cfg(test)]
@@ -526,8 +512,6 @@ impl Viewer {
             searches: 0,
             waiting: None,
             around: None,
-            save_dir: None,
-            saved: None,
             #[cfg(test)]
             measured: Cell::new(0),
             #[cfg(test)]
@@ -537,57 +521,6 @@ impl Viewer {
             #[cfg(test)]
             parsed: Cell::new(0),
         }
-    }
-
-    /// `s` saves in `dir` (the run log's directory).
-    #[must_use]
-    pub fn saving_in(mut self, dir: PathBuf) -> Self {
-        self.save_dir = Some(dir);
-        self
-    }
-
-    /// The loaded lines as plain text (colour off; the time and origin as
-    /// `t` shows them), and how many: what `s` saves and `p` prints. The
-    /// viewer's own notices and markers aren't log lines and stay out.
-    #[must_use]
-    pub fn plain(&self) -> (String, usize) {
-        let lines = self.entries.iter().filter_map(|entry| match entry {
-            Entry::Line(line, _, _) => Some(line),
-            Entry::Notice(_) => None,
-        });
-        save::plain(lines, &self.format)
-    }
-
-    /// `s`: the loaded lines to a new file, the footer saying where or why
-    /// not; the run log gets the path and the count, never the text.
-    fn save(&mut self) {
-        let Some(dir) = &self.save_dir else {
-            return;
-        };
-        let (text, count) = self.plain();
-        let name = save::file_name(self.kind, &self.name, Timestamp::now());
-        self.saved = Some(match save::save(dir, &name, &text) {
-            Ok(path) => {
-                let shown = path.display().to_string();
-                tracing::info!(
-                    path = %config::escape_controls(&shown),
-                    lines = count,
-                    "log saved"
-                );
-                // The buffer, not the whole log: the notice says so (spec,
-                // "Pasteable output").
-                let lines = if count == 1 { "line" } else { "lines" };
-                let notice = format!(
-                    "saved the {count} {lines} loaded in the viewer to {shown}. {}",
-                    save::REVIEW
-                );
-                (notice, false)
-            }
-            Err(err) => {
-                tracing::warn!(error = %err, "log not saved");
-                (format!("couldn't save the log: {err}"), true)
-            }
-        });
     }
 
     /// How the viewer was left, once its run has ended with a quit.
@@ -1704,11 +1637,6 @@ impl Viewer {
                 self.leave = Some(Leave::Quit);
                 return Flow::Quit;
             }
-            KeyCode::Char('p') => {
-                self.leave = Some(Leave::Print);
-                return Flow::Quit;
-            }
-            KeyCode::Char('s') => self.save(),
             _ => return Flow::Unchanged,
         }
         self.prefetch();
@@ -1937,9 +1865,9 @@ impl Viewer {
         };
         // The search's keys lead the hints while a search is in effect.
         let keys = if self.query.is_empty() {
-            "/ search · f follow · w wrap · t time · Esc back · q quit · s save · p print"
+            "/ search · f follow · w wrap · t time · Esc back · q quit"
         } else {
-            "n/N next · Esc clear · f follow · w wrap · t time · q quit · s save · p print"
+            "n/N next · Esc clear · f follow · w wrap · t time · q quit"
         };
         TextLine::from(vec![
             Span::styled(self.name.clone(), self.format.style(self.kind.role())),
@@ -2019,14 +1947,10 @@ impl App for Viewer {
     fn input(&mut self, input: Input) -> Flow {
         match input {
             Input::Key(key) => {
-                // The save's notice goes with the next key, and so does a
-                // jump waiting for the search (`n` waits again).
+                // A jump waiting for the search goes with the next key
+                // (`n` waits again).
                 self.waiting = None;
-                let cleared = self.saved.take().is_some();
-                match self.key(key) {
-                    Flow::Unchanged if cleared => Flow::Redraw,
-                    flow => flow,
-                }
+                self.key(key)
             }
             Input::Mouse(mouse) => self.mouse(mouse),
             Input::Paste(text) => self.paste(&text),
@@ -2065,25 +1989,8 @@ impl App for Viewer {
         }
         // ratatui's layout: the header row, then the log
         // (<https://docs.rs/ratatui/0.30.2/ratatui/layout/struct.Layout.html#method.vertical>).
-        // The footer: the search line, else the save's notice, wrapped
-        // (`line_count`, ADR-001) and kept to a third of the screen.
-        let notice = self.saved.as_ref().map(|(text, error)| {
-            let shown = DisplayText::from_bytes(text.as_bytes(), false);
-            let role = if *error { Role::Problem } else { Role::Muted };
-            Paragraph::new(Span::styled(
-                shown.as_str().to_owned(),
-                self.format.style(role),
-            ))
-            .wrap(Wrap { trim: false })
-        });
-        let footer_rows = match (&self.searching, &notice) {
-            (Some(_), _) => 1,
-            (None, Some(notice)) => {
-                let rows = notice.line_count(area.width.max(1));
-                u16::try_from(rows).unwrap_or(u16::MAX).min(area.height / 3)
-            }
-            (None, None) => 0,
-        };
+        // The footer: the search line while it is open.
+        let footer_rows = u16::from(self.searching.is_some());
         let [header, log, footer] = Layout::vertical([
             Constraint::Length(1),
             Constraint::Fill(1),
@@ -2091,9 +1998,6 @@ impl App for Viewer {
         ])
         .areas(area);
         frame.render_widget(Paragraph::new(self.header()), header);
-        if let (None, Some(notice)) = (&self.searching, notice) {
-            frame.render_widget(notice, footer);
-        }
         if let Some(line) = &self.searching {
             let width = |text| u16::try_from(Span::raw(text).width()).unwrap_or(u16::MAX);
             let [label_area, line_area, hint_area] = Layout::horizontal([

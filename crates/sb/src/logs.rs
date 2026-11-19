@@ -19,7 +19,6 @@ use std::io::{IsTerminal as _, Write as _};
 use sb_cli_core::cancel::Shutdown;
 use sb_cli_core::config;
 use sb_cli_core::exit;
-use sb_cli_core::log;
 use sb_cli_core::theme;
 use sb_host::journal::{self, Journal, Source};
 use sb_host::systemd::{Service, Systemd, default_filters};
@@ -133,7 +132,6 @@ async fn show(
         docker,
         theme,
         zone: sb_tui::line::local_zone(),
-        save_dir: log::log_dir(std::env::var_os("SB_LOG_DIR")),
     };
     let ending = match terminal {
         Terminal::Screen => sb_tui::logs(shutdown, logs(screen::theme())).await?,

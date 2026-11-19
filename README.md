@@ -161,7 +161,8 @@ Open an issue at https://github.com/saltyorg/sb-rust/issues. Include:
   line: `sudo grep 4f2a91c0d3b5e817 /var/log/sb/sb.log`. Look over them
   before you share them.
 
-For a log viewer screen, `sb logs` can save what it shows to a file.
+For a service's or a container's log, `journalctl -u <unit>` or
+`docker logs <name>` gives its text.
 
 ## Building from source
 

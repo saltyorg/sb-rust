@@ -25,19 +25,18 @@ mod paste;
 pub mod picker;
 pub mod restore;
 mod resume;
-mod save;
 mod search;
 pub mod source;
 mod split;
 pub mod status;
+mod stream;
 mod term;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 pub mod viewer;
 
 use std::fs::File;
-use std::io::{self, Write as _};
-use std::path::PathBuf;
+use std::io;
 use std::sync::Arc;
 
 use jiff::Timestamp;
@@ -71,9 +70,6 @@ pub struct Logs {
     pub theme: Theme,
     /// The zone line times are shown in (`line::local_zone`).
     pub zone: jiff::tz::TimeZone,
-    /// Where the viewer's `s` saves: the run log's directory (tui spec,
-    /// "Pasteable output").
-    pub save_dir: PathBuf,
 }
 
 /// The services listed, and where their logs are read.
@@ -101,30 +97,22 @@ pub enum Docker {
 
 /// The logs commands' screens (tui spec, "The picker" and "The
 /// viewer"): the picker, and the viewer of the source chosen in it,
-/// until `q` (the picker's Esc too), `p`, Ctrl-C or the run's token. Esc in
+/// until `q` (the picker's Esc too), Ctrl-C or the run's token. Esc in
 /// the viewer goes back to the picker, its source stopped (the handle's
-/// drop). The Containers section is kept live meanwhile. After `p`, once
-/// the screen is gone, the loaded lines go to stdout and the review line
-/// to stderr (tui spec, "Pasteable output").
+/// drop). The Containers section is kept live meanwhile.
 ///
 /// # Errors
 ///
 /// The I/O error when the screen can't be set up, drawn or read, or
 /// can't be restored. A failure to restore is reported whatever the
 /// ending, Ctrl-C's included (cli-L5: a requested exit code mustn't hide
-/// a real error). After `p`, a failed write to stdout or stderr, as
-/// cli-core's `OutputError` (a broken pipe is its quiet exit).
+/// a real error).
 pub async fn logs(shutdown: &Shutdown, logs: Logs) -> anyhow::Result<Ending> {
     let mut tui = Tui::enter(shutdown)?;
     let shown = screens(&mut tui, logs, shutdown.token()).await;
     let left = tui.leave().await;
-    tracing::info!(ending = ?shown.as_ref().ok().map(|s| s.0), "logs screen closed");
-    let (ending, printed) = ended(shown, left)?;
-    if let Some((text, count)) = printed {
-        print(&text)?;
-        tracing::info!(lines = count, "log printed");
-    }
-    Ok(ending)
+    tracing::info!(ending = ?shown.as_ref().ok(), "logs screen closed");
+    Ok(ended(shown, left)?)
 }
 
 /// The inline fallback (tui spec, "The inline fallback"): the picker on
@@ -182,7 +170,6 @@ struct Screens {
     daemon: Option<Arc<Daemon>>,
     _watcher: Option<source::docker::Watcher>,
     format: Format,
-    save_dir: PathBuf,
 }
 
 impl Screens {
@@ -212,7 +199,6 @@ impl Screens {
             daemon,
             _watcher: watcher,
             format: Format::new(logs.zone, logs.theme),
-            save_dir: logs.save_dir,
         }
     }
 
@@ -257,43 +243,26 @@ impl Screens {
 }
 
 /// The picker and the viewers, in turn, on `tui`; `token` is the run's.
-/// With the ending, the loaded lines and their count after `p`.
-async fn screens(
-    tui: &mut Tui,
-    logs: Logs,
-    token: CancellationToken,
-) -> io::Result<(Ending, Option<(String, usize)>)> {
+async fn screens(tui: &mut Tui, logs: Logs, token: CancellationToken) -> io::Result<Ending> {
     let mut screens = Screens::new(tui, logs, token);
     loop {
         let (ending, choice) = screens.pick(tui).await?;
         let Some(choice) = choice else {
-            return Ok((ending, None));
+            return Ok(ending);
         };
         let (name, kind, open) = screens.source(choice)?;
         let word = kind.word();
         tracing::info!(kind = word, name, "source opened");
-        let mut viewer = Viewer::open(&name, kind, screens.format.clone(), tui.waker(), open)
-            .saving_in(screens.save_dir.clone());
+        let mut viewer = Viewer::open(&name, kind, screens.format.clone(), tui.waker(), open);
         let ending = tui.run(&mut viewer).await;
         let leave = viewer.leave();
-        let printed = (leave == Some(Leave::Print)).then(|| viewer.plain());
         drop(viewer);
         tracing::info!(kind = word, name, "source closed");
         match (ending?, leave) {
             (Ending::Quit, Some(Leave::Back)) => {}
-            (ending, _) => return Ok((ending, printed)),
+            (ending, _) => return Ok(ending),
         }
     }
-}
-
-/// `p`'s output: `text` on stdout, then the review line on stderr.
-fn print(text: &str) -> anyhow::Result<()> {
-    let mut out = io::stdout().lock();
-    out.write_all(text.as_bytes())
-        .and_then(|()| out.flush())
-        .map_err(exit::output_error)?;
-    writeln!(io::stderr(), "{}", save::REVIEW).map_err(exit::output_error)?;
-    Ok(())
 }
 
 /// The inline stream: the source `open` opens, its tail and then its
@@ -332,7 +301,7 @@ async fn stream_log(
             match tagged.event {
                 Event::Page { lines, .. } | Event::Followed(lines) => {
                     for line in &lines {
-                        save::write_line(out, line, format).map_err(exit::output_error)?;
+                        stream::write_line(out, line, format).map_err(exit::output_error)?;
                     }
                 }
                 // The stream asks for no search.

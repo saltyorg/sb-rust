@@ -58,10 +58,12 @@ decision 3 asks, from proto-logs (reviewed 2026-10-29) and
 ## Objective
 
 A Saltbox user who wants to see what a service or container is doing
-gets from `sb logs` to the right log in a few keys, sees at a glance
-what is broken, and can hand complete, plain text to a support request,
+gets from `sb logs` to the right log in a few keys and sees at a
+glance what is broken. Complete, plain text for a support request,
 which Saltbox's support page asks for (saltyorg/docs
-docs/community/support.md:34) and sb-go's screens can't give.
+docs/community/support.md:34), comes from `journalctl -u <unit>` or
+`docker logs <name>`, or from `sb logs` with stdout piped (the inline
+fallback); the viewer itself has no save or print (decision 24).
 
 ### The picker (`sb logs`)
 
@@ -222,22 +224,9 @@ docs/community/support.md:34) and sb-go's screens can't give.
   ("Whole-log search, save and print" below).
 - **Follow:** `f` toggles it. Turning it on with the newest line not
   loaded loads the tail first.
-- **Pasteable output** (decided.md A-Q3):
-  - `s` saves the loaded buffer as plain text (colour off; time and
-    origin as `t` shows them) to a new file in the run log's directory
-    (`/var/log/sb`, root-only 0700, or `SB_LOG_DIR`), named
-    `logs-<kind>-<name>-<YYYYMMDDTHHMMSSZ>.txt`, created with
-    `create_new` and mode 0600. The name keeps only `[A-Za-z0-9_.@-]` of
-    the source's name, others become `_`. The viewer then shows a notice:
-    `saved the N lines loaded in the viewer to <path>. Review it for
-    domains, IPs and tokens before sharing it.` (`1 line` for one). A
-    failed save shows its cause.
-  - `p` leaves the screen and writes the loaded buffer, plain, to stdout,
-    then the same review line to stderr, and exits 0.
-  - Both write only what is loaded: the notice says so, and PgUp loads
-    more first. Superseded: both write the whole log ("Whole-log
-    search, save and print" below). No automatic redaction (journal spec, Scope: its own
-    decision). OSC 52 copying is later.
+- **No save and no print** (decision 24): the viewer has no `s` and
+  no `p`. A log's text comes from `journalctl -u <unit>` or `docker logs
+  <name>`, as Saltbox's docs already say. OSC 52 copying is later.
 - **Leaving:** Esc goes back to the picker (the source's stream is
   stopped and its follow freed); `q` quits, exit 0; Ctrl-C quits, exit
   130.
@@ -360,7 +349,7 @@ docs/community/support.md:34) and sb-go's screens can't give.
 - **The run log** records the command and entry filter, the counts
   listed, each source opened (kind and name), each page (direction,
   count, `more_*`, time taken), follow start and stop, every error and
-  notice, saves (path and line count), and the exit. Never log content
+  notice, and the exit. Never log content
   (capability map decision 11, "Never logged"): it can hold tokens. The
   picker's 5 s service refresh logs only a failure (when it starts or its
   cause changes), the recovery after it, and each service whose state
@@ -405,7 +394,8 @@ Docker containers"; the contract test lists it as removed.)
 9. **Wrap,** on by default, with `w` (sb-go: horizontal scroll only),
    and 8 columns per sideways step (sb-go: 10).
 10. **Search** with highlighted matches (sb-go: none).
-11. **Save and print-and-quit** (sb-go: no way to get the text out).
+11. *Removed 2026-11-19 (decision 24):* save and print-and-quit,
+    which sb-go didn't have either.
 12. **Each open starts at the tail** (sb-go keeps a source's buffer for
     re-entry, logs.go:265-303).
 13. **New lines arrive by sb-journal's follow and bollard's follow
@@ -516,7 +506,7 @@ crates/tui/                sb-tui
   src/viewer.rs            the buffer, windowed scrolling, paging, keys
   src/line.rs              line format, the record cap, spans, colour
   src/search.rs            smart-case matches
-  src/save.rs              save and print
+  src/stream.rs            the inline stream's lines, plain or in colour
   src/source.rs            the source protocol
   src/source/journal.rs    the journal adapter, the cycle guard
   src/source/docker.rs     the docker adapter, follow across restarts
@@ -578,9 +568,7 @@ no real systemctl.
   - the viewer against the fake source task: paging requests near both
     edges, the buffer caps by entries and by bytes, follow paused by
     scrolling and resumed at the bottom, notices, events of an old
-    generation dropped;
-  - the save file's name and mode, `create_new` refusing an existing
-    file, the text written.
+    generation dropped.
 - **Snapshots:** `TestBackend` and insta for the picker (every status,
   every section, the filter, the Docker-unreachable row) and the viewer
   (wrap on and off, markers, search hits, a cut record), at 120×40 and
@@ -625,7 +613,6 @@ no real systemctl.
   - no terminal (`setsid`, stdout a pipe): the error block, exit 1;
   - no services and no containers: the message, exit 0; a failing
     `systemctl`: the error block, exit 1;
-  - `p`: the buffer on stdout, the review line on stderr, exit 0;
   - the run log holds the sources and pages and none of a log's content
     (a known marker string in a crafted entry never reaches it);
   - `--help` texts (snapshot); not root: the fake-sudo relaunch.
@@ -681,8 +668,7 @@ no real systemctl.
    64 KiB and its notice.
 8. The frame-cost test holds, and the recorded release frame time at
    240×70 is within 5 ms.
-9. `s` writes a 0600 file in the log directory with the loaded lines and
-   shows the review notice; `p` writes them to stdout.
+9. *Removed 2026-11-19 (decision 24):* save and print.
 10. Piped stdout streams the chosen log plain after the picker on
     `/dev/tty`; with no terminal, the error, exit 1.
 11. `q` exits 0, Ctrl-C 130, SIGTERM and SIGHUP by the signal, each with
@@ -713,10 +699,8 @@ no real systemctl.
 2. **Docker positions are time windows with no tail,** a nanosecond
    timestamp plus an ordinal among equal timestamps, after a daemon probe
    (decided.md A-Q2).
-3. **Save and print-and-quit, no automatic redaction, OSC 52 later**
-   (decided.md A-Q3). The file goes in the run log's directory, already
-   root-only (logrotate platform note), so it needs no directory of its
-   own.
+3. *Superseded 2026-11-19 by decision 24* (decided.md A-Q3's save and
+   print part): save and print-and-quit. OSC 52 copying stays later.
 4. **The inline fallback runs when stdout isn't a terminal;** the picker
    draws on `/dev/tty`; with no terminal at all it fails clearly
    (decided.md A-Q4; capability map `tui` row).
@@ -788,6 +772,13 @@ no real systemctl.
     it) the screens take the plain theme, so lines are built with colour
     off as "Text path" says, also under `--color=never`, which crossterm
     doesn't know.
+24. **No save and no print in the viewer** (the maintainer, 2026-11-19;
+    supersedes decision 3's save and print, decided.md A-Q3). Getting a
+    log's text out is `journalctl -u <unit>` or `docker logs <name>`,
+    which Saltbox's docs already use, and the save file was root-only
+    anyway (the run log's directory). `s`, `p`, the save module, the
+    review notice and the whole-log export left with it; the inline
+    stream for a piped stdout stays.
 
 ## Known limits
 
@@ -808,16 +799,16 @@ no real systemctl.
   to 500 lines (sb-docker's `logs::older`): bounded by what the
   container logged in the window, at most Saltbox's 30 MiB of rotated
   log (M73's security pass).
-- **Save and print give at most the newest 256 MiB** of the log
-  ("Whole-log search, save and print" below).
 - **Services have no live signal:** a change shows within the 5 s
   refresh (no D-Bus dependency, proto-logs).
 
 ## Whole-log search, save and print (the log viewer)
 
 Status: approved by the maintainer as drafted (2026-11-18, the six
-decisions below). It extends
-"The viewer" above (Search, Pasteable output) and takes the journal
+decisions below). Save and print left the viewer on 2026-11-19
+(decision 24 above), so decision 5 below is superseded and this
+section's search is what was built. It extends
+"The viewer" above (Search) and takes the journal
 spec's "budgeted, resumable search" slice (journal spec, "Search").
 
 ### Objective
@@ -828,7 +819,6 @@ whole of what the source holds: the unit's whole journal (as `journalctl
 the daemon still keeps). It runs in the background, finds matches
 outside the loaded part, jumps to each in turn, and loads a match's
 surroundings when it jumps there. The screen stays live while it runs.
-Save and print cover the whole log too.
 
 **The rule:** viewing without a search costs what it costs today. No
 scan runs, the match list is empty, and no frame does more work than it
@@ -888,21 +878,6 @@ does on main (measured, "Testing").
   searches again. Counting the buffer again at `t` took 1.4 s on
   20,000 records of 5,000 characters (the frame-cost timing), where `t`
   costs 3 ms today.
-- **Save (`s`) and print (`p`) cover the whole log,** oldest line
-  first, written as the source reads it and never held whole in memory:
-  - Save writes the same plain file as today (name, mode,
-    `create_new`). While it runs the notice row shows `saving… 2 days
-    back`, and Esc stops it, keeping what's written and saying so. It
-    ends with `saved the N lines of the whole log to <path>. Review it
-    for domains, IPs and tokens before sharing it.`
-  - Print leaves the screen, then streams the whole log to stdout and
-    the review line to stderr, and exits 0. Ctrl-C stops it (exit 130).
-  - Both stop at 256 MiB of text. When the log is larger, they keep the
-    newest 256 MiB: the source first steps back from the newest line,
-    counting, to find where to start. The notice and the stderr line
-    then say `the newest N lines (256 MiB) of the log`.
-  - The search's matches aren't involved: save and print write
-    everything, as today.
 
 ### Budget, memory and threads
 
@@ -960,7 +935,7 @@ screen runs between them.
   same for a line searched as for one shown, and is tested there.
 - **Docker:** sb-docker's fake daemon serves logs of 300 entries with
   matches through them, entries sharing a time, and a log that can't be
-  read (the search's side fails, the export is a read failure). The TTY
+  read (the search's side fails). The TTY
   decoding is the line decoder's, tested in sb-docker, the same for the
   scan as for pages.
 - **Viewer tests** (fake source, `testing`): `n` and `N` across the
@@ -974,11 +949,8 @@ screen runs between them.
   search, and both are recorded. No-search frames must not get slower.
 - **PTY tests:** `sb logs` on a journal fixture of 3,000 entries in a
   pseudo-terminal: search, `N` to a match 2,900 entries outside the
-  window, its number, Esc; `s` and `p` writing all 3,000 lines. The
-  cap is tested in the adapters' tests, with a small cap, not through
-  the binary.
-- **Save and print:** the whole log in order, the cut at the cap keeping
-  the newest, Esc during a save, a read error halfway.
+  window, its number, Esc. The cap is tested in the adapters' tests,
+  with a small cap, not through the binary.
 
 ### Decisions (the maintainer, 2026-11-18, approved as drafted)
 
@@ -987,8 +959,9 @@ screen runs between them.
    around the match (500 entries).
 3. The progress form `searching… 2 days back`.
 4. At most 10,000 matches, the nearest kept.
-5. Save and print write the whole log, cut at 256 MiB keeping the
-   newest; Esc stops a save.
+5. *Superseded 2026-11-19 (decision 24 above):* save and print wrote
+   the whole log, cut at 256 MiB keeping the newest; Esc stopped a
+   save.
 6. Docker searches by one streamed read, with no daemon-side search to
    use; it's bounded by Saltbox's 30 MiB.
 
@@ -3040,8 +3013,9 @@ Editors)".
    the services' 5 s refresh.
 4. **Search (S):** smart-case matches, highlights across spans, n/N,
    horizontal scrolling with wrap off.
-5. **Pasteable output and the inline fallback (M):** `s` and `p`; the
-   picker on `/dev/tty` with the plain stream; the no-terminal error.
+5. **The inline fallback (M):** the picker on `/dev/tty` with the plain
+   stream; the no-terminal error. (Its `s` and `p` were removed on
+   2026-11-19: decision 24.)
 6. **Hardening (S):** the frame-cost test and its timing; colour-profile
    guards on log spans; RLIMIT_NOFILE; follow-L1 and follow-L4; the
    security-auditor pass (journal files and container output are

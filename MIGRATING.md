@@ -100,7 +100,9 @@ completion files call a command sb doesn't have.
   install script and Saltbox are x86_64 only until then.
 - **The run log** at `/var/log/sb/sb.log`.
 - **A log viewer** for `sb logs`, services and containers together: a
-  live picker, search, wrap, mouse support and saving to a file.
+  live picker, search across the whole log, wrap and mouse support. To
+  get a log's text out, use `journalctl -u <unit>` or `docker logs
+  <name>`.
 - **Editors:** `sb edit` validates after editing, and `sb fact` is a
   settings page with search, a changes panel and Copy.
 - **motd** gains a Certificates line (with `--traefik`) and a safer

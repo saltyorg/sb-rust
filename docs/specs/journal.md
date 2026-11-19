@@ -61,10 +61,9 @@ Saltbox server:
 - the newest entries at once;
 - older and newer pages on demand;
 - new lines as they arrive;
-- everything a viewer needs to give pasteable text for support
-  requests. Saltbox's support page asks for complete `sb logs` output,
-  which sb-go's full-screen viewer can't give. How the viewer offers it
-  is the tui spec's.
+- the entries a viewer shows, page by page and as they come. Plain
+  text for a support request comes from `journalctl -u` (the tui spec's
+  decision 24: the viewer has no save or print).
 
 The first consumer is the unified log picker and viewer (decision 8).
 Both kinds of source sit behind one log-source interface: last N, a page
@@ -687,8 +686,8 @@ Status: approved with the tui spec's "Whole-log search, save and
 print" (the maintainer, 2026-11-18). The API below replaces the draft's
 `Journal::search`, measured before it was built (see "Why one scan").
 
-The log viewer's whole-journal search, and its save's cap, read a
-unit's journal outward from what the viewer holds. The crate scans and
+The log viewer's whole-journal search reads a unit's journal outward
+from what the viewer holds. The crate scans and
 the caller matches, so the match is the viewer's own (its screen text
 and smart case) and the crate learns nothing about display.
 
@@ -1210,5 +1209,5 @@ passed the matrix (the plan's Task 12), and its FINDINGS moved to
 
 ## Open questions
 
-None for this spec. The log-source interface's exact shape, and how the
-viewer offers pasteable output, belong to the tui spec.
+None for this spec. The log-source interface's exact shape belongs to
+the tui spec.

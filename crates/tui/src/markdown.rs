@@ -21,7 +21,7 @@
 //!   can't keep escapes out. Why not escape `&` before parsing: it would
 //!   break `&amp;` and every named reference a message means.
 //! - With colour, each span is written in its style as anstyle renders it
-//!   (`save::ansi`, as the log stream's), heading markers and code fences
+//!   (`stream::ansi`, as the log stream's), heading markers and code fences
 //!   hidden; without colour (the plain theme: stdout not a terminal, or
 //!   `--color=never`, or the `ascii` profile), the text alone, with
 //!   tui-markdown's own `#` markers and fences kept, so headings and code
@@ -44,7 +44,7 @@ use tracing::subscriber::NoSubscriber;
 use tui_markdown::{AlertKind, Options, StyleSheet};
 
 use crate::line::style_in;
-use crate::save;
+use crate::stream;
 
 /// One announcement as the inline form shows it: its heading (ops'
 /// `<Repo> Announcement - <date>`) and its Markdown message, both as the
@@ -366,7 +366,7 @@ fn write_styled(out: &mut impl Write, text: &Text<'_>, profile: Profile) -> io::
     for line in &text.lines {
         for span in &line.spans {
             let style = text.style.patch(line.style).patch(span.style);
-            let style = save::ansi(style_in(style, profile));
+            let style = stream::ansi(style_in(style, profile));
             write!(
                 out,
                 "{}{}{}",
@@ -664,7 +664,7 @@ mod tests {
         assert!(!shown.contains("## "), "{shown:?}");
         assert!(!shown.contains("```"), "{shown:?}");
         let heading = Sheet(theme.clone()).heading(1);
-        let style = save::ansi(heading);
+        let style = stream::ansi(heading);
         assert!(
             shown.starts_with(&format!(
                 "{}{}{}\n\n",

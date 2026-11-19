@@ -870,7 +870,7 @@ impl Journal {
     /// Every entry matching `q` at `at`, newest first, each read once:
     /// handed to `each` a step of at most `step` records at a time (with
     /// the step's read errors), until `each` breaks or the journal ends.
-    /// The log viewer's whole-log search and its save's cap (journal spec,
+    /// The log viewer's whole-log search (journal spec,
     /// "Search"; tui spec, "Whole-log search, save and print").
     ///
     /// `Tail` is every entry; `Before(c)` the entries before `c`,
