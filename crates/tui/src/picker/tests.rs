@@ -126,7 +126,7 @@ fn services_are_sorted_by_name_under_their_heading_with_their_status() {
     );
     assert_eq!(
         rows[17],
-        "↑↓ move · Enter open · / filter · Tab kind · q quit"
+        "Enter open · / filter · Tab kind · ↑↓ move                       ? keys · q quit"
     );
 }
 
@@ -424,10 +424,12 @@ async fn the_section_reloads_keeping_the_selection() {
     });
     assert_eq!(p.wake(), Flow::Redraw);
     assert_eq!(selected(&p).as_deref(), Some("sonarr"));
-    // At 80 columns the trouble comes first, whole; the hints after it.
+    // At 80 columns the trouble comes first, whole; the hints that fit
+    // after it, the tail (tui spec, "Hints" mock-up).
     let screen_rows = screen(&drawn(&mut p, 80, 12));
-    assert!(
-        screen_rows[11].starts_with("Docker events stopped; retrying   ↑↓ move"),
+    assert_eq!(
+        screen_rows[11],
+        "Docker events stopped; retrying   Enter open · / filter          ? keys · q quit",
         "{screen_rows:?}"
     );
     // The last one goes: the row before.
@@ -682,7 +684,7 @@ fn the_name_filter_narrows_as_it_is_typed() {
     );
     assert_eq!(
         rows[11],
-        "↑↓ move · Enter open · / filter · Tab kind · Esc clear filter · q quit"
+        "Enter open · Esc clear · / filter · Tab kind · ↑↓ move                               ? keys · q quit"
     );
     // Filtering again starts from the filter in effect.
     press(&mut p, KeyCode::Char('/'));
@@ -861,7 +863,7 @@ async fn the_services_are_read_again_every_five_seconds() {
     assert_eq!(names(&p).len(), 3, "the last list kept");
     let rows = screen(&drawn(&mut p, 80, 10));
     assert!(
-        rows[9].starts_with("couldn't refresh services: systemctl timed out   ↑↓ move"),
+        rows[9].starts_with("couldn't refresh services: systemctl timed out   Enter open"),
         "{rows:?}"
     );
     tokio::time::advance(Duration::from_secs(5)).await;
@@ -870,7 +872,7 @@ async fn the_services_are_read_again_every_five_seconds() {
     p.wake();
     assert_eq!(names(&p), ["saltbox_managed_web"]);
     let rows = screen(&drawn(&mut p, 80, 10));
-    assert!(rows[9].starts_with("↑↓ move"), "{rows:?}");
+    assert!(rows[9].starts_with("Enter open"), "{rows:?}");
 }
 
 /// The tick works the statuses out again without a refresh (a picker
@@ -1060,4 +1062,152 @@ async fn nothing_is_selected_when_no_source_is_left() {
     assert_eq!(p.state.selected(), None);
     assert_eq!(press(&mut p, KeyCode::Enter), Flow::Unchanged);
     assert_eq!(p.take_choice(), None);
+}
+
+/// The key map's keys (tui spec, "Keys: one map for every screen"): `g`
+/// and `G` the first and last source, `b` and Space a page, Shift-Tab the
+/// kind backwards.
+#[test]
+fn g_and_capital_g_the_ends_b_and_space_a_page_and_shift_tab_back() {
+    let mut p = picker(&services());
+    drawn(&mut p, 80, 8);
+    press(&mut p, KeyCode::Char('G'));
+    let last = selected(&p);
+    press(&mut p, KeyCode::Home);
+    let first = selected(&p);
+    press(&mut p, KeyCode::End);
+    assert_eq!(selected(&p), last);
+    press(&mut p, KeyCode::Char('g'));
+    assert_eq!(selected(&p), first);
+    press(&mut p, KeyCode::Char(' '));
+    let paged = selected(&p);
+    assert_ne!(paged, first);
+    press(&mut p, KeyCode::PageUp);
+    let up = selected(&p);
+    press(&mut p, KeyCode::Char(' '));
+    press(&mut p, KeyCode::Char('b'));
+    assert_eq!(selected(&p), up);
+    assert_eq!(p.filter, Filter::All);
+    let back = KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT);
+    assert_eq!(p.input(Input::Key(back)), Flow::Redraw);
+    assert_eq!(p.filter, Filter::Containers);
+    p.input(Input::Key(back));
+    assert_eq!(p.filter, Filter::Services);
+    press(&mut p, KeyCode::Tab);
+    assert_eq!(p.filter, Filter::Containers);
+}
+
+/// `?` (or F1) opens the keys overlay; any other key closes it and does
+/// nothing else, so `q` doesn't quit; in the filter line `?` is typed and
+/// F1 still opens it; a paste under it does nothing.
+#[test]
+fn question_mark_opens_the_keys_and_any_key_closes_them() {
+    let mut p = picker(&services());
+    assert_eq!(press(&mut p, KeyCode::Char('?')), Flow::Redraw);
+    let all = screen(&drawn(&mut p, 80, 24)).join("\n");
+    assert!(all.contains("Keys: log picker"), "{all}");
+    assert_eq!(press(&mut p, KeyCode::Char('q')), Flow::Redraw);
+    assert!(!screen(&drawn(&mut p, 80, 24)).join("\n").contains("Keys:"));
+    assert_eq!(p.take_choice(), None);
+    press(&mut p, KeyCode::Char('/'));
+    press(&mut p, KeyCode::Char('?'));
+    assert_eq!(p.query, "?");
+    press(&mut p, KeyCode::F(1));
+    assert!(
+        screen(&drawn(&mut p, 80, 24))
+            .join("\n")
+            .contains("Keys: log picker")
+    );
+    assert_eq!(p.input(Input::Paste("plex".into())), Flow::Unchanged);
+    assert_eq!(p.query, "?");
+}
+
+#[test]
+fn snapshot_keys_80x24() {
+    let mut p = picker(&services());
+    press(&mut p, KeyCode::Char('?'));
+    assert_snapshot!(drawn(&mut p, 80, 24).backend());
+}
+
+/// The footer at the spec's widths: the hints that fit, whole, and the
+/// tail; at 50 `Tab kind` stays and `↑↓ move` goes.
+#[test]
+fn the_footer_fits_120_80_and_50_columns() {
+    let mut p = picker(&services());
+    for (width, row) in [
+        (
+            120,
+            "Enter open · / filter · Tab kind · ↑↓ move                                                               ? keys · q quit",
+        ),
+        (
+            80,
+            "Enter open · / filter · Tab kind · ↑↓ move                       ? keys · q quit",
+        ),
+        (50, "Enter open · / filter · Tab kind   ? keys · q quit"),
+    ] {
+        let rows = screen(&drawn(&mut p, width, 10));
+        assert_eq!(rows[9], row, "{width}");
+    }
+}
+
+/// Every key the overlay lists does something here, and keys it doesn't
+/// list do nothing (tui spec, "Keys", Testing).
+#[test]
+fn every_listed_key_acts_and_others_do_nothing() {
+    for (name, event) in crate::hints::events(&KEYS, |_| true) {
+        let mut p = picker(&services());
+        drawn(&mut p, 80, 8);
+        press(&mut p, KeyCode::Down);
+        assert_ne!(p.input(Input::Key(event)), Flow::Unchanged, "{name}");
+    }
+    for c in ['x', 'z', 'v', 'r', 's', 'u', 'd', 'f', 'h', 'l'] {
+        let mut p = picker(&services());
+        assert_eq!(press(&mut p, KeyCode::Char(c)), Flow::Unchanged, "{c}");
+    }
+    for code in [KeyCode::Left, KeyCode::Right] {
+        assert_eq!(press(&mut picker(&services()), code), Flow::Unchanged);
+    }
+}
+
+#[test]
+fn snapshot_keys_50x19() {
+    let mut p = picker(&services());
+    press(&mut p, KeyCode::Char('?'));
+    assert_snapshot!(drawn(&mut p, 50, 19).backend());
+}
+
+/// Shift-Tab works in the filter line too, as Tab does: the kind
+/// backwards, the line still open.
+#[test]
+fn shift_tab_in_the_filter_line_goes_back_a_kind() {
+    let mut p = picker(&services());
+    press(&mut p, KeyCode::Char('/'));
+    let back = KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT);
+    assert_eq!(p.input(Input::Key(back)), Flow::Redraw);
+    assert_eq!(p.filter, Filter::Containers);
+    assert!(p.editing.is_some());
+    assert_eq!(p.query, "");
+}
+
+/// Under the keys overlay the screen takes nothing: the wheel scrolls
+/// the overlay (or does nothing when it fits), never the selection, and
+/// a key closes it without moving.
+#[test]
+fn under_the_keys_the_wheel_and_keys_leave_the_list_alone() {
+    let mut p = picker(&services());
+    drawn(&mut p, 80, 24);
+    let before = selected(&p);
+    press(&mut p, KeyCode::Char('?'));
+    let wheel = MouseEvent {
+        kind: MouseEventKind::ScrollDown,
+        column: 1,
+        row: 5,
+        modifiers: KeyModifiers::NONE,
+    };
+    p.input(Input::Mouse(wheel));
+    assert_eq!(selected(&p), before);
+    assert!(screen(&drawn(&mut p, 80, 24)).join("\n").contains("Keys:"));
+    press(&mut p, KeyCode::Char('j'));
+    assert_eq!(selected(&p), before);
+    assert!(!screen(&drawn(&mut p, 80, 24)).join("\n").contains("Keys:"));
 }

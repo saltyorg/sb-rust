@@ -45,6 +45,14 @@
 //!   markers and notices with `Paragraph::scroll`'s x offset.
 //! - **No save and no print** (tui spec, decision 24): a log's text comes
 //!   from `journalctl -u` or `docker logs`.
+//! - **Keys** (tui spec, "Keys: one map for every screen"): ↑↓ `k` `j` a
+//!   row, `PgUp` `PgDn` `b` Space a page (no longer `u` `d`), Home `g` the
+//!   whole log's start, End `G` the newest and following, ← → `h` `l`
+//!   sideways, `f` follow on or off, `F` follow (less's key), `w`, `t`,
+//!   `/` `n` `N`, Esc back one step, `q`, and `?` or F1 the keys overlay
+//!   ([`crate::hints`]). The keys are in a footer row fitted to the
+//!   width; the header keeps the name, kind, follow state and the
+//!   search's count, the name cut first.
 
 use std::cell::Cell;
 use std::collections::VecDeque;
@@ -66,6 +74,7 @@ use tokio::sync::{Notify, mpsc};
 
 use crate::ahead::{self, Ahead, Window};
 use crate::columns::{self, Marks};
+use crate::hints::{Group, Hint, Key, Keys, Meaning, Overlay};
 use crate::line::{self, Format};
 use crate::resume::{self, Resumes};
 use crate::source::{
@@ -75,6 +84,110 @@ use crate::source::{
 use crate::term::{App, Flow};
 
 mod whole;
+
+/// The viewer's keys, for the `?` overlay (tui spec, "Keys: one map for
+/// every screen", its mock-up).
+pub(crate) const KEYS: Keys = Keys {
+    screen: "log viewer",
+    groups: &[
+        Group {
+            title: "Move",
+            keys: &[
+                Key {
+                    keys: &["↑", "↓", "k", "j"],
+                    what: "a line",
+                    meaning: Meaning::Move,
+                },
+                Key {
+                    keys: &["PgUp", "PgDn"],
+                    what: "a page",
+                    meaning: Meaning::Page,
+                },
+                Key {
+                    keys: &["b", "Space"],
+                    what: "a page up, down",
+                    meaning: Meaning::Page,
+                },
+                Key {
+                    keys: &["Home", "End", "g", "G"],
+                    what: "log's start; end follows",
+                    meaning: Meaning::Ends,
+                },
+                Key {
+                    keys: &["←", "→", "h", "l"],
+                    what: "sideways (wrap off)",
+                    meaning: Meaning::Direction,
+                },
+            ],
+        },
+        Group {
+            title: "Find",
+            keys: &[
+                Key {
+                    keys: &["/"],
+                    what: "search the whole log",
+                    meaning: Meaning::Find,
+                },
+                Key {
+                    keys: &["n", "N"],
+                    what: "next, previous match",
+                    meaning: Meaning::Find,
+                },
+                Key {
+                    keys: &["Esc"],
+                    what: "clear the search",
+                    meaning: Meaning::Back,
+                },
+            ],
+        },
+        Group {
+            title: "Show",
+            keys: &[
+                Key {
+                    keys: &["f", "F"],
+                    what: "follow on, off",
+                    meaning: Meaning::Follow,
+                },
+                Key {
+                    keys: &["w"],
+                    what: "wrap on, off",
+                    meaning: Meaning::Wrap,
+                },
+                Key {
+                    keys: &["t"],
+                    what: "time, origin on, off",
+                    meaning: Meaning::Time,
+                },
+            ],
+        },
+        Group {
+            title: "Leave",
+            keys: &[
+                Key {
+                    keys: &["Esc"],
+                    what: "back to the list",
+                    meaning: Meaning::Back,
+                },
+                Key {
+                    keys: &["q"],
+                    what: "quit",
+                    meaning: Meaning::Leave,
+                },
+                Key {
+                    keys: &["Ctrl+C"],
+                    what: "stop (exit 130)",
+                    meaning: Meaning::Stop,
+                },
+                Key {
+                    keys: &["?", "F1"],
+                    what: "these keys",
+                    meaning: Meaning::Help,
+                },
+            ],
+        },
+    ],
+    mouse: "the wheel scrolls; Shift+wheel goes sideways",
+};
 
 use whole::{Hit, Whole};
 
@@ -411,6 +524,8 @@ pub struct Viewer {
     column: u16,
     /// The search line while it is open (`/`).
     searching: Option<TextArea<'static>>,
+    /// The `?` overlay.
+    overlay: Overlay,
     /// The search in effect (empty for none), its matches in the buffer,
     /// and the one `n` and `N` move from: an entry's index and the match
     /// within it.
@@ -507,6 +622,7 @@ impl Viewer {
             leave: None,
             column: 0,
             searching: None,
+            overlay: Overlay::default(),
             query: String::new(),
             total: 0,
             current: None,
@@ -1664,7 +1780,7 @@ impl Viewer {
         if self.searching.is_some() {
             return self.search_key(key);
         }
-        // The viewer's keys are plain (Shift only for `G`): Ctrl and Alt
+        // The viewer's keys are plain (Shift only for `G` and `F`): Ctrl and Alt
         // combinations are left for later bindings.
         if key
             .modifiers
@@ -1676,10 +1792,13 @@ impl Viewer {
         match key.code {
             KeyCode::Up | KeyCode::Char('k') => self.scroll_up(1),
             KeyCode::Down | KeyCode::Char('j') => self.scroll_down(1),
-            KeyCode::PageUp | KeyCode::Char('u') => self.scroll_up(page),
-            KeyCode::PageDown | KeyCode::Char('d') => self.scroll_down(page),
+            // less's page keys; `u` and `d` no longer page (tui spec,
+            // the key map's decision 1: they are the fact editor's).
+            KeyCode::PageUp | KeyCode::Char('b') => self.scroll_up(page),
+            KeyCode::PageDown | KeyCode::Char(' ') => self.scroll_down(page),
             KeyCode::Home | KeyCode::Char('g') => self.home(),
-            KeyCode::End | KeyCode::Char('G') => self.resume(),
+            // End, `G` and less's follow key `F` follow.
+            KeyCode::End | KeyCode::Char('G' | 'F') => self.resume(),
             KeyCode::Char('f') => {
                 if self.stuck() {
                     self.anchor = self.bottom_anchor();
@@ -1698,8 +1817,9 @@ impl Viewer {
                     skip: 0,
                 };
             }
-            KeyCode::Left | KeyCode::Right => {
-                if !self.sideways(key.code == KeyCode::Right) {
+            KeyCode::Left | KeyCode::Right | KeyCode::Char('h' | 'l') => {
+                let right = matches!(key.code, KeyCode::Right | KeyCode::Char('l'));
+                if !self.sideways(right) {
                     return Flow::Unchanged;
                 }
             }
@@ -1942,7 +2062,11 @@ impl Viewer {
         (column.saturating_sub(width / 8), column + width + width / 4)
     }
 
-    fn header(&self) -> TextLine<'static> {
+    /// The header row, `width` wide: the name, kind, follow and wrap
+    /// state, the search's count and the start's state (tui spec, "Keys",
+    /// Hints: the keys are the footer's). The name is cut with `…` first,
+    /// so the state and the count stay.
+    fn header(&self, width: u16) -> TextLine<'static> {
         let muted = self.format.style(Role::Muted);
         let state = match self.follow {
             Follow::Off => "",
@@ -1954,21 +2078,32 @@ impl Viewer {
         } else {
             format!("  wrap off · col {}", u32::from(self.column) + 1)
         };
-        // The search's keys lead the hints while a search is in effect.
-        let keys = if self.query.is_empty() {
-            "/ search · f follow · w wrap · t time · Esc back · q quit"
-        } else {
-            "n/N next · Esc clear · f follow · w wrap · t time · q quit"
-        };
-        TextLine::from(vec![
-            Span::styled(self.name.clone(), self.format.style(self.kind.role())),
+        let rest = vec![
             Span::styled(format!("  {}", self.kind.word()), muted),
             Span::styled(format!("{state}{wrap}"), self.format.style(Role::Accent)),
             Span::styled(self.search_state(), self.format.style(Role::Highlight)),
             // After the search's: at 80 columns the count goes first.
             Span::styled(self.start_state(), self.format.style(Role::Accent)),
-            Span::styled(format!("   {keys}"), muted),
-        ])
+        ];
+        let room = usize::from(width).saturating_sub(rest.iter().map(Span::width).sum());
+        // The name at least one column (its `…`) when anything fits.
+        let name = sb_term_ui::fit(&self.name, room.max(1));
+        let mut spans = vec![Span::styled(name, self.format.style(self.kind.role()))];
+        spans.extend(rest);
+        TextLine::from(spans)
+    }
+
+    /// The key hints, fitted to `width` (tui spec, "Keys", Hints): the
+    /// search's keys lead while a search is in effect.
+    fn footer(&self, width: u16) -> TextLine<'static> {
+        let mut hints: Vec<Hint> = if self.query.is_empty() {
+            vec![("Esc", "back"), ("/", "search")]
+        } else {
+            vec![("n/N", "match"), ("Esc", "clear")]
+        };
+        hints.extend([("f", "follow"), ("w", "wrap"), ("t", "time")]);
+        let tail = [(KEYS.help_key(), "keys"), ("q", "quit")];
+        crate::hints::footer(&self.format.theme, &hints, &tail, width)
     }
 
     /// The header's search part: `  /query 3/17`, `-/17` when the current
@@ -2043,9 +2178,18 @@ impl App for Viewer {
                 // A jump waiting for the search goes with the next key
                 // (`n` waits again).
                 self.waiting = None;
+                if self.overlay.is_open() {
+                    return self.overlay.key(key);
+                }
+                if Overlay::opens(&key, self.searching.is_some()) {
+                    self.overlay.open();
+                    return Flow::Redraw;
+                }
                 self.key(key)
             }
+            Input::Mouse(mouse) if self.overlay.is_open() => self.overlay.mouse(mouse),
             Input::Mouse(mouse) => self.mouse(mouse),
+            Input::Paste(_) if self.overlay.is_open() => Flow::Unchanged,
             Input::Paste(text) => self.paste(&text),
             _ => Flow::Unchanged,
         }
@@ -2080,17 +2224,19 @@ impl App for Viewer {
         if area.height == 0 {
             return;
         }
-        // ratatui's layout: the header row, then the log
-        // (<https://docs.rs/ratatui/0.30.2/ratatui/layout/struct.Layout.html#method.vertical>).
-        // The footer: the search line while it is open.
-        let footer_rows = u16::from(self.searching.is_some());
+        // ratatui's layout: the header row, the log, the footer row
+        // (<https://docs.rs/ratatui/0.30.2/ratatui/layout/struct.Layout.html#method.vertical>):
+        // the key hints, or the search line while it is open.
         let [header, log, footer] = Layout::vertical([
             Constraint::Length(1),
             Constraint::Fill(1),
-            Constraint::Length(footer_rows),
+            Constraint::Length(1),
         ])
         .areas(area);
-        frame.render_widget(Paragraph::new(self.header()), header);
+        frame.render_widget(Paragraph::new(self.header(header.width)), header);
+        if self.searching.is_none() {
+            frame.render_widget(Paragraph::new(self.footer(footer.width)), footer);
+        }
         if let Some(line) = &self.searching {
             let width = |text| u16::try_from(Span::raw(text).width()).unwrap_or(u16::MAX);
             let [label_area, line_area, hint_area] = Layout::horizontal([
@@ -2112,6 +2258,7 @@ impl App for Viewer {
             frame.render_widget(line, line_area);
         }
         self.draw_log(frame, log);
+        self.overlay.draw(frame, &KEYS, &self.format.theme);
     }
 }
 

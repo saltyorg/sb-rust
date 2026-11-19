@@ -825,7 +825,7 @@ mod tests {
             more_older: false,
             more_newer: false,
         }));
-        let mut terminal = Terminal::new(TestBackend::new(30, 4)).expect("test terminal");
+        let mut terminal = Terminal::new(TestBackend::new(30, 5)).expect("test terminal");
         let (tx, mut rx) = mpsc::unbounded_channel();
         let token = CancellationToken::new();
         let ran = tokio::time::timeout(
@@ -840,10 +840,11 @@ mod tests {
         let ending = run_loop(&mut terminal, &mut rx, &mut viewer, &token, &wake).await;
         assert_eq!(ending.expect("ends"), Ending::Interrupted);
         terminal.backend().assert_buffer_lines([
-            "app  service  following   / se",
+            "app  service  following       ",
             "--- start of log ---          ",
             "hello                         ",
             "--- following ---             ",
+            "Esc back       ? keys · q quit",
         ]);
         assert_eq!(viewer.leave(), None);
     }

@@ -27,6 +27,11 @@
 //!   on. Across reloads and filtering the selection stays on the same
 //!   source, or on the row now at its place when that source is gone
 //!   (tui spec, "Live updates").
+//! - **Keys** (tui spec, "Keys: one map for every screen"): ↑↓ `k` `j`,
+//!   the page keys `PgUp` `PgDn` `b` Space, the ends Home End `g` `G`, Tab
+//!   and Shift-Tab the kind, `/` the filter, Enter, Esc, `q`, and `?` or
+//!   F1 the keys overlay ([`crate::hints`]); the footer fitted to the
+//!   width, the trouble text first.
 //! - **Mouse:** the wheel moves the selection; a click selects a row, a
 //!   click on the selected row opens it; other rows ignore clicks. The
 //!   row under the pointer is the list's area and `ListState::offset()`
@@ -59,6 +64,7 @@ use tracing::Dispatch;
 use tracing::instrument::WithSubscriber as _;
 use tracing::subscriber::NoSubscriber;
 
+use crate::hints::{Group, Hint, Key, Keys, Meaning, Overlay};
 use crate::source::docker::{Container, Snapshot};
 use crate::status::{Status, service_status};
 use crate::term::{App, Flow};
@@ -75,6 +81,81 @@ const REFRESH: Duration = Duration::from_secs(5);
 /// The label before the name filter's line, and the hint after it.
 const FILTER_LABEL: &str = " Filter: ";
 const FILTER_HINT: &str = "Enter keeps · Esc clears ";
+
+/// The picker's keys, for the `?` overlay (tui spec, "Keys: one map for
+/// every screen").
+pub(crate) const KEYS: Keys = Keys {
+    screen: "log picker",
+    groups: &[
+        Group {
+            title: "Move",
+            keys: &[
+                Key {
+                    keys: &["↑", "↓", "k", "j"],
+                    what: "a service or container",
+                    meaning: Meaning::Move,
+                },
+                Key {
+                    keys: &["PgUp", "PgDn", "b", "Space"],
+                    what: "a page",
+                    meaning: Meaning::Page,
+                },
+                Key {
+                    keys: &["Home", "End", "g", "G"],
+                    what: "the first, the last",
+                    meaning: Meaning::Ends,
+                },
+            ],
+        },
+        Group {
+            title: "Find",
+            keys: &[Key {
+                keys: &["/"],
+                what: "filter by name",
+                meaning: Meaning::Find,
+            }],
+        },
+        Group {
+            title: "Show",
+            keys: &[Key {
+                keys: &["Tab", "Shift-Tab"],
+                what: "all, services, containers",
+                meaning: Meaning::Part,
+            }],
+        },
+        Group {
+            title: "Leave",
+            keys: &[
+                Key {
+                    keys: &["Enter"],
+                    what: "open the log",
+                    meaning: Meaning::Open,
+                },
+                Key {
+                    keys: &["Esc"],
+                    what: "clear the filter, or leave",
+                    meaning: Meaning::Back,
+                },
+                Key {
+                    keys: &["q"],
+                    what: "quit",
+                    meaning: Meaning::Leave,
+                },
+                Key {
+                    keys: &["Ctrl+C"],
+                    what: "stop (exit 130)",
+                    meaning: Meaning::Stop,
+                },
+                Key {
+                    keys: &["?", "F1"],
+                    what: "these keys",
+                    meaning: Meaning::Help,
+                },
+            ],
+        },
+    ],
+    mouse: "a click selects, a second click opens; the wheel moves",
+};
 
 /// The kinds the picker shows (tui spec, "Entry points": `sb logs` opens
 /// on all; `Tab` cycles them).
@@ -101,6 +182,15 @@ impl Filter {
             Filter::All => Filter::Services,
             Filter::Services => Filter::Containers,
             Filter::Containers => Filter::All,
+        }
+    }
+
+    /// The filter Shift-Tab moves to: `Tab`'s backwards.
+    fn previous(self) -> Self {
+        match self {
+            Filter::All => Filter::Containers,
+            Filter::Services => Filter::All,
+            Filter::Containers => Filter::Services,
         }
     }
 }
@@ -277,6 +367,8 @@ pub struct Picker {
     /// The list's area at the last draw, for the mouse and the page keys.
     area: Rect,
     chosen: Option<usize>,
+    /// The `?` overlay.
+    overlay: Overlay,
 }
 
 impl Picker {
@@ -298,6 +390,7 @@ impl Picker {
             filter: Filter::All,
             query: String::new(),
             editing: None,
+            overlay: Overlay::default(),
             docker: false,
             unreachable: None,
             updates: None,
@@ -547,9 +640,14 @@ impl Picker {
         Flow::Unchanged
     }
 
+    /// A page: the list's height at the last draw.
+    fn page(&self) -> isize {
+        isize::try_from(usize::from(self.area.height).max(1)).unwrap_or(isize::MAX)
+    }
+
     /// The keys that move the selection, wherever the picker is.
     fn movement(&mut self, code: KeyCode) -> bool {
-        let page = isize::try_from(usize::from(self.area.height).max(1)).unwrap_or(isize::MAX);
+        let page = self.page();
         match code {
             KeyCode::Up => self.move_by(-1),
             KeyCode::Down => self.move_by(1),
@@ -560,8 +658,13 @@ impl Picker {
         true
     }
 
-    fn next_filter(&mut self) {
-        self.filter = self.filter.next();
+    /// Tab's kind forward, or Shift-Tab's backwards.
+    fn next_filter(&mut self, back: bool) {
+        self.filter = if back {
+            self.filter.previous()
+        } else {
+            self.filter.next()
+        };
         self.lay_out();
     }
 
@@ -578,16 +681,21 @@ impl Picker {
         if self.movement(key.code) {
             return Flow::Redraw;
         }
+        let page = self.page();
         match key.code {
             KeyCode::Char('k') => self.move_by(-1),
             KeyCode::Char('j') => self.move_by(1),
-            KeyCode::Home => self.state.select(self.next_from(0, 1)),
-            KeyCode::End => {
+            // less's page keys (tui spec, the key map).
+            KeyCode::Char('b') => self.move_by(-page),
+            KeyCode::Char(' ') => self.move_by(page),
+            KeyCode::Home | KeyCode::Char('g') => self.state.select(self.next_from(0, 1)),
+            KeyCode::End | KeyCode::Char('G') => {
                 let last = self.rows.len().saturating_sub(1);
                 self.state.select(self.next_from(last, -1));
             }
             KeyCode::Enter => return self.choose(),
-            KeyCode::Tab => self.next_filter(),
+            KeyCode::Tab => self.next_filter(false),
+            KeyCode::BackTab => self.next_filter(true),
             KeyCode::Char('/') => {
                 // The line opens on the filter in effect, the cursor at
                 // its end (ratatui-textarea's `TextArea::new` and
@@ -626,7 +734,8 @@ impl Picker {
                 self.query.clear();
                 self.lay_out();
             }
-            KeyCode::Tab => self.next_filter(),
+            KeyCode::Tab => self.next_filter(false),
+            KeyCode::BackTab => self.next_filter(true),
             code if self.movement(code) => {}
             _ => {
                 let Some(line) = self.editing.as_mut() else {
@@ -919,37 +1028,24 @@ impl Picker {
         .to_owned()
     }
 
-    /// Why the lists may be out of date, then the key hints: the trouble
-    /// first, so an 80-column terminal shows it whole.
-    fn footer(&self) -> TextLine<'static> {
-        let key = self.style(Role::Accent);
-        let muted = self.style(Role::Muted);
-        let mut spans = Vec::new();
-        for trouble in [&self.trouble, &self.services_trouble]
+    /// Why the lists may be out of date, then the key hints fitted to
+    /// `width` (tui spec, "Keys", Hints): the trouble first and kept, the
+    /// hints in their order of importance, the tail right-aligned.
+    fn footer(&self, width: u16) -> TextLine<'static> {
+        let trouble: Vec<String> = [&self.trouble, &self.services_trouble]
             .into_iter()
             .flatten()
-        {
-            spans.push(Span::styled(one_line(trouble), self.style(Role::Warn)));
-            spans.push(Span::raw("   "));
-        }
-        let mut hints = vec![
-            ("↑↓", "move"),
-            ("Enter", "open"),
-            ("/", "filter"),
-            ("Tab", "kind"),
-        ];
+            .map(|trouble| one_line(trouble))
+            .collect();
+        let trouble = trouble.join("   ");
+        let lead = (!trouble.is_empty()).then(|| (trouble.as_str(), self.style(Role::Warn)));
+        let mut hints: Vec<Hint> = vec![("Enter", "open")];
         if !self.query.is_empty() {
-            hints.push(("Esc", "clear filter"));
+            hints.push(("Esc", "clear"));
         }
-        hints.push(("q", "quit"));
-        for (i, (k, what)) in hints.into_iter().enumerate() {
-            if i > 0 {
-                spans.push(Span::styled(" · ", self.style(Role::Faint)));
-            }
-            spans.push(Span::styled(k, key));
-            spans.push(Span::styled(format!(" {what}"), muted));
-        }
-        TextLine::from(spans)
+        hints.extend([("/", "filter"), ("Tab", "kind"), ("↑↓", "move")]);
+        let tail = [(KEYS.help_key(), "keys"), ("q", "quit")];
+        crate::hints::footer_led(&self.theme, lead, &hints, &tail, width)
     }
 }
 
@@ -1006,8 +1102,15 @@ fn one_line(name: &str) -> String {
 impl App for Picker {
     fn input(&mut self, input: Input) -> Flow {
         match input {
+            Input::Key(key) if self.overlay.is_open() => self.overlay.key(key),
+            Input::Mouse(mouse) if self.overlay.is_open() => self.overlay.mouse(mouse),
+            Input::Key(key) if Overlay::opens(&key, self.editing.is_some()) => {
+                self.overlay.open();
+                Flow::Redraw
+            }
             Input::Key(key) => self.key(key),
             Input::Mouse(mouse) => self.mouse(mouse),
+            Input::Paste(_) if self.overlay.is_open() => Flow::Unchanged,
             Input::Paste(text) => self.paste(&text),
             _ => Flow::Unchanged,
         }
@@ -1103,8 +1206,9 @@ impl App for Picker {
             // (<https://docs.rs/ratatui-textarea/0.9.3/ratatui_textarea/struct.TextArea.html#impl-Widget-for-%26TextArea%3C'_%3E>).
             frame.render_widget(line, line_area);
         } else {
-            frame.render_widget(Paragraph::new(self.footer()), footer);
+            frame.render_widget(Paragraph::new(self.footer(footer.width)), footer);
         }
+        self.overlay.draw(frame, &KEYS, &self.theme);
     }
 }
 

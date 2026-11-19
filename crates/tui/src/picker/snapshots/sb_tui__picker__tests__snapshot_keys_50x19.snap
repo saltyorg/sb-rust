@@ -1,0 +1,23 @@
+---
+source: crates/tui/src/picker/tests.rs
+expression: "drawn(&mut p, 50, 19).backend()"
+---
+" ◆ Logs   8 services · 3 need attention           "
+" ╭ Keys: log picker ────────────────────────────╮ "
+" │ Move                                        ▲│─"
+"›│  ↑ ↓ k j            a service or container  █│ "
+" │  PgUp PgDn b Space  a page                  █│e"
+" │  Home End g G       the first, the last     █│ "
+" │                                             █│─"
+" │ Find                                        █│ "
+" │  /                  filter by name          █│ "
+" │                                             █│ "
+" │ Show                                        █│ "
+" │  Tab Shift-Tab      all, services,          █│e"
+" │containers                                   ║│ "
+" │                                             ║│ "
+" │ Leave                                       ║│ "
+" │  Enter              open the log            ║│ "
+" │  Esc                clear the filter, or    ▼│ "
+" ╰ ↑↓ scroll · other keys close ────────────────╯ "
+"Enter open · / filter · Tab kind   ? keys · q quit"

@@ -62,6 +62,9 @@ pub(crate) enum Meaning {
     Undo,
     Menu,
     NewLine,
+    Follow,
+    Wrap,
+    Time,
 }
 
 /// One row of a screen's key table: its keys, each as the overlay shows
@@ -159,6 +162,39 @@ pub(crate) fn footer(theme: &Theme, hints: &[Hint], tail: &[Hint], width: u16) -
     left.push(Span::raw(" ".repeat(pad)));
     left.extend(spans(theme, tail));
     Line::from(left)
+}
+
+/// [`footer`] after `lead` (the log picker's trouble text, in `style`),
+/// which leads the row and is never dropped (tui spec, "Hints": trouble
+/// and notices keep their places): three spaces after it, then the
+/// hints that still fit. Cut with `…` only when it alone is wider than
+/// the room the tail leaves.
+pub(crate) fn footer_led(
+    theme: &Theme,
+    lead: Option<(&str, Style)>,
+    hints: &[Hint],
+    tail: &[Hint],
+    columns: u16,
+) -> Line<'static> {
+    let Some((lead, style)) = lead else {
+        return footer(theme, hints, tail, columns);
+    };
+    let room = usize::from(columns).saturating_sub(hints_width(tail) + BEFORE_TAIL);
+    // Too narrow for any of it beside the tail: the tail alone.
+    if room == 0 {
+        return footer(theme, hints, tail, columns);
+    }
+    // Cut to the room, `…` in its last column (term-ui's `fit`, console's
+    // `truncate_str`).
+    let lead = sb_term_ui::fit(lead, room);
+    let used = u16::try_from(width(&lead) + BEFORE_TAIL).unwrap_or(u16::MAX);
+    let rest = footer(theme, hints, tail, columns.saturating_sub(used));
+    let mut spans = vec![
+        Span::styled(lead, style),
+        Span::raw(" ".repeat(BEFORE_TAIL)),
+    ];
+    spans.extend(rest.spans);
+    Line::from(spans)
 }
 
 /// The `?` overlay's state: whether it is open, its scroll, and its area

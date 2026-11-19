@@ -30,8 +30,11 @@ fn format() -> Format {
     )
 }
 
+/// A viewer whose header and log take `height` rows, on a terminal one
+/// row taller for the footer (the key map's footer row, tui spec "Keys",
+/// Hints), so the tests count the log's rows as before it.
 fn open(width: u16, height: u16, limits: Limits) -> Harness {
-    open_with(width, height, limits, format())
+    open_with(width, height + 1, limits, format())
 }
 
 fn open_with(width: u16, height: u16, limits: Limits, format: Format) -> Harness {
@@ -107,13 +110,22 @@ impl Harness {
             .collect()
     }
 
-    /// The log rows (the screen without its header), blank ones dropped.
+    /// The log rows (the screen without its header and its footer),
+    /// blank ones dropped.
     fn log(&self) -> Vec<String> {
-        self.screen()
+        let screen = self.screen();
+        let rows = screen.len().saturating_sub(1);
+        screen
             .into_iter()
+            .take(rows)
             .skip(1)
             .filter(|row| !row.is_empty())
             .collect()
+    }
+
+    /// The footer row.
+    fn footer(&self) -> String {
+        self.screen().pop().unwrap_or_default()
     }
 }
 
@@ -281,12 +293,16 @@ fn paging_keys_home_and_end_move_by_screens() {
     h.send(tail(0..30, false));
     h.key(KeyCode::PageUp);
     assert_eq!(h.log(), names(21..26));
-    h.key(KeyCode::Char('u'));
+    h.key(KeyCode::Char('b'));
+    assert_eq!(h.log(), names(16..21));
+    // `u` and `d` no longer page (the key map's decision 1).
+    assert_eq!(h.key(KeyCode::Char('u')), Flow::Unchanged);
+    assert_eq!(h.key(KeyCode::Char('d')), Flow::Unchanged);
     assert_eq!(h.log(), names(16..21));
     h.key(KeyCode::PageDown);
     assert_eq!(h.log(), names(21..26));
-    h.key(KeyCode::Char('d'));
-    h.key(KeyCode::Char('d'));
+    h.key(KeyCode::Char(' '));
+    h.key(KeyCode::Char(' '));
     assert_eq!(
         h.log().last().map(String::as_str),
         Some("--- following ---")
@@ -998,7 +1014,7 @@ fn esc_clears_the_search_then_goes_back() {
     h.requests();
     h.send(tail(0..10, false));
     h.search("m1");
-    assert!(h.header().contains("Esc clear"), "{}", h.header());
+    assert!(h.footer().contains("Esc clear"), "{}", h.footer());
     assert_eq!(h.key(KeyCode::Esc), Flow::Redraw);
     assert!(!h.header().contains("/m1"), "{}", h.header());
     assert_eq!(h.viewer.leave(), None);
@@ -1556,7 +1572,8 @@ fn far_right_costs(column: u16, words: &str, format: Format) -> Vec<Cost> {
         entries: 20_000,
         bytes: usize::MAX,
     };
-    let mut h = open_with(240, 70, limits, format);
+    // 69 log rows, as before the footer's row (the key map's footer).
+    let mut h = open_with(240, 71, limits, format);
     h.send(tail_of(2_000, words));
     // Nothing made ahead: the rebuilds work from the places their own
     // texts kept, and the worker would only make texts for windows the
@@ -1600,10 +1617,10 @@ fn far_right_costs(column: u16, words: &str, format: Format) -> Vec<Cost> {
     costs.push(cost(&mut h, &|h| h.draw()));
     // A resize to 240 columns from 160, the texts built there: wider, the
     // window needs more columns than they hold.
-    h.terminal.backend_mut().resize(160, 70);
+    h.terminal.backend_mut().resize(160, 71);
     h.key(KeyCode::Char('t'));
     h.key(KeyCode::Char('t'));
-    h.terminal.backend_mut().resize(240, 70);
+    h.terminal.backend_mut().resize(240, 71);
     costs.push(cost(&mut h, &|h| h.draw()));
     // And with nothing kept or made ahead at all, as for a line seen there
     // for the first time without places made ahead.
@@ -1623,7 +1640,8 @@ fn first_sight_costs(column: u16, words: &str, format: Format) -> Vec<Cost> {
         entries: 20_000,
         bytes: usize::MAX,
     };
-    let mut h = open_with(240, 70, limits, format);
+    // 69 log rows, as before the footer's row (the key map's footer).
+    let mut h = open_with(240, 71, limits, format);
     // The log's start loaded: Home moves within the buffer, as it did
     // before it could ask for the log's first page.
     let Event::Page {
@@ -2948,4 +2966,167 @@ fn no_paging_while_a_matchs_page_is_awaited() {
             .any(|r| matches!(r, Request::Older(_) | Request::Newer(_))),
         "{requests:?}"
     );
+}
+
+/// The key map's keys (tui spec, "Keys: one map for every screen"): `b`
+/// and Space page as `PgUp` and `PgDn`, `h` and `l` go sideways as ← and →
+/// (wrap off), and `F` follows as End does.
+#[test]
+fn b_space_h_l_and_capital_f_are_the_key_maps() {
+    let mut h = open(80, 6, Limits::default());
+    h.requests();
+    h.send(tail(0..30, false));
+    h.key(KeyCode::Char('b'));
+    let paged = h.log();
+    h.key(KeyCode::Char(' '));
+    h.key(KeyCode::PageUp);
+    assert_eq!(h.log(), paged);
+    // Wrap on: no sideways.
+    assert_eq!(h.key(KeyCode::Char('l')), Flow::Unchanged);
+    h.key(KeyCode::Char('w'));
+    h.key(KeyCode::Char('l'));
+    assert!(h.header().contains("col 9"), "{}", h.header());
+    h.key(KeyCode::Char('h'));
+    assert!(h.header().contains("col 1"), "{}", h.header());
+    h.key(KeyCode::Char('F'));
+    assert!(h.header().contains("following"), "{}", h.header());
+    assert_eq!(
+        h.log().last().map(String::as_str),
+        Some("--- following ---")
+    );
+}
+
+/// `?` (or F1) opens the keys overlay; any other key closes it and does
+/// nothing else, so `q` doesn't quit and Esc doesn't go back; in the
+/// search line `?` is typed and F1 still opens it.
+#[test]
+fn question_mark_opens_the_keys_and_any_key_closes_them() {
+    let mut h = open(80, 23, Limits::default());
+    h.requests();
+    h.send(tail(0..5, false));
+    assert_eq!(h.key(KeyCode::Char('?')), Flow::Redraw);
+    assert!(h.screen().join("\n").contains("Keys: log viewer"));
+    assert_eq!(h.key(KeyCode::Char('q')), Flow::Redraw);
+    assert!(!h.screen().join("\n").contains("Keys:"));
+    h.key(KeyCode::Char('?'));
+    assert_eq!(h.key(KeyCode::Esc), Flow::Redraw);
+    assert_eq!(h.viewer.leave(), None);
+    h.key(KeyCode::Char('/'));
+    h.key(KeyCode::Char('?'));
+    assert!(h.screen().iter().any(|r| r.contains("Search: ?")));
+    h.key(KeyCode::F(1));
+    assert!(h.screen().join("\n").contains("Keys: log viewer"));
+    assert_eq!(h.viewer.input(Input::Paste("x".into())), Flow::Unchanged);
+}
+
+#[test]
+fn snapshot_keys_80x24() {
+    let mut h = sample(80, 24);
+    h.key(KeyCode::Char('?'));
+    assert_snapshot!(h.terminal.backend());
+}
+
+#[test]
+fn snapshot_keys_50x19() {
+    let mut h = sample(50, 19);
+    h.key(KeyCode::Char('?'));
+    assert_snapshot!(h.terminal.backend());
+}
+
+/// The footer at the spec's widths (its mock-ups), with and without a
+/// search in effect.
+#[test]
+fn the_footer_fits_120_80_and_50_columns() {
+    for (width, plain, searched) in [
+        (
+            120,
+            "Esc back · / search · f follow · w wrap · t time                                                         ? keys · q quit",
+            "n/N match · Esc clear · f follow · w wrap · t time                                                       ? keys · q quit",
+        ),
+        (
+            80,
+            "Esc back · / search · f follow · w wrap · t time                 ? keys · q quit",
+            "n/N match · Esc clear · f follow · w wrap · t time               ? keys · q quit",
+        ),
+        (
+            50,
+            "Esc back · / search · f follow     ? keys · q quit",
+            "n/N match · Esc clear · f follow   ? keys · q quit",
+        ),
+    ] {
+        let mut h = open(width, 6, Limits::default());
+        h.requests();
+        h.send(tail(0..5, false));
+        assert_eq!(h.footer(), plain, "{width}");
+        h.search("m1");
+        assert_eq!(h.footer(), searched, "{width}");
+    }
+}
+
+/// The header cuts the name with `…` first, so the state and the
+/// search's count stay.
+#[test]
+fn the_header_cuts_the_name_before_the_state() {
+    let mut h = open_with(50, 8, Limits::default(), format());
+    h.viewer.name = "saltbox_managed_rclone_vfs_with_a_long_name".to_owned();
+    h.requests();
+    h.send(tail(0..5, false));
+    h.search("m1");
+    let header = h.header();
+    assert!(
+        header.ends_with("  service  following  /m1 1/1"),
+        "{header}"
+    );
+    assert!(header.starts_with("saltbox_managed"), "{header}");
+    assert!(header.contains('…'), "{header}");
+    assert_eq!(Span::raw(header.as_str()).width(), 50, "{header}");
+}
+
+/// Every key the overlay lists does something here, and keys it doesn't
+/// list do nothing (tui spec, "Keys", Testing): the save and print keys
+/// are gone, and `u` and `d` no longer page.
+#[test]
+fn every_listed_key_acts_and_others_do_nothing() {
+    for (name, event) in crate::hints::events(&KEYS, |_| true) {
+        let mut h = open(40, 6, Limits::default());
+        h.requests();
+        h.send(tail(0..30, false));
+        // Wrap off, so the arrows and `h` `l` go sideways.
+        h.key(KeyCode::Char('w'));
+        h.key(KeyCode::PageUp);
+        assert_ne!(h.viewer.input(Input::Key(event)), Flow::Unchanged, "{name}");
+    }
+    for c in ['x', 'z', 'v', 'r', 's', 'p', 'u', 'd', 'c', 'a', 'e'] {
+        let mut h = open(40, 6, Limits::default());
+        h.requests();
+        h.send(tail(0..30, false));
+        assert_eq!(h.key(KeyCode::Char(c)), Flow::Unchanged, "{c}");
+    }
+}
+
+/// Under the keys overlay the log takes nothing: the wheel doesn't
+/// scroll it (nor pause the follow), and a key that moves the log only
+/// closes the overlay.
+#[test]
+fn under_the_keys_the_wheel_and_keys_leave_the_log_alone() {
+    let mut h = open(80, 23, Limits::default());
+    h.requests();
+    h.send(tail(0..60, false));
+    h.key(KeyCode::PageUp);
+    let before = h.log();
+    h.key(KeyCode::Char('?'));
+    h.mouse(MouseEventKind::ScrollUp);
+    h.key(KeyCode::Char('j'));
+    assert_eq!(h.log(), before);
+    h.key(KeyCode::Char('?'));
+    h.key(KeyCode::Char('G'));
+    assert_eq!(h.log(), before);
+    // Still paused: neither the wheel nor `G` reached the log.
+    assert!(h.header().contains("following, paused"), "{}", h.header());
+    // `F` while following stays following, as less's `F` (it never
+    // turns the follow off; `f` does).
+    h.key(KeyCode::Char('F'));
+    h.key(KeyCode::Char('F'));
+    assert!(h.header().contains("following"), "{}", h.header());
+    assert!(!h.header().contains("paused"), "{}", h.header());
 }

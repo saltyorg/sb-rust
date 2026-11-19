@@ -1,0 +1,23 @@
+---
+source: crates/tui/src/viewer/tests.rs
+expression: h.terminal.backend()
+---
+"app  service  following                           "
+"-╭ Keys: log viewer ────────────────────────────╮ "
+"2│ Move                                        ▲│ "
+"2│  ↑ ↓ k j       a line                       █│t"
+"8│  PgUp PgDn     a page                       █│ "
+"2│  b Space       a page up, down              █│ "
+"o│  Home End g G  log's start; end follows     █│ "
+"2│  ← → h l       sideways (wrap off)          █│ "
+"t│                                             █│ "
+"2│ Find                                        █│ "
+"C│  /             search the whole log         █│ "
+"r│  n N           next, previous match         ║│ "
+"c│  Esc           clear the search             ║│ "
+"-│                                             ║│ "
+" │ Show                                        ║│ "
+" │  f F           follow on, off               ║│ "
+" │  w             wrap on, off                 ▼│ "
+" ╰ ↑↓ scroll · other keys close ────────────────╯ "
+"Esc back · / search · f follow     ? keys · q quit"

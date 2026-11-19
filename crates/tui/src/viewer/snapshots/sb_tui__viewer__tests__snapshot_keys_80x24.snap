@@ -1,0 +1,28 @@
+---
+source: crates/tui/src/viewer/tests.rs
+expression: h.terminal.backend()
+---
+"app  service  following                                                         "
+"--- start of log ---                                                            "
+"2026-11-13T09:04:05+0000 app[7]: starting app                                   "
+"2026-11-13T09:04:06+0000 app[7]: listening on port 8080                         "
+"2026-11-13T09:04:07+0000 app[7]: a message                                      "
+"ov╭ Keys: log viewer ────────────────────────────────────────────────────────╮  "
+"20│ Move                                       Show                          │6 "
+"by│  ↑ ↓ k j       a line                       f F     follow on, off       │  "
+"20│  PgUp PgDn     a page                       w       wrap on, off         │  "
+"re│  b Space       a page up, down              t       time, origin on, off │  "
+"--│  Home End g G  log's start; end follows                                  │  "
+"  │  ← → h l       sideways (wrap off)         Leave                         │  "
+"  │                                             Esc     back to the list     │  "
+"  │ Find                                        q       quit                 │  "
+"  │  /             search the whole log         Ctrl+C  stop (exit 130)      │  "
+"  │  n N           next, previous match         ? F1    these keys           │  "
+"  │  Esc           clear the search                                          │  "
+"  │                                                                          │  "
+"  │ Mouse: the wheel scrolls; Shift+wheel goes sideways                      │  "
+"  ╰ any key closes ──────────────────────────────────────────────────────────╯  "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"Esc back · / search · f follow · w wrap · t time                 ? keys · q quit"

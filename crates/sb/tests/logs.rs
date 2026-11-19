@@ -380,6 +380,45 @@ fn q_in_the_viewer_quits() {
     pty.assert_restored();
 }
 
+/// The keys overlay through sb (tui spec, "Keys: one map for every
+/// screen", Testing): `?` shows the picker's keys and `q` only closes
+/// them; in the log `?` shows the viewer's, the footer names its keys;
+/// `q` then quits, exit 0.
+#[test]
+fn question_mark_shows_the_keys_in_the_picker_and_the_log() {
+    let world = World::new(UNITS, UNIT_FILES);
+    world.write_journal();
+    let mut pty = Pty::spawn(&["logs"], world.envs());
+    assert!(pty.showing("? keys · q quit"), "{}", pty.contents());
+    pty.send(b"?");
+    assert!(pty.showing("Keys: log picker"), "{}", pty.contents());
+    // `q` closes the keys; the picker goes on (it opens the log below).
+    pty.send(b"q");
+    pty.send(b"jj\r");
+    assert!(pty.showing("hello from app"), "{}", pty.contents());
+    assert!(
+        pty.showing("Esc back · / search · f follow"),
+        "{}",
+        pty.contents()
+    );
+    pty.send(b"?");
+    assert!(pty.showing("Keys: log viewer"), "{}", pty.contents());
+    // `q` closes them and the log goes on: `/` opens the search line,
+    // which only a live viewer with the keys closed shows (a `/` under
+    // the keys would only close them).
+    pty.send(b"q");
+    pty.send(b"/");
+    assert!(pty.showing("Search:"), "{}", pty.contents());
+    // Esc alone (with `q` in the same read it would be Alt+q), the footer
+    // back, then `q` quits.
+    pty.send(b"\x1b");
+    assert!(pty.showing("Esc back · / search"), "{}", pty.contents());
+    pty.send(b"q");
+    let status = pty.exit();
+    assert!(status.success(), "{status:?}");
+    pty.assert_restored();
+}
+
 /// `sb logs` raises the soft `RLIMIT_NOFILE` as journalctl does, read back
 /// in the running sb; the hard limit stays.
 #[test]
@@ -628,8 +667,8 @@ fn a_search_reaches_a_match_outside_the_loaded_lines() {
     );
     assert!(pty.showing("/needle 1/1"), "{}", pty.contents());
     // The jump's whole frame: the match on the top row, the window's last
-    // row 28 entries on.
-    assert!(pty.showing("app[42]: line 128"), "{}", pty.contents());
+    // row 27 entries on (the footer takes the screen's last row).
+    assert!(pty.showing("app[42]: line 127"), "{}", pty.contents());
     assert!(!pty.contents().contains("following"), "{}", pty.contents());
     pty.send(b"\x1b");
     assert!(pty.showing("/ search"), "{}", pty.contents());
@@ -658,8 +697,8 @@ fn home_and_end_reach_a_services_ends() {
     assert!(pty.showing("--- start of log ---"), "{}", pty.contents());
     assert!(pty.showing("at the start · "), "{}", pty.contents());
     // The whole frame: the marker on the top row, the window's last row
-    // 27 entries on.
-    assert!(pty.showing("app[42]: line 27"), "{}", pty.contents());
+    // 26 entries on (the footer takes the screen's last row).
+    assert!(pty.showing("app[42]: line 26"), "{}", pty.contents());
     assert!(!pty.contents().contains("following"), "{}", pty.contents());
     pty.send(b"G");
     assert!(pty.showing("app[42]: line 2999"), "{}", pty.contents());

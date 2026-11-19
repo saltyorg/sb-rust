@@ -75,6 +75,73 @@ fn the_footer_fits_every_width_without_cutting_a_hint() {
     }
 }
 
+/// The picker's footer with trouble (tui spec, "Hints" mock-ups): the
+/// lead first and kept, three spaces, the hints that still fit, the tail;
+/// the lead cut with `…` only when it alone is too wide.
+#[test]
+fn a_lead_comes_first_and_is_kept_whole_while_it_fits() {
+    const PICKER: [Hint; 4] = [
+        ("Enter", "open"),
+        ("/", "filter"),
+        ("Tab", "kind"),
+        ("↑↓", "move"),
+    ];
+    let trouble = "Docker events stopped; retrying";
+    let led = |width| {
+        text(&footer_led(
+            &plain(),
+            Some((trouble, Style::default())),
+            &PICKER,
+            &TAIL,
+            width,
+        ))
+    };
+    assert_eq!(
+        led(120),
+        "Docker events stopped; retrying   Enter open · / filter · Tab kind · ↑↓ move                             ? keys · q quit"
+    );
+    assert_eq!(
+        led(80),
+        "Docker events stopped; retrying   Enter open · / filter          ? keys · q quit"
+    );
+    assert_eq!(
+        led(50),
+        "Docker events stopped; retrying    ? keys · q quit"
+    );
+    // Alone too wide: cut to the room the tail leaves.
+    assert_eq!(led(40), "Docker events stopped…   ? keys · q quit");
+    for width in 10..=240_u16 {
+        let line = footer_led(
+            &plain(),
+            Some((trouble, Style::default())),
+            &PICKER,
+            &TAIL,
+            width,
+        );
+        assert_eq!(line.width(), usize::from(width), "{width}");
+        // The whole tail from 15 columns; the lead (or its `…`) first once
+        // there is room beside it, from 19.
+        let shown = text(&line);
+        if width >= 15 {
+            assert!(shown.ends_with("? keys · q quit"), "{width}: {shown:?}");
+        }
+        if width >= 19 {
+            // The lead cut to what fits: its first letter on, or `…`.
+            assert!(
+                shown.starts_with('D') || shown.starts_with('…'),
+                "{width}: {shown:?}"
+            );
+        } else {
+            assert!(!shown.contains('…'), "{width}: {shown:?}");
+        }
+    }
+    // No lead: the plain footer.
+    assert_eq!(
+        footer_led(&plain(), None, &PICKER, &TAIL, 80),
+        footer(&plain(), &PICKER, &TAIL, 80)
+    );
+}
+
 const GROUPS: &[Group] = &[
     Group {
         title: "Move",
@@ -254,8 +321,10 @@ fn a_wide_short_screen_puts_the_groups_in_two_columns() {
 }
 
 /// Every screen's key table, for rule 1.
-fn every_screen() -> [&'static Keys; 6] {
+fn every_screen() -> [&'static Keys; 8] {
     [
+        &crate::picker::KEYS,
+        &crate::viewer::KEYS,
         &crate::edit_picker::KEYS,
         &crate::fact::KEYS,
         &crate::announcements::KEYS,
