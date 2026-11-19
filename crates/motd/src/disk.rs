@@ -469,7 +469,7 @@ fn statvfs_usage(point: &Path) -> Option<Usage> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sb_cli_core::theme::Role;
+    use anstyle::RgbColor;
 
     fn fixture() -> Vec<Mount> {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/mountinfo");
@@ -857,7 +857,9 @@ mod tests {
         assert_eq!(render(&[], &plain).text, "No valid disk partitions found");
     }
 
-    /// Below 80 the value and Ok colours, below 90 Warn, from 90 Problem.
+    /// Below 80 the value colour, below 90 the warning colour, from 90
+    /// the error colour: motd's built-in blue, yellow and orange (motd
+    /// decision 5).
     #[test]
     fn the_levels_colour_the_percent_and_the_bar() {
         let theme = sb_cli_core::theme::Theme::resolve(
@@ -865,19 +867,28 @@ mod tests {
             sb_cli_core::theme::Profile::TrueColor,
         );
         let paint = Paint::new(&theme, true);
+        let (blue, yellow, orange) = (
+            RgbColor(0x58, 0xA6, 0xFF),
+            RgbColor(0xD2, 0x99, 0x22),
+            RgbColor(0xEC, 0x8E, 0x2C),
+        );
         for (percent, text, bar) in [
-            (79, Role::Ok, Level::Low),
-            (80, Role::Warn, Level::High),
-            (89, Role::Warn, Level::High),
-            (90, Role::Problem, Level::Critical),
-            (100, Role::Problem, Level::Critical),
+            (79, blue, Level::Low),
+            (80, yellow, Level::High),
+            (89, yellow, Level::High),
+            (90, orange, Level::Critical),
+            (100, orange, Level::Critical),
         ] {
             assert_eq!(
                 render(&[row("/", percent, "1.0T")], &paint).text,
                 format!(
                     "{:<30}{} used out of {}\n{}",
                     "/",
-                    sb_term_ui::style::paint(&theme, text, true, &format!("{percent:>3}%")),
+                    sb_term_ui::style::paint_colour(
+                        Some(anstyle::Color::Rgb(text)),
+                        true,
+                        &format!("{percent:>3}%")
+                    ),
                     paint.value("1.0T"),
                     paint.bar(bar, percent, BAR_WIDTH)
                 ),

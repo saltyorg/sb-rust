@@ -403,7 +403,9 @@ never reach stdout, stderr or the run log.
    with a backup of the original; motd itself reads it as an issue under
    difference 2 until then. sb-go's motd read it as it was.
 4. **Without motd.yml, or with a colour key absent,** sb's palette applies
-   (decision 5). sb-go used its charmtone defaults. Saltbox always writes
+   (decision 5). sb-go used its charmtone defaults. *Amended 2026-11-19
+   (decision 5): motd's built-in "GitHub Dark Colorblind" colours apply
+   there, not sb's palette.* Saltbox always writes
    the colour block, so most hosts look the same in both.
 5. **Redaction reads `[REDACTED]`** (term-ui's form). sb-go wrote
    `<redacted>`. Provider errors no longer carry the request URL.
@@ -872,7 +874,8 @@ Nothing touches a real host's state, and every fixture is synthetic.
 8. **Colour.** With stdout piped and `CLICOLOR_FORCE=1`, the output is
    coloured. `--color=never` and `NO_COLOR` give none. motd.yml's colours
    appear as truecolor (converted under `SB_COLOR_PROFILE`). An absent key
-   takes sb's palette.
+   takes sb's palette. *Amended 2026-11-19 (decision 5): an absent key
+   takes motd's built-in colour for the slot, converted the same way.*
 9. **Login budget, fast path.** With every source answering at once
    (fakes, stand-ins, the Saltbox login flags, a motd.yml with one instance
    per provider), `sb motd`'s median wall time is ≤ 500 ms, and not above
@@ -981,6 +984,44 @@ Nothing touches a real host's state, and every fixture is synthetic.
      light on disk percents and the Docker and Traefik counts.
    - Each colour is resolved for the colour profile with cli-core's
      `Profile::resolve`. `#abc` means `#aabbcc`.
+
+   *Amended 2026-11-19 by the maintainer's decision: motd's built-in
+   colours are the "GitHub Dark Colorblind" palette, GitHub Primer's dark
+   colorblind terminal colours as iTerm2-Color-Schemes publishes them
+   (https://github.com/mbadolato/iTerm2-Color-Schemes/blob/b4500fc87ea20546f53274df5b6062f557051000/windowsterminal/GitHub%20Dark%20Colorblind.json),
+   in place of sb's palette roles. The slots take its blue, green (the
+   same blue there), purple, yellow and red; checked against that file
+   on 2026-11-19.* Each slot's colour
+   is, first to last:
+
+   1. motd.yml's colour for the slot;
+   2. a colour sb's theme file sets for motd. The theme file
+      (cli-core spec, step 6) has no motd entry, only `color_profile`
+      and the palette roles, and none is added: this step is empty, so a
+      role the theme file overrides no longer reaches motd's nine slots;
+   3. the built-in colour:
+
+   | Slot | Colour |
+   |---|---|
+   | text.label | `#58A6FF` |
+   | text.value | `#58A6FF` |
+   | text.app_name | `#BC8CFF` |
+   | status.warning | `#D29922` |
+   | status.success | `#58A6FF` |
+   | status.error | `#EC8E2C` |
+   | progress_bar.low | `#58A6FF` |
+   | progress_bar.high | `#D29922` |
+   | progress_bar.critical | `#EC8E2C` |
+
+   - The built-in colours are resolved as motd.yml's are, with
+     `Profile::resolve`: anstyle-lossy's nearest xterm colour under
+     `ansi256` (75, 141, 172, 208), and its nearest VGA colour under
+     `ansi` (bright blue, bright magenta, yellow, bright red, so the
+     three levels stay apart); ADR-006's picks are for sb's roles and
+     don't apply. `ascii`, `NO_COLOR` and `--color=never` paint nothing.
+   - The bar's empty track stays in the theme's Faint role, so a theme
+     file's `faint` still reaches it. `--json` carries no colours.
+   - Every other command keeps sb's palette roles, which are unchanged.
 6. **Sessions come from logind's JSON and last login from `last`, each
    checked in 22.04, 24.04 and 26.04 containers** (decided.md E-Q5).
    - The arguments (for example `-w`, `--time-format iso`) and the
@@ -1217,11 +1258,11 @@ Nothing touches a real host's state, and every fixture is synthetic.
     cli-core's reader opens it) answers EACCES or EPERM (Difference 33);
   - `motd.yml's schema can't be loaded; run sb validate-config`.
 
-  The text is in the warning colour, which is sb's Warn there, as the
-  file's colours are skipped. Each issue, with its position, and each
-  cause go to the run log in sb-config's wording, which never shows a
-  credential's value. Without the file there is no line and sb's
-  palette applies. motd.yml's colours reach term-ui's `paint_colour` and
+  The text is in motd's built-in warning colour (decision 5, amended
+  2026-11-19; sb's Warn before), as the file's colours are skipped. Each
+  issue, with its position, and each cause go to the run log in
+  sb-config's wording, which never shows a credential's value. Without
+  the file there is no line and motd's built-in colours apply. motd.yml's colours reach term-ui's `paint_colour` and
   `bar_colour` resolved by cli-core's `Profile::resolve` (amendment 3).
   sb-config's schema now keeps each rule's `example` (as
   `serde_json::Value`) and `description` for the generator. The

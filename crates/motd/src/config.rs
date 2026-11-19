@@ -18,7 +18,6 @@ use std::path::Path;
 use std::time::Duration;
 
 use anstyle::RgbColor;
-use sb_cli_core::theme::Role;
 use sb_config::http::{Http, Proxy};
 use sb_config::rules::go_float;
 use sb_config::run::{self, Checked, FileError, Settings};
@@ -58,18 +57,21 @@ impl Slot {
         Slot::Critical,
     ];
 
-    /// The role sb's palette gives the slot when motd.yml doesn't set it:
-    /// Accent, Ok, Accent2, Warn, Ok, Problem, Ok, Warn, Problem. Values
-    /// take Ok, as sb-go gives value and success the same green, so value,
-    /// warning and error read as a traffic light on counts and percents.
+    /// The slot's colour when motd.yml doesn't set it.
+    ///
+    /// The "GitHub Dark Colorblind" palette, GitHub Primer's dark
+    /// colorblind terminal colours as iTerm2-Color-Schemes publishes them
+    /// (<https://github.com/mbadolato/iTerm2-Color-Schemes/blob/b4500fc87ea20546f53274df5b6062f557051000/windowsterminal/GitHub%20Dark%20Colorblind.json>): its blue for label, value, success and low; purple for
+    /// `app_name`; yellow for warning and high; red (an orange) for error
+    /// and critical (motd decision 5, amended 2026-11-19). sb's theme file
+    /// has no motd entry, so its roles don't reach these.
     #[must_use]
-    pub fn role(self) -> Role {
+    pub fn built_in(self) -> RgbColor {
         match self {
-            Slot::Label => Role::Accent,
-            Slot::AppName => Role::Accent2,
-            Slot::Warning | Slot::High => Role::Warn,
-            Slot::Value | Slot::Success | Slot::Low => Role::Ok,
-            Slot::Error | Slot::Critical => Role::Problem,
+            Slot::Label | Slot::Value | Slot::Success | Slot::Low => RgbColor(0x58, 0xA6, 0xFF),
+            Slot::AppName => RgbColor(0xBC, 0x8C, 0xFF),
+            Slot::Warning | Slot::High => RgbColor(0xD2, 0x99, 0x22),
+            Slot::Error | Slot::Critical => RgbColor(0xEC, 0x8E, 0x2C),
         }
     }
 
@@ -106,7 +108,7 @@ impl SlotColours {
     }
 
     /// `colors` read from the file: a key that is absent, empty or not a
-    /// hex colour leaves its slot to sb's palette (sb-go keeps its
+    /// hex colour leaves its slot to its built-in colour (sb-go keeps its
     /// default for an empty one).
     fn from_node(node: Option<&Node>) -> Self {
         let mut colours = SlotColours::default();
@@ -739,20 +741,22 @@ mod tests {
     }
 
     #[test]
-    fn each_slot_has_its_palette_role_and_key() {
-        let roles: Vec<Role> = Slot::ALL.iter().map(|slot| slot.role()).collect();
+    fn each_slot_has_its_built_in_colour_and_key() {
+        // GitHub Dark Colorblind's blue, green (the same), purple, yellow
+        // and red (motd decision 5, amended 2026-11-19).
+        let colours: Vec<RgbColor> = Slot::ALL.iter().map(|slot| slot.built_in()).collect();
         assert_eq!(
-            roles,
+            colours,
             [
-                Role::Accent,
-                Role::Ok,
-                Role::Accent2,
-                Role::Warn,
-                Role::Ok,
-                Role::Problem,
-                Role::Ok,
-                Role::Warn,
-                Role::Problem
+                RgbColor(0x58, 0xA6, 0xFF),
+                RgbColor(0x58, 0xA6, 0xFF),
+                RgbColor(0xBC, 0x8C, 0xFF),
+                RgbColor(0xD2, 0x99, 0x22),
+                RgbColor(0x58, 0xA6, 0xFF),
+                RgbColor(0xEC, 0x8E, 0x2C),
+                RgbColor(0x58, 0xA6, 0xFF),
+                RgbColor(0xD2, 0x99, 0x22),
+                RgbColor(0xEC, 0x8E, 0x2C)
             ]
         );
         let keys: Vec<String> = Slot::ALL
@@ -959,7 +963,7 @@ mod tests {
         systemd:\n  additional_services: [rclone_vfs, mergerfs]\n  display_names:\n    rclone_vfs: Rclone\n";
 
     /// A valid file drives the model: the colours it sets (`#abc` as
-    /// `#aabbcc`, an empty one left to sb's palette), each app's
+    /// `#aabbcc`, an empty one left to its built-in colour), each app's
     /// `enabled` and instances, the timeouts above zero, Services'
     /// additions; an empty list is no section (decision 4).
     #[test]
@@ -1052,7 +1056,8 @@ mod tests {
         }
     }
 
-    /// No file: no model and no line (sb's palette, no HTTP section).
+    /// No file: no model and no line (the built-in colours, no HTTP
+    /// section).
     #[test]
     fn no_file_is_no_model_and_no_line() {
         let root = root_with(None);

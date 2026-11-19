@@ -145,6 +145,11 @@ The roles are `text`, `muted`, `faint`, `border`, `accent`, `accent_2`,
 built-in theme. `NO_COLOR` and `--color=never` turn colour off, and
 `SB_COLOR_PROFILE` picks the colour depth for one run.
 
+`sb motd` takes its colours from `colors` in Saltbox's `motd.yml`. A
+colour the file doesn't set is motd's own, from the GitHub Dark
+Colorblind palette, not a theme role; the theme's colour depth, and its
+`faint` for the empty part of the disk bars, still apply.
+
 ## Reporting issues
 
 Open an issue at https://github.com/saltyorg/sb-rust/issues. Include:

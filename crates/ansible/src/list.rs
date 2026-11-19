@@ -320,10 +320,10 @@ pub fn render_list(listing: &Listing, theme: &Theme, colour: bool, width: usize)
 /// one line here, and nothing else in this file names a role. Roles, not
 /// colours: what a role looks like is the theme's (a role's colour can
 /// be overridden in sb's config file, `[theme.colors]`; cli-core spec,
-/// startup step 6). motd keeps its slots the same way, a slot mapped to
-/// a role (crates/motd/src/config.rs, `Slot::role`); a struct of fields
-/// rather than a `match`, so that two slots in one role stay two lines
-/// (clippy's pedantic `match_same_arms` would merge them).
+/// startup step 6); motd's slots, unlike these, have built-in colours of
+/// their own (crates/motd/src/config.rs, `Slot::built_in`). A struct of
+/// fields rather than a `match`, so that two slots in one role stay two
+/// lines (clippy's pedantic `match_same_arms` would merge them).
 const COLOURS: Colours = Colours {
     heading: Role::Service,
     count: Role::Muted,

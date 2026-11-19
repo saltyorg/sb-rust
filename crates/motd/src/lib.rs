@@ -303,9 +303,10 @@ pub struct Colours<'a> {
 /// The colours the keys and values are painted in, owned so that each
 /// section's task can hold its own: motd.yml's nine colours, each
 /// resolved for the run's colour profile with cli-core's
-/// `Profile::resolve`, and sb's palette role for a colour motd.yml
-/// doesn't set (motd decision 5; Difference 4). sb-go's `DefaultStyle`
-/// sets no colour, and neither does sb.
+/// `Profile::resolve`, and the slot's built-in colour, resolved the same
+/// way, for a colour motd.yml doesn't set (motd decision 5; Difference
+/// 4). The theme supplies the profile and the bar's Faint track only.
+/// sb-go's `DefaultStyle` sets no colour, and neither does sb.
 #[derive(Clone, Debug)]
 pub struct Paint {
     theme: Theme,
@@ -314,21 +315,23 @@ pub struct Paint {
 }
 
 impl Paint {
-    /// `theme`'s colours, drawn only when `on`.
+    /// The built-in colours in `theme`'s profile, drawn only when `on`.
     #[must_use]
     pub fn new(theme: &Theme, on: bool) -> Self {
         Self::with(theme, on, &config::SlotColours::default())
     }
 
-    /// motd.yml's `colours` over `theme`'s, drawn only when `on`.
+    /// motd.yml's `colours` over the built-in ones, in `theme`'s profile,
+    /// drawn only when `on`.
     #[must_use]
     pub fn with(theme: &Theme, on: bool, colours: &config::SlotColours) -> Self {
         Self {
             theme: theme.clone(),
             on,
-            colours: Slot::ALL.map(|slot| match colours.get(slot) {
-                Some(colour) => theme.profile().resolve(colour),
-                None => theme.color(slot.role()),
+            colours: Slot::ALL.map(|slot| {
+                theme
+                    .profile()
+                    .resolve(colours.get(slot).unwrap_or(slot.built_in()))
             }),
         }
     }
@@ -1006,7 +1009,11 @@ mod tests {
         assert_eq!(off.label("Kernel:"), "Kernel:");
         assert_eq!(
             on.label("Kernel:"),
-            sb_term_ui::style::paint(&theme, Role::Accent, true, "Kernel:")
+            sb_term_ui::style::paint_colour(
+                Some(Color::Rgb(RgbColor(0x58, 0xA6, 0xFF))),
+                true,
+                "Kernel:"
+            )
         );
     }
 
@@ -1119,32 +1126,36 @@ esac"#,
         assert_eq!(text, "\n");
     }
 
+    /// An unset slot takes motd's built-in GitHub Dark Colorblind colour
+    /// (decision 5, amended 2026-11-19), not sb's palette role; the bar's
+    /// empty track stays in the theme's Faint.
     #[test]
     fn paint_colours_values_and_warnings_only_with_colour_on() {
         let theme = Theme::resolve(&Palette::default(), Profile::TrueColor);
         let on = Paint::new(&theme, true);
-        assert_eq!(
-            on.value("1"),
-            sb_term_ui::style::paint(&theme, Role::Ok, true, "1")
-        );
-        assert_eq!(
-            on.warning("w"),
-            sb_term_ui::style::paint(&theme, Role::Warn, true, "w")
-        );
-        assert_eq!(
-            on.error("e"),
-            sb_term_ui::style::paint(&theme, Role::Problem, true, "e")
-        );
-        for (level, role) in [
-            (Level::Low, Role::Ok),
-            (Level::High, Role::Warn),
-            (Level::Critical, Role::Problem),
+        let rgb = |r, g, b| Some(Color::Rgb(RgbColor(r, g, b)));
+        let painted = |colour, text| sb_term_ui::style::paint_colour(colour, true, text);
+        assert_eq!(on.label("k"), painted(rgb(0x58, 0xA6, 0xFF), "k"));
+        assert_eq!(on.value("1"), painted(rgb(0x58, 0xA6, 0xFF), "1"));
+        assert_eq!(on.app_name("a"), painted(rgb(0xBC, 0x8C, 0xFF), "a"));
+        assert_eq!(on.warning("w"), painted(rgb(0xD2, 0x99, 0x22), "w"));
+        assert_eq!(on.success("s"), painted(rgb(0x58, 0xA6, 0xFF), "s"));
+        assert_eq!(on.error("e"), painted(rgb(0xEC, 0x8E, 0x2C), "e"));
+        for (level, colour) in [
+            (Level::Low, rgb(0x58, 0xA6, 0xFF)),
+            (Level::High, rgb(0xD2, 0x99, 0x22)),
+            (Level::Critical, rgb(0xEC, 0x8E, 0x2C)),
         ] {
             assert_eq!(
                 on.bar(level, 30, 10),
-                sb_term_ui::style::bar(&theme, role, true, 0.3, 10)
+                sb_term_ui::style::bar_colour(&theme, colour, true, 0.3, 10)
             );
         }
+        // The empty track is the theme's Faint.
+        assert!(
+            on.bar(Level::Low, 50, 4)
+                .ends_with(&sb_term_ui::style::paint(&theme, Role::Faint, true, "░░"))
+        );
         assert!(on.value("1").starts_with("\x1b["));
         assert_ne!(on.value("x"), on.warning("x"));
         let off = Paint::new(&theme, false);
@@ -1152,9 +1163,87 @@ esac"#,
         assert_eq!(Paint::plain().value("1"), "1");
     }
 
-    /// motd.yml's colours over sb's palette, each resolved for the
-    /// profile; a slot it doesn't set keeps its role's colour (decision
-    /// 5); colour off or `ascii` paints nothing.
+    /// A theme file's role colours don't reach motd's slots: the theme
+    /// file has no motd entry (motd decision 5, amended 2026-11-19, step
+    /// 2), so an unset slot keeps motd's built-in colour. Its Faint still
+    /// draws the bar's empty track.
+    #[test]
+    fn theme_roles_do_not_reach_the_slots() {
+        let mut palette = Palette::default();
+        for role in Role::ALL {
+            palette.set(role, RgbColor(0x01, 0x02, 0x03));
+        }
+        let theme = Theme::resolve(&palette, Profile::TrueColor);
+        let paint = Paint::new(&theme, true);
+        let rgb = |r, g, b| Some(Color::Rgb(RgbColor(r, g, b)));
+        let painted = |colour, text| sb_term_ui::style::paint_colour(colour, true, text);
+        assert_eq!(paint.label("k"), painted(rgb(0x58, 0xA6, 0xFF), "k"));
+        assert_eq!(paint.app_name("a"), painted(rgb(0xBC, 0x8C, 0xFF), "a"));
+        assert_eq!(paint.warning("w"), painted(rgb(0xD2, 0x99, 0x22), "w"));
+        assert_eq!(paint.error("e"), painted(rgb(0xEC, 0x8E, 0x2C), "e"));
+        assert_eq!(
+            paint.bar(Level::High, 50, 4),
+            format!(
+                "{}{}",
+                painted(rgb(0xD2, 0x99, 0x22), "██"),
+                painted(rgb(0x01, 0x02, 0x03), "░░")
+            )
+        );
+    }
+
+    /// The built-in colours are mapped down as motd.yml's are, with
+    /// cli-core's `Profile::resolve` (no ADR-006 pick): the nearest xterm
+    /// colour under `ansi256`, the nearest VGA colour under `ansi`, which
+    /// keeps the three levels apart; `ascii` and colour off paint nothing.
+    #[test]
+    fn built_in_colours_follow_the_profile() {
+        use anstyle::{Ansi256Color, AnsiColor};
+        let ansi256 = Paint::new(&Theme::resolve(&Palette::default(), Profile::Ansi256), true);
+        let ansi = Paint::new(&Theme::resolve(&Palette::default(), Profile::Ansi), true);
+        let painted =
+            |colour: Color, text| sb_term_ui::style::paint_colour(Some(colour), true, text);
+        for (paint, label, app_name, warning, error) in [
+            (
+                &ansi256,
+                Color::Ansi256(Ansi256Color(75)),
+                Color::Ansi256(Ansi256Color(141)),
+                Color::Ansi256(Ansi256Color(172)),
+                Color::Ansi256(Ansi256Color(208)),
+            ),
+            (
+                &ansi,
+                Color::Ansi(AnsiColor::BrightBlue),
+                Color::Ansi(AnsiColor::BrightMagenta),
+                Color::Ansi(AnsiColor::Yellow),
+                Color::Ansi(AnsiColor::BrightRed),
+            ),
+        ] {
+            assert_eq!(paint.label("k"), painted(label, "k"));
+            assert_eq!(paint.value("v"), painted(label, "v"));
+            assert_eq!(paint.success("s"), painted(label, "s"));
+            assert_eq!(paint.app_name("a"), painted(app_name, "a"));
+            assert_eq!(paint.warning("w"), painted(warning, "w"));
+            assert_eq!(paint.error("e"), painted(error, "e"));
+            assert!(
+                paint
+                    .bar(Level::Critical, 100, 1)
+                    .starts_with(&painted(error, "█"))
+            );
+        }
+        let ascii = Paint::new(&Theme::resolve(&Palette::default(), Profile::Ascii), true);
+        assert_eq!(ascii.label("k"), "k");
+        assert_eq!(ascii.bar(Level::High, 50, 2), "█░");
+        let off = Paint::new(
+            &Theme::resolve(&Palette::default(), Profile::TrueColor),
+            false,
+        );
+        assert_eq!(off.error("e"), "e");
+        assert_eq!(off.bar(Level::Critical, 50, 2), "█░");
+    }
+
+    /// motd.yml's colours over motd's built-in ones, each resolved for
+    /// the profile; a slot it doesn't set keeps its built-in colour
+    /// (decision 5); colour off or `ascii` paints nothing.
     #[test]
     fn motd_yml_colours_are_resolved_for_the_profile() {
         let root = sb_config::tree::Node {
@@ -1198,15 +1287,9 @@ esac"#,
         assert_eq!(paint.app_name("x"), painted(rgb(0xBF, 0x97, 0x6F)));
         assert_eq!(paint.warning("x"), painted(rgb(0xF5, 0xEF, 0x34)));
         assert_eq!(paint.success("x"), painted(rgb(0x12, 0xC7, 0x8F)));
-        // Not in the file: sb's palette.
-        assert_eq!(
-            paint.value("x"),
-            sb_term_ui::style::paint(&theme, Role::Ok, true, "x")
-        );
-        assert_eq!(
-            paint.error("x"),
-            sb_term_ui::style::paint(&theme, Role::Problem, true, "x")
-        );
+        // Not in the file: motd's built-in colour.
+        assert_eq!(paint.value("x"), painted(rgb(0x58, 0xA6, 0xFF)));
+        assert_eq!(paint.error("x"), painted(rgb(0xEC, 0x8E, 0x2C)));
         assert_eq!(
             paint.bar(Level::Low, 50, 4),
             sb_term_ui::style::bar_colour(&theme, rgb(0xA8, 0xCC, 0x8C), true, 0.5, 4)
@@ -1217,7 +1300,7 @@ esac"#,
         );
         assert_eq!(
             paint.bar(Level::Critical, 50, 4),
-            sb_term_ui::style::bar(&theme, Role::Problem, true, 0.5, 4)
+            sb_term_ui::style::bar_colour(&theme, rgb(0xEC, 0x8E, 0x2C), true, 0.5, 4)
         );
         // Under ansi256 the file's colour is converted (cli-core's
         // `Profile::resolve`).

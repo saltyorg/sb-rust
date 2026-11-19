@@ -77,8 +77,10 @@ fn clicolor_force_colours_piped_output_and_never_wins() {
     let logs = temp();
     let forced = motd(&["--kernel"], logs.path(), &[("CLICOLOR_FORCE", "1")]);
     assert_eq!(forced.status.code(), Some(0));
+    // Without motd.yml the key takes motd's built-in label colour,
+    // #58A6FF (decision 5, amended 2026-11-19).
     assert!(
-        text(&forced.stdout).starts_with("\x1b["),
+        text(&forced.stdout).starts_with("\x1b[38;2;88;166;255mKernel:"),
         "{:?}",
         text(&forced.stdout)
     );
@@ -373,6 +375,52 @@ fn motd_yml_colours_paint_the_keys() {
     );
     assert!(
         text(&out.stdout).starts_with("\x1b[38;5;"),
+        "{:?}",
+        text(&out.stdout)
+    );
+}
+
+/// A theme file's role colours don't reach motd's keys: the theme file
+/// has no motd entry (decision 5, amended 2026-11-19), so the label keeps
+/// motd's built-in #58A6FF; its `color_profile` still applies.
+#[test]
+fn a_theme_file_leaves_motds_colours() {
+    if !root_gate::requested() {
+        return;
+    }
+    let logs = temp();
+    let config = logs.path().join("config.toml");
+    std::fs::write(
+        &config,
+        "[theme.colors]\naccent = \"#102030\"\nok = \"#102030\"\n",
+    )
+    .expect("write config");
+    let config = config.to_str().expect("utf-8 path");
+    let out = motd(
+        &["--kernel"],
+        logs.path(),
+        &[("SB_CONFIG", config), ("CLICOLOR_FORCE", "1")],
+    );
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    let stdout = text(&out.stdout);
+    assert!(
+        stdout.starts_with("\x1b[38;2;88;166;255mKernel:"),
+        "{stdout:?}"
+    );
+    assert!(!stdout.contains("16;32;48"), "{stdout:?}");
+    std::fs::write(
+        logs.path().join("config.toml"),
+        "[theme]\ncolor_profile = \"ansi\"\n",
+    )
+    .expect("write config");
+    let out = motd(
+        &["--kernel"],
+        logs.path(),
+        &[("SB_CONFIG", config), ("CLICOLOR_FORCE", "1")],
+    );
+    // Bright blue, the nearest VGA colour.
+    assert!(
+        text(&out.stdout).starts_with("\x1b[94mKernel:"),
         "{:?}",
         text(&out.stdout)
     );
