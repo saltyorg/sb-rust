@@ -44,8 +44,8 @@
 //!   once, with its reason on the status line.
 //! - **The changes panel** lists each staged change with its undo: on the
 //!   right from 100 columns, a band at the bottom below that.
-//! - **Save** (`s` or Ctrl+S, sb-go's keys and the log viewer's `s`) asks
-//!   first, then saves on its own thread ([`save`]),
+//! - **Save** (`s` or Ctrl+S, sb-go's keys; the one screen that saves)
+//!   asks first, then saves on its own thread ([`save`]),
 //!   with the "waiting for Saltbox", drift and outcome dialogs
 //!   ([`dialog`]). Quit with staged changes asks Save, Discard or Cancel.
 //!   Dialogs are tui-popup's (<https://docs.rs/tui-popup/0.7.7/tui_popup/>);

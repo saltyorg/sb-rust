@@ -410,7 +410,7 @@ fn esc_clears_a_search_in_effect_before_it_quits() {
     assert_eq!(press(&mut p, KeyCode::Esc), Flow::Quit);
 }
 
-/// `s` and Ctrl+S save (sb-go's keys, the log viewer's `s`); `v` does
+/// `s` and Ctrl+S save (sb-go's keys; no other screen saves); `v` does
 /// nothing now (tui spec, "Keys").
 #[test]
 fn s_and_ctrl_s_save_and_v_does_nothing() {
