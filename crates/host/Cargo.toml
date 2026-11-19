@@ -29,7 +29,8 @@ nix.workspace = true
 walkdir.workspace = true
 # The run log's records (the ownership counts).
 tracing.workspace = true
-# The blocking pool, through cli-core's helper that carries the span.
+# The blocking pool, through cli-core's helper that carries the span; and
+# its escaping rule for a failed child's line (`exit::escaped`).
 sb-cli-core.workspace = true
 # systemctl's captures for the service list (host spec, assumption 1), and
 # the caller's token that ends them.

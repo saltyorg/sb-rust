@@ -513,6 +513,18 @@ async fn a_failed_rebuild_keeps_the_previous_generation() {
         .await;
         assert!(ran.error.is_some(), "{op}:\n{}", ran.screen);
         assert_eq!(kept(&tree), before, "{op}");
+        if op == "cache-clean" {
+            // Its own step shows the spec's text (step 7), the chain a
+            // line each: `clear uv cache`, then uv's failure.
+            let shown = [
+                "✗ Clearing the uv cache",
+                "clear uv cache\n",
+                "cache clean exited with code 1",
+            ];
+            for line in shown {
+                assert!(ran.screen.contains(line), "{line}:\n{}", ran.screen);
+            }
+        }
     }
 }
 
@@ -729,6 +741,20 @@ async fn the_active_venv_is_inspected_as_sb_go_does() {
             assert_ne!(active_generation(&tree), active.dir, "{what}, {force:?}");
             assert!(!active.dir.exists(), "{what}, {force:?}: cleaned away");
         }
+    }
+
+    // A link to a generation outside `releases/` without its manifest:
+    // rebuilt, and only the link is replaced; that generation stays.
+    for force in [Force::None, Force::Venv, Force::Python] {
+        let tree = Tree::new();
+        let _ = tree.healthy();
+        let outside = tree.root.path().join("elsewhere/gen");
+        std::fs::create_dir_all(outside.join("venv/bin")).expect("outside");
+        tree.activate(&outside.join("venv"));
+        let ran = run(&tree, force).await;
+        assert_eq!(ran.error, None, "outside, {force:?}:\n{}", ran.screen);
+        assert!(active_generation(&tree).starts_with(&tree.layout.ansible_releases));
+        assert!(outside.join("venv/bin").exists(), "outside, {force:?}");
     }
 
     // A manifest that can't be read for another reason still fails the

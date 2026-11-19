@@ -279,10 +279,9 @@ mod tests {
     fn a_child_failure_keeps_quotes_and_backslashes() {
         let line = r#"SyntaxError: '(' was never closed, "x" \n"#;
         let failed = sb_exec::Failed::new("python exited with code 1", "exit 1", vec![line.into()]);
-        assert_eq!(
-            child_failure(&failed),
-            format!("python exited with code 1: {line}")
-        );
+        let shown = child_failure(&failed);
+        assert_eq!(shown, format!("python exited with code 1: {line}"));
+        assert_eq!(sb_cli_core::exit::escaped(&shown), shown);
     }
 
     /// The runtime list is sb-go's `SupportedUbuntuRuntimeReleases`.

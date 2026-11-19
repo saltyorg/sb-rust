@@ -509,11 +509,18 @@ moved), so `ops` callers and the tests can read them.
     failed all of them (python/venv.go:126, :304-307: `inspect active
     Ansible environment: ...`), and only removing the path by hand
     helped. Nothing outside the layout's paths is touched: the old
-    generation goes in step 15's cleanup, as any old one does.
+    generation goes in step 15's cleanup, as any old one does, and a
+    link to a generation outside `releases/` loses only the link. With
+    no manifest, the broken generation's own exported commands aren't
+    known, so a wrapper only it had stays (step 14), as after a legacy
+    directory or an incomplete manifest.
 18. **A forced build clears uv's cache first** (step 7; coordinator,
-    2026-11-19, from a container test): uv hardlinks a venv's files to
-    their cache entries (its default link mode on Linux, link count 2
-    observed), so a venv file damaged in place damages the cache too,
+    2026-11-19, from a container test): uv clones a venv's files from
+    their cache entries, or hardlinks them where the filesystem can't
+    clone, as on ext4 (its `link-mode` default on Linux,
+    <https://docs.astral.sh/uv/reference/settings/#link-mode>; link
+    count 2 observed), so a venv file damaged in place damages the cache
+    too,
     and the next normal build activated the damage while reporting
     success; `--no-cache` alone kept the venv clean but left the cache
     as it was. `uv cache clean`

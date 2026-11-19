@@ -248,7 +248,7 @@ pub(crate) async fn inspect(
     let generation = target.parent().unwrap_or(&target);
     let read = match manifest::read(generation) {
         Err(ManifestError::Read { cause, .. }) if cause.kind() == io::ErrorKind::NotFound => {
-            tracing::info!("the active manifest is missing");
+            tracing::info!(generation = %generation.display(), "the active manifest is missing");
             return Ok(Active::default());
         }
         Err(err @ ManifestError::Parse { .. }) => {
@@ -1057,11 +1057,14 @@ async fn stage<'a>(
 /// cache entries from the cache directory", sb's own (`UV_CACHE_DIR`)
 /// (<https://docs.astral.sh/uv/concepts/cache/#clearing-the-cache>; the
 /// same page: "it's never safe to modify the cache directly"). uv
-/// hardlinks a venv's files to their cache entries, so a venv file
-/// damaged in place damages its entry too, and the next normal build
-/// would bring it back. Streamed into the step with no timeout: uv waits
-/// at most 5 minutes for another uv process's lock (that page, "Cache
-/// safety"), and Ctrl-C stops it.
+/// clones a venv's files from their cache entries, or hardlinks them
+/// where the filesystem can't clone (ext4), its `link-mode` default on
+/// Linux (<https://docs.astral.sh/uv/reference/settings/#link-mode>); a
+/// hardlinked venv file damaged in place damages its entry too, and the
+/// next normal build would bring it back. Streamed into the step with no
+/// timeout: uv waits at most 5 minutes for another uv process's lock
+/// (that page, "Clearing the cache"; not `--force`, which ignores the
+/// lock), and Ctrl-C stops it.
 async fn clear_cache(step: &mut Step, env: &Env<'_>) -> Result<(), BuildError> {
     let clearing = Labels::new("Clearing the uv cache", "uv cache cleared");
     nested(step, clearing, async |step| {
