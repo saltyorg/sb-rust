@@ -294,9 +294,10 @@ fn root_env(root: &tempfile::TempDir) -> (&'static str, &str) {
 }
 
 /// `--generate-config` prints sb-go's example from the root's schema,
-/// byte for byte, whatever else is given (criterion 5).
+/// byte for byte but for motd's built-in colours (Difference 36),
+/// whatever else is given (criterion 5).
 #[test]
-fn generate_config_prints_sb_gos_example() {
+fn generate_config_prints_the_example() {
     if !root_gate::requested() {
         return;
     }

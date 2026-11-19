@@ -81,7 +81,8 @@ listed below.
    - The schema comes from `<root>/schema/motd.schema.yml` through
      `sb_config::schema::load` (decision 18).
    - The output is byte-identical to sb-go's `GenerateExampleConfig`
-     (`motd/config.go:36-73`). The sections are written in sb-go's fixed
+     (`motd/config.go:36-73`), but for the `colors` block since
+     2026-11-19 (Difference 36, below). The sections are written in sb-go's fixed
      order: colors, emby, jellyfin, lidarr, nzbget, plex, qbittorrent,
      radarr, readarr, rtorrent, sabnzbd, sonarr, systemd.
    - Each section gets its `# description` comment. Its values are the
@@ -90,7 +91,11 @@ listed below.
      password, timeout, enabled, and strings are quoted as Go's
      `strconv.Quote` does.
    - `colors` takes sb-go's charmtone defaults (`motd/config.go:157-185`),
-     so the printed file looks as it does today.
+     so the printed file looks as it does today. *Amended 2026-11-19 by
+     the maintainer's decision (Difference 36): `colors` takes motd's
+     built-in colours (decision 5), written from `Slot::built_in` in
+     sb-go's layout and quoting (`"#RRGGBB"`), so the output is sb-go's
+     but for that block.*
    - A schema that won't load is an error naming the file and the cause,
      exit 1.
 2. **Selection.** `--all` turns every section on. With no section selected,
@@ -585,6 +590,14 @@ never reach stdout, stderr or the run log.
     the flag set is sb-go's.
 35. **`--json`** (the maintainer, 2026-11-18; decision 28): the chosen
     sections as JSON, typed. sb-go has no such flag.
+36. **`--generate-config` writes motd's built-in colours** (the
+    maintainer, 2026-11-19; Command flow step 1, decision 5): the
+    `colors` block holds the GitHub Dark Colorblind hexes, where sb-go
+    wrote its charmtone defaults. The rest of the file is sb-go's, byte
+    for byte. Why: a generated motd.yml then looks as no motd.yml does,
+    and matches the `motd_colors` block the maintainer is adding to
+    Saltbox; the hexes come from `Slot::built_in`, so the two can't
+    drift apart.
 
 ### Scope
 
@@ -749,6 +762,9 @@ Nothing touches a real host's state, and every fixture is synthetic.
     every qBittorrent state, an rTorrent fault, i4 and i8);
   - the `--generate-config` golden: sb-go's output on the pinned schema,
     captured once and committed, since it holds only schema examples;
+    since 2026-11-19 its `colors` block is motd's built-in colours
+    (Difference 36), and a test reads the generated file back as
+    motd.yml and finds every slot on its built-in colour;
   - the redaction and `--share` filters (IPv4, IPv6 with and without
     brackets and ports, hosts, short and long credentials, encoded
     credentials).
@@ -865,7 +881,9 @@ Nothing touches a real host's state, and every fixture is synthetic.
      still show, and the HTTP sections don't.
    - An unloadable schema prints the line in its own words.
    - The file is opened once (a test counts it through the run log).
-   - `--generate-config` is byte-identical to sb-go's golden.
+   - `--generate-config` is byte-identical to sb-go's golden. *Amended
+     2026-11-19 (Difference 36): to the committed golden, sb-go's output
+     with motd's built-in colours in `colors`.*
 6. **Secrets.** No canary credential, raw or percent-encoded, appears in
    stdout, stderr or the run log, in any of the secret test's cases.
 7. **`--share`.** No IPv4 or IPv6 address, and no configured or error host
@@ -1268,7 +1286,9 @@ Nothing touches a real host's state, and every fixture is synthetic.
   `serde_json::Value`) and `description` for the generator. The
   `--generate-config` golden is sb-go's `GenerateExampleConfig` copied
   into a Go 1.27 program, built against sb-go's own module graph
-  (charmtone v0.1.0 for the colours), and run on the pinned schema. Go's
+  (charmtone v0.1.0 for the colours), and run on the pinned schema; its
+  `colors` block was replaced by motd's built-in colours on 2026-11-19
+  (Difference 36). Go's
   `strconv.Quote` and `%v` are reproduced and checked against Go 1.27's
   output; `unicode.IsPrint` beyond ASCII is approximated (marked
   UNVERIFIED in the code), as Saltbox's examples are ASCII.

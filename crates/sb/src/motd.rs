@@ -313,8 +313,9 @@ fn listed(err: sb_motd::Error, log: Option<&RunLog>) -> anyhow::Error {
 }
 
 /// `--generate-config`: sb-go's example motd.yml from the Saltbox root's
-/// schema on stdout (motd spec, Command flow step 1), or sb-go's error
-/// with sb-config's cause, exit 1.
+/// schema on stdout, with motd's built-in colours (motd spec, Command
+/// flow step 1; Difference 36), or sb-go's error with sb-config's cause,
+/// exit 1.
 fn generate_config() -> anyhow::Result<()> {
     let root = sb_cli_core::config::saltbox_dir(std::env::var_os("SB_SALTBOX_DIR"));
     let example = sb_motd::config::generate(&root).map_err(|err| {

@@ -80,7 +80,7 @@ completion files call a command sb doesn't have.
 - **motd:** idle containers are no longer listed, queue states read "with
   a warning", and redaction is `[REDACTED]`. A colour motd.yml doesn't
   set comes from the GitHub Dark Colorblind palette instead of sb-go's
-  charmtone defaults.
+  charmtone defaults, and `--generate-config` writes those colours.
 - **Announcements** join line breaks inside a paragraph, as Markdown does.
 - **`sb update` and `sb self-update` draw one tree,** printed when the
   run ends. Their questions (the branch questions, `Run all migration

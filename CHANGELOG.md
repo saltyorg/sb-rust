@@ -78,7 +78,8 @@ you could trip over.
   (GitHub Primer's dark colorblind terminal colours) wherever motd.yml
   sets none: blue labels, values, successes and low bars, purple app
   names, yellow warnings and high bars, and orange errors and critical
-  bars; no green or red is left.
+  bars; no green or red is left. `sb motd --generate-config` writes
+  them in its `colors` block, in place of sb-go's charmtone colours.
 - **Cancellation:** Ctrl-C and a dropped SSH session stop the whole
   process group of what sb started, with a grace period, and the run ends
   by its signal (an attached Ansible run ends with Ansible's own code).

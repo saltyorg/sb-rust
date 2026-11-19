@@ -1,10 +1,11 @@
 //! motd.yml (motd spec, Command flow step 4; decisions 3, 4, 5, 17 and
-//! 18; Differences 2, 3, 4 and 19): the file read and checked once
+//! 18; Differences 2, 3, 4, 19 and 36): the file read and checked once
 //! through sb-config's `check_file`, the one per-file check `sb edit` and
 //! validate-config use, and its tree mapped to motd's typed model. A file
 //! with issues, or one that can't be read or checked, gives one `Config:`
 //! line and no model, so only the config-driven parts are skipped.
-//! `--generate-config` writes sb-go's example file from Saltbox's schema.
+//! `--generate-config` writes sb-go's example file from Saltbox's schema,
+//! its colours motd's built-in ones.
 //!
 //! Library-backed: the read, the YAML parse, the schema and its rules,
 //! the issues and their secret-safe wording are sb-config's; the colours
@@ -489,29 +490,31 @@ const ORDER: [&str; 13] = [
     "systemd",
 ];
 
-/// sb-go's colour block, its charmtone defaults written as sb-go writes
-/// them (`motd/config.go:157-185`, `motd/styles.go`), so the printed file
-/// looks as it does today.
-const COLOURS: &str = r##"colors:
-  text:
-    label: "#FF79D0"
-    value: "#12C78F"
-    app_name: "#BF976F"
-  status:
-    warning: "#F5EF34"
-    success: "#12C78F"
-    error: "#EB4268"
-  progress_bar:
-    low: "#A8CC8C"
-    high: "#DBAB79"
-    critical: "#E88388"
-"##;
+/// The example's colour block: each slot's built-in colour
+/// ([`Slot::built_in`]) in sb-go's layout and quoting, under its group
+/// in motd.yml's order, so a generated file looks as no file does
+/// (motd Difference 36; sb-go wrote its charmtone defaults,
+/// `motd/config.go:157-185`).
+fn colours_block(out: &mut String) {
+    out.push_str("colors:\n");
+    let mut group = "";
+    for slot in Slot::ALL {
+        let (this, key) = slot.key();
+        if this != group {
+            group = this;
+            let _ = writeln!(out, "  {group}:");
+        }
+        let RgbColor(r, g, b) = slot.built_in();
+        let _ = writeln!(out, "    {key}: \"#{r:02X}{g:02X}{b:02X}\"");
+    }
+}
 
 /// `--generate-config`: sb-go's `GenerateExampleConfig` on
 /// `<root>/schema/motd.schema.yml`, loaded strictly by sb-config
 /// (decision 18): each section in sb-go's order, its description as
 /// comments, the schema's examples, one example instance per
-/// `instances` list.
+/// `instances` list; the colours are motd's built-in ones (Difference
+/// 36).
 ///
 /// # Errors
 ///
@@ -540,7 +543,7 @@ fn example(rules: &schema::Rules) -> String {
         out.push('\n');
         comment(&mut out, rule);
         if name == "colors" {
-            out.push_str(COLOURS);
+            colours_block(&mut out);
             continue;
         }
         let _ = writeln!(out, "{name}:");
@@ -892,15 +895,30 @@ mod tests {
 
     /// sb-go's `GenerateExampleConfig` on the pinned schema, captured once
     /// (a copy of its code run by Go 1.27 against this file; motd spec,
-    /// Testing), byte for byte.
+    /// Testing), byte for byte, but for the `colors` block: motd's
+    /// built-in colours (Difference 36).
     #[test]
-    fn generate_config_is_sb_gos_golden() {
+    fn generate_config_is_the_golden() {
         let root = root_with(None);
         let golden = std::fs::read_to_string(
             Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/generate-config.golden"),
         )
         .unwrap();
         assert_eq!(generate(root.path()).unwrap(), golden);
+    }
+
+    /// The generated file, read back as motd.yml, sets every slot to its
+    /// built-in colour, so a generated motd.yml looks as no motd.yml does
+    /// (Difference 36).
+    #[test]
+    fn a_generated_file_sets_the_built_in_colours() {
+        let root = root_with(None);
+        let example = generate(root.path()).unwrap();
+        std::fs::write(root.path().join("motd.yml"), &example).unwrap();
+        let colours = load(&settings(root.path())).motd.expect("a model").colours;
+        for slot in Slot::ALL {
+            assert_eq!(colours.get(slot), Some(slot.built_in()), "{slot:?}");
+        }
     }
 
     #[test]

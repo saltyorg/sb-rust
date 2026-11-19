@@ -148,7 +148,8 @@ built-in theme. `NO_COLOR` and `--color=never` turn colour off, and
 `sb motd` takes its colours from `colors` in Saltbox's `motd.yml`. A
 colour the file doesn't set is motd's own, from the GitHub Dark
 Colorblind palette, not a theme role; the theme's colour depth, and its
-`faint` for the empty part of the disk bars, still apply.
+`faint` for the empty part of the disk bars, still apply. `sb motd
+--generate-config` writes these colours in its example file.
 
 ## Reporting issues
 
