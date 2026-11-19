@@ -84,16 +84,36 @@ not a directory` (cmd/update.go:391-400).
      --quiet refs/remotes/origin/<branch>` must succeed, else
      `branch '<branch>' doesn't exist on <Repo>'s remote` before anything
      in the worktree changes (decision 8).
-  3. "Resetting repository to <branch>": `git clean --quiet -df`,
+  3. *Added 2026-11-19 (decision 12):* if `branch` is a local branch
+     (`git rev-parse --verify --quiet refs/heads/<branch>`), or is the
+     current branch, `git rev-parse --verify --quiet <branch>@{u}` must
+     succeed, else `<Repo>: branch '<b>' has no upstream to update from`,
+     before anything in the worktree changes. A branch only on the remote
+     needs no check: the reset's `checkout <branch> --` creates it
+     tracking `origin/<branch>`.
+  4. "Resetting repository to <branch>": `git clean --quiet -df`,
      `git reset --quiet --hard` (HEAD, decision 7), `git checkout --quiet
      <branch> --`, `git clean --quiet -df`, `git reset --quiet --hard
-     @{u}`. A branch with no upstream fails at the last reset with
-     `<Repo>: branch '<b>' has no upstream to update from`.
-  4. "Updating git submodules": `git submodule update --progress --init
+     @{u}`. The upstream is checked again before that last reset, in case
+     the checkout changed since step 3; it fails with the same text.
+  5. "Updating git submodules": `git submodule update --progress --init
      --recursive` (a remote op).
-  5. "Setting repository ownership": host's
+  6. "Setting repository ownership": host's
      `ensure_owner_recursive(owner, [path])` (host spec, "Ownership").
      `owner` is the Saltbox user, or root for setup's clone, as sb-go.
+
+  **Order** (decision 12): every refusal that can be decided before the
+  worktree changes is: an invalid branch name (the callers'
+  `check_branch_name`), the branch missing on the remote (step 2), no
+  upstream (step 3). A refused run leaves the working tree, the index,
+  HEAD and the local branches as they were, byte for byte; only the
+  fetch's remote-tracking refs and the widened refspec (decision 6) have
+  changed. What can only fail later (the reset itself, the submodules,
+  the ownership) fails after the reset, as before. `--keep-branch`,
+  `--reset-branch` and the default path all reach `fetch_and_reset`, so
+  the order holds for each: `--keep-branch` on a branch without an
+  upstream, or a reset to a local branch whose upstream was removed, is
+  refused with the checkout untouched.
 - **`clone(url, branch, step)`** and **`init_from_remote(url, branch,
   step)`** for `sb setup` (G-ops research §2: `clone --progress --depth 1
   -b <b>`, then submodules; or `init -b <b>` (difference 12), `remote add origin`, `fetch --all
@@ -175,6 +195,9 @@ Every fetch, clone and submodule update goes through one wrapper
     `init.defaultBranch`), so `-b develop`, or a `main` default, ended on
     that branch at the wanted commit with no upstream, and the next
     `update` asked to switch (found in M8's review, 2026-11-13).
+13. A branch without an upstream is refused before the worktree changes
+    (decision 12); sb-go ran `clean -df` first, so untracked files were
+    lost before its `reset --hard @{u}` failed.
 
 ### Scope
 
@@ -363,6 +386,10 @@ No test touches a Saltbox checkout or the network.
 11. **git's output is streamed** into its step (exec `stream`, "`git
     pull` under the runner", exec.md "Ways to run"); the retry match reads
     the kept stderr tail.
+12. **Every refusal decidable up front comes before the worktree
+    changes** (2026-11-19, from a test agent's finding: `--keep-branch`
+    on a branch without an upstream destroyed tracked edits and untracked
+    files, then failed; decision 8's rule, extended to the upstream).
 
 ## Known limits
 

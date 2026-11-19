@@ -533,6 +533,121 @@ async fn a_branch_without_an_upstream_is_refused() {
     );
 }
 
+/// The worktree as it stands: every file's path and bytes outside `.git`,
+/// with `git status` and HEAD's branch and commit, to compare a refused
+/// run's checkout with the one before it.
+fn snapshot(checkout: &Path) -> (Vec<(PathBuf, Vec<u8>)>, String, String) {
+    fn walk(dir: &Path, root: &Path, out: &mut Vec<(PathBuf, Vec<u8>)>) {
+        for entry in std::fs::read_dir(dir).expect("read dir") {
+            let path = entry.expect("entry").path();
+            if path.file_name().is_some_and(|name| name == ".git") {
+                continue;
+            }
+            if path.is_dir() {
+                walk(&path, root, out);
+            } else {
+                let bytes = std::fs::read(&path).expect("read");
+                out.push((
+                    path.strip_prefix(root).expect("inside").to_path_buf(),
+                    bytes,
+                ));
+            }
+        }
+    }
+    let mut files = Vec::new();
+    walk(checkout, checkout, &mut files);
+    files.sort();
+    let status = git(
+        checkout,
+        &["status", "--porcelain=v1", "--untracked-files=all"],
+    );
+    let head = git(checkout, &["rev-parse", "--abbrev-ref", "HEAD"])
+        + " "
+        + &git(checkout, &["rev-parse", "HEAD"]);
+    (files, status, head)
+}
+
+/// A tracked edit, an untracked file and an untracked directory: what a
+/// refused run must leave as it found them.
+fn local_changes(checkout: &Path) {
+    std::fs::write(checkout.join("tracked.txt"), "edited\n").expect("write");
+    std::fs::write(checkout.join("notes.txt"), "mine\n").expect("write");
+    std::fs::create_dir(checkout.join("drafts")).expect("mkdir");
+    std::fs::write(checkout.join("drafts/role.yml"), "draft\n").expect("write");
+}
+
+/// `--keep-branch` on a branch with no upstream (the test agent's d2):
+/// refused before the worktree changes, with today's message, the
+/// checkout byte for byte as it was (repo spec, decision 8, "Order").
+#[tokio::test]
+async fn keeping_a_branch_without_an_upstream_changes_nothing() {
+    let fixture = Fixture::new();
+    git(
+        &fixture.checkout,
+        &["checkout", "--quiet", "-b", "dev-local"],
+    );
+    std::fs::write(fixture.checkout.join("local.txt"), "commit\n").expect("write");
+    git(&fixture.checkout, &["add", "local.txt"]);
+    git(&fixture.checkout, &["commit", "--quiet", "-m", "local"]);
+    local_changes(&fixture.checkout);
+    let before = snapshot(&fixture.checkout);
+    let ran = update(&fixture.repo(), "dev-local").await;
+    assert_eq!(
+        ran.error.as_deref(),
+        Some("Sandbox: branch 'dev-local' has no upstream to update from")
+    );
+    assert!(
+        !ran.screen.contains("Resetting repository"),
+        "{}",
+        ran.screen
+    );
+    assert_eq!(snapshot(&fixture.checkout), before);
+}
+
+/// `--reset-branch` (or the default branch chosen) to a local branch
+/// with no upstream, from another branch: refused up front too, the
+/// checkout unchanged.
+#[tokio::test]
+async fn resetting_to_a_local_branch_without_an_upstream_changes_nothing() {
+    let fixture = Fixture::new();
+    git(&fixture.checkout, &["branch", "--unset-upstream", "master"]);
+    git(&fixture.checkout, &["checkout", "--quiet", "-b", "feature"]);
+    local_changes(&fixture.checkout);
+    let before = snapshot(&fixture.checkout);
+    let ran = update(&fixture.repo(), "master").await;
+    assert_eq!(
+        ran.error.as_deref(),
+        Some("Sandbox: branch 'master' has no upstream to update from")
+    );
+    assert!(
+        !ran.screen.contains("Resetting repository"),
+        "{}",
+        ran.screen
+    );
+    assert_eq!(snapshot(&fixture.checkout), before);
+}
+
+/// A branch on the remote with no local branch yet is no refusal: the
+/// checkout creates it tracking the remote's (git's checkout guess), as
+/// before.
+#[tokio::test]
+async fn a_remote_branch_not_yet_local_is_still_checked_out() {
+    let fixture = Fixture::new();
+    git(
+        &fixture.checkout,
+        &["remote", "set-branches", "--add", "origin", "develop"],
+    );
+    let ran = update(&fixture.repo(), "develop").await;
+    assert_eq!(ran.error, None, "{}", ran.screen);
+    assert_eq!(
+        git(
+            &fixture.checkout,
+            &["rev-parse", "--abbrev-ref", "develop@{u}"]
+        ),
+        "origin/develop"
+    );
+}
+
 #[tokio::test]
 async fn a_failed_fetch_is_exec_s_error() {
     let fixture = Fixture::new();

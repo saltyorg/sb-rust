@@ -80,8 +80,11 @@ impl Repo {
     /// 1. the fetch refspec widened ([`Repo::ensure_fetch_all_branches`],
     ///    decision 6);
     /// 2. "Fetching repository changes": `git fetch --progress`;
-    /// 3. a branch other than the current one must be on the remote,
-    ///    checked before the worktree changes (decision 8);
+    /// 3. a branch other than the current one must be on the remote, and
+    ///    `branch`, when it is a local branch (the current one always),
+    ///    must have an upstream, both checked before the worktree changes
+    ///    (decision 8; "Order": a refused run leaves the checkout as it
+    ///    was);
     /// 4. "Resetting repository to `branch`": clean, reset to `HEAD`
     ///    (decision 7), `checkout <branch> --`, clean, reset to `@{u}`;
     ///    never `clean -x`, so ignored files (Saltbox's config) stay;
@@ -120,6 +123,8 @@ impl Repo {
         if current != branch {
             self.require_remote_branch(branch, &token).await?;
         }
+        self.require_upstream(branch, current == branch, &token)
+            .await?;
         let resetting = format!("Resetting repository to {branch}");
         step.step(Labels::new(&resetting, &resetting), async |step| {
             self.reset_to(step, branch).await
@@ -397,6 +402,52 @@ impl Repo {
         }
     }
 
+    /// `branch`'s upstream, before anything changes (repo spec, "Order"):
+    /// a local branch, and the current one always, must name one (`git
+    /// rev-parse --verify --quiet <branch>@{u}`); a branch only on the
+    /// remote needs none, since the reset's `checkout <branch> --` creates
+    /// it tracking `origin/<branch>` (git's guess,
+    /// <https://git-scm.com/docs/git-checkout#Documentation/git-checkout.txt-gitcheckoutbranch>).
+    async fn require_upstream(
+        &self,
+        branch: &str,
+        current: bool,
+        token: &CancellationToken,
+    ) -> Result<(), RepoError> {
+        if !current && !self.resolves(format!("refs/heads/{branch}"), token).await? {
+            return Ok(());
+        }
+        if self.resolves(format!("{branch}@{{u}}"), token).await? {
+            Ok(())
+        } else {
+            Err(RepoError::NoUpstream {
+                repo: self.name.clone(),
+                branch: branch.to_string(),
+            })
+        }
+    }
+
+    /// Whether `rev` names a commit: `git rev-parse --verify --quiet
+    /// <rev>`, which exits 1 when it names nothing and 128 when it can't
+    /// be resolved at all (no such branch, no upstream configured).
+    async fn resolves(&self, rev: String, token: &CancellationToken) -> Result<bool, RepoError> {
+        let cmd = self
+            .git()
+            .arg("rev-parse")
+            .arg("--verify")
+            .arg("--quiet")
+            .shown_value(rev);
+        let ran = self.read(cmd, token).await?;
+        match ran.outcome.ending {
+            Ending::Exited(0) => Ok(true),
+            Ending::Exited(1 | 128) => Ok(false),
+            // Interrupted, timed out or killed: exec's own text.
+            _ => Err(RepoError::Git(
+                ran.check().err().map_or_default(|f| failure(&f)),
+            )),
+        }
+    }
+
     /// The reset sub-step's commands (sb-go's `resetCommands`, with the
     /// reset before checkout to `HEAD` and `--` after the branch).
     async fn reset_to(&self, step: &mut Step, branch: &str) -> anyhow::Result<()> {
@@ -412,6 +463,9 @@ impl Repo {
             .arg("--");
         self.change(step, checkout).await?;
         self.change(step, clean()).await?;
+        // Checked before anything changed too ([`Repo::require_upstream`]);
+        // here again for the branch now checked out, in case the checkout
+        // changed between.
         let upstream = self
             .git()
             .arg("rev-parse")
