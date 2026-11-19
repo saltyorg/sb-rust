@@ -292,34 +292,51 @@ impl Overlay {
         let screen = frame.area();
         let room = screen.inner(Margin::new(1, 1));
         let style = |role| Style::from(theme.style(role));
-        let mouse = Line::styled(format!(" Mouse: {}", keys.mouse), style(Role::Muted));
-        let mut one = column(keys.groups, theme);
-        one.push(Line::raw(""));
-        one.push(mouse.clone());
-        let two = (rows(one.len()) > room.height)
+        // One column, its descriptions and the mouse's line wrapped to
+        // `text` columns with each continuation under its own column
+        // (none: as long as they are).
+        let one_column = |text: Option<usize>| {
+            let mut lines = column(keys.groups, theme, text);
+            lines.push(Line::raw(""));
+            lines.extend(mouse_lines(keys.mouse, theme, text));
+            lines
+        };
+        let unwrapped = one_column(None);
+        let two = (rows(unwrapped.len()) > room.height)
             .then(|| two_columns(keys, theme, room))
             .flatten();
         let content_width = match &two {
             Some((left, right)) => line_width(left) + 3 + line_width(right),
-            None => line_width(&one),
+            None => line_width(&unwrapped),
         };
         let width = u16::try_from(content_width + 3)
             .unwrap_or(u16::MAX)
             .max(u16::try_from(width(keys.screen) + 12).unwrap_or(u16::MAX))
             .min(room.width);
-        // One column wraps to the box (`Paragraph::line_count`, ratatui's
-        // `unstable-rendered-line-info`, ADR-001), a column narrower when
-        // its scrollbar takes one.
+        // One column is wrapped to the box, a column narrower when its
+        // scrollbar takes one, each continuation hung under its column
+        // ([`column`]); what still overflows (a key wider than a tiny box)
+        // wraps in the `Paragraph`, its rows counted by
+        // `Paragraph::line_count` (ratatui's `unstable-rendered-line-info`,
+        // ADR-001).
         let wrapped = |lines: &[Line<'static>], width: u16| {
             Paragraph::new(lines.to_vec())
                 .wrap(Wrap { trim: false })
                 .line_count(width)
         };
+        let inside = width.saturating_sub(2);
+        let mut one = match two {
+            Some(_) => Vec::new(),
+            None => one_column(Some(usize::from(inside))),
+        };
         let content_rows = match &two {
             Some((left, right)) => left.len().max(right.len()) + 2,
-            None => wrapped(&one, width.saturating_sub(2)),
+            None => wrapped(&one, inside),
         };
         let fits = rows(content_rows) <= room.height;
+        if two.is_none() && !fits {
+            one = one_column(Some(usize::from(inside.saturating_sub(1))));
+        }
         self.scrolling = !fits;
         let height = rows(content_rows).min(room.height);
         let area = screen.centered(Constraint::Length(width), Constraint::Length(height));
@@ -358,6 +375,7 @@ impl Overlay {
                 .areas(columns);
                 frame.render_widget(Paragraph::new(left), left_area);
                 frame.render_widget(Paragraph::new(right), right_area);
+                let mouse = mouse_lines(keys.mouse, theme, None);
                 frame.render_widget(Paragraph::new(mouse), mouse_row);
             }
             None if fits => {
@@ -390,9 +408,56 @@ fn line_width(lines: &[Line<'_>]) -> usize {
     lines.iter().map(Line::width).max().unwrap_or(0)
 }
 
+/// The least room a wrapped description keeps: narrower, it is left to
+/// the `Paragraph`'s own wrap. Below 8 columns a hanging column holds a
+/// ragged word or less a row, taller than the paragraph's wrap from the
+/// box's edge, which then reads better.
+const LEAST_DESCRIPTION: usize = 8;
+
+/// The mouse's line's label.
+const MOUSE_LABEL: &str = " Mouse: ";
+
+/// `text` wrapped at words to `room` columns, its pieces trimmed at the
+/// breaks, for a continuation hung under its column. Why not the
+/// `Paragraph`'s `Wrap`: it has only `trim`, no hanging indent
+/// (<https://docs.rs/ratatui/0.30.2/ratatui/widgets/struct.Wrap.html>),
+/// so a continuation starts at the box's edge; ratatui's `Table` cells
+/// don't wrap, and textwrap's `subsequent_indent` isn't a dependency.
+/// The breaks are term-ui's `wrap_line` (tabled's `Wrap::wrap`, display
+/// widths as the footer's `Span::width` measures them: both are
+/// unicode-width's), a word wider than `room` broken anywhere. Whole when
+/// it fits, or when `room` is under [`LEAST_DESCRIPTION`].
+fn pieces(text: &str, room: usize) -> Vec<String> {
+    if room < LEAST_DESCRIPTION || width(text) <= room {
+        return vec![text.to_owned()];
+    }
+    sb_term_ui::wrap_line(text, room, true)
+}
+
+/// The mouse's line, ` Mouse: <how>`, its text wrapped to `text` columns
+/// with each continuation under it (none: one line).
+fn mouse_lines(mouse: &str, theme: &Theme, text: Option<usize>) -> Vec<Line<'static>> {
+    let style = Style::from(theme.style(Role::Muted));
+    let room = text.map_or(usize::MAX, |text| text.saturating_sub(width(MOUSE_LABEL)));
+    pieces(mouse, room)
+        .into_iter()
+        .enumerate()
+        .map(|(i, piece)| {
+            let lead = if i == 0 {
+                MOUSE_LABEL.to_owned()
+            } else {
+                " ".repeat(width(MOUSE_LABEL))
+            };
+            Line::styled(format!("{lead}{piece}"), style)
+        })
+        .collect()
+}
+
 /// `groups` as the overlay's lines: each heading, then its keys, as wide
-/// as the column's widest, then what they do.
-fn column(groups: &[Group], theme: &Theme) -> Vec<Line<'static>> {
+/// as the column's widest, then what they do, wrapped to `text` columns
+/// with each continuation under the description column (none: as long as
+/// they are).
+fn column(groups: &[Group], theme: &Theme, text: Option<usize>) -> Vec<Line<'static>> {
     let style = |role| Style::from(theme.style(role));
     let keys_width = groups
         .iter()
@@ -400,6 +465,9 @@ fn column(groups: &[Group], theme: &Theme) -> Vec<Line<'static>> {
         .map(|k| width(&k.keys.join(" ")))
         .max()
         .unwrap_or(0);
+    // The description column: two spaces, the keys, two spaces.
+    let at = 2 + keys_width + 2;
+    let room = text.map_or(usize::MAX, |text| text.saturating_sub(at));
     let mut lines = Vec::new();
     for (i, group) in groups.iter().enumerate() {
         if i > 0 {
@@ -412,12 +480,19 @@ fn column(groups: &[Group], theme: &Theme) -> Vec<Line<'static>> {
         for key in group.keys {
             let shown = key.keys.join(" ");
             let pad = keys_width - width(&shown);
+            let mut what = pieces(key.what, room).into_iter();
             lines.push(Line::from(vec![
                 Span::raw("  "),
                 Span::styled(shown, style(Role::Accent)),
                 Span::raw(" ".repeat(pad + 2)),
-                Span::styled(key.what, style(Role::Text)),
+                Span::styled(what.next().unwrap_or_default(), style(Role::Text)),
             ]));
+            for piece in what {
+                lines.push(Line::from(vec![
+                    Span::raw(" ".repeat(at)),
+                    Span::styled(piece, style(Role::Text)),
+                ]));
+            }
         }
     }
     lines
@@ -433,8 +508,8 @@ fn two_columns(
     (1..keys.groups.len())
         .map(|at| {
             (
-                column(&keys.groups[..at], theme),
-                column(&keys.groups[at..], theme),
+                column(&keys.groups[..at], theme, None),
+                column(&keys.groups[at..], theme, None),
             )
         })
         .min_by_key(|(left, right)| left.len().max(right.len()))

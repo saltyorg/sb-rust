@@ -1,0 +1,23 @@
+---
+source: crates/tui/src/edit_picker/tests.rs
+expression: "drawn(&mut p, 50, 19).backend()"
+---
+" ◆ Edit   Select a Saltbox configuration file to  "
+"e╭ Keys: edit picker ───────────────────────────╮ "
+" │ Move                                        ▲│ "
+"›│  ↑ ↓ k j            a file                  █│ "
+" │  PgUp PgDn b Space  a page                  █│ "
+" │  Home End g G       the first, the last     █│ "
+" │                                             █│ "
+" │ Find                                        █│ "
+" │  /                  filter by title or name █│ "
+" │                                             █│ "
+" │ Leave                                       █│ "
+" │  Enter              edit the file           █│ "
+" │  Esc                clear the filter, or    █│ "
+" │                     leave                   █│ "
+" │  q                  quit                    ║│ "
+" │  Ctrl+C             stop (exit 130)         ║│ "
+" │  ? F1               these keys              ▼│ "
+" ╰ ↑↓ scroll · other keys close ────────────────╯ "
+"Enter edit · / filter · ↑↓ move    ? keys · q quit"

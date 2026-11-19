@@ -492,6 +492,15 @@ fn snapshot_keys_80x24() {
     assert_snapshot!(drawn(&mut p, 80, 24).backend());
 }
 
+/// Narrow, the overlay is one scrolled column, a long description's
+/// continuation under its description column.
+#[test]
+fn snapshot_keys_50x19() {
+    let mut p = picker();
+    press(&mut p, KeyCode::Char('?'));
+    assert_snapshot!(drawn(&mut p, 50, 19).backend());
+}
+
 /// Every key the overlay lists does something here, and keys it doesn't
 /// list do nothing (tui spec, "Keys", Testing).
 #[test]

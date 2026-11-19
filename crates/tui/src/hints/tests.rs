@@ -187,9 +187,14 @@ fn plain_key(code: KeyCode) -> KeyEvent {
 }
 
 fn drawn(overlay: &mut Overlay, width: u16, height: u16) -> Vec<String> {
+    drawn_keys(overlay, &TEST_KEYS, width, height)
+}
+
+/// [`drawn`] for `keys`.
+fn drawn_keys(overlay: &mut Overlay, keys: &Keys, width: u16, height: u16) -> Vec<String> {
     let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("test terminal");
     terminal
-        .draw(|frame| overlay.draw(frame, &TEST_KEYS, &plain()))
+        .draw(|frame| overlay.draw(frame, keys, &plain()))
         .expect("drawn");
     let buffer = terminal.backend().buffer().clone();
     (0..height)
@@ -374,4 +379,154 @@ fn every_screen_lists_help_and_a_way_out() {
         assert!(all.contains(&Meaning::Help), "{}", screen.screen);
         assert!(all.contains(&Meaning::Stop), "{}", screen.screen);
     }
+}
+
+/// One column wraps each description at words to the box, its
+/// continuation under the description column, never under the keys;
+/// the mouse's line hangs under its text the same way.
+#[test]
+fn a_long_description_hangs_under_its_column() {
+    const LONG: &[Group] = &[Group {
+        title: "Show",
+        keys: &[
+            Key {
+                keys: &["Tab", "Shift-Tab"],
+                what: "all, services, containers, and every other kind",
+                meaning: Meaning::Part,
+            },
+            Key {
+                keys: &["w"],
+                what: "wrap",
+                meaning: Meaning::Wrap,
+            },
+        ],
+    }];
+    let lines: Vec<String> = column(LONG, &plain(), Some(40)).iter().map(text).collect();
+    // `  Tab Shift-Tab  ` is 17 columns: the descriptions start there.
+    assert_eq!(
+        lines,
+        [
+            " Show",
+            "  Tab Shift-Tab  all, services,",
+            "                 containers, and every",
+            "                 other kind",
+            "  w              wrap",
+        ]
+    );
+    assert!(lines.iter().all(|l| Span::raw(l.as_str()).width() <= 40));
+    // Unwrapped without a width, and when the room left is under 8
+    // columns: at 24 the room is 7, at 25 it is 8 and the text wraps.
+    assert_eq!(column(LONG, &plain(), None).len(), 3);
+    assert_eq!(column(LONG, &plain(), Some(20)).len(), 3);
+    assert_eq!(column(LONG, &plain(), Some(24)).len(), 3);
+    assert!(column(LONG, &plain(), Some(25)).len() > 3);
+    let mouse: Vec<String> = mouse_lines(
+        "the wheel scrolls; Shift+wheel goes sideways",
+        &plain(),
+        Some(30),
+    )
+    .iter()
+    .map(text)
+    .collect();
+    assert_eq!(
+        mouse,
+        [
+            " Mouse: the wheel scrolls;",
+            "        Shift+wheel goes",
+            "        sideways",
+        ]
+    );
+}
+
+/// Wide characters wrap by their display width: no line is wider than the
+/// text's room, each continuation under the description column.
+#[test]
+fn wide_characters_hang_by_their_width() {
+    const WIDE: &[Group] = &[Group {
+        title: "Show",
+        keys: &[Key {
+            keys: &["Tab", "Shift-Tab"],
+            what: "日本語の説明 です 長い説明文ですね",
+            meaning: Meaning::Part,
+        }],
+    }];
+    let lines: Vec<String> = column(WIDE, &plain(), Some(30)).iter().map(text).collect();
+    assert!(lines.len() > 3, "{lines:?}");
+    for (i, line) in lines.iter().enumerate() {
+        assert!(Span::raw(line.as_str()).width() <= 30, "{lines:?}");
+        if i > 1 {
+            assert!(line.starts_with(&" ".repeat(17)), "{lines:?}");
+            assert!(!line[17..].starts_with(' '), "{lines:?}");
+        }
+    }
+}
+
+/// Keys whose first description is exactly the room a 40-column screen's
+/// box leaves it (`PgUp PgDn b Space` puts the descriptions at column 21;
+/// the box's inside is 36, so 15 columns), and enough rows to scroll at 8
+/// rows but not at 24.
+const HANGING: Keys = Keys {
+    screen: "test screen",
+    groups: &[
+        Group {
+            title: "Move",
+            keys: &[
+                Key {
+                    keys: &["PgUp", "PgDn", "b", "Space"],
+                    what: "abcdefgh abcdef",
+                    meaning: Meaning::Page,
+                },
+                Key {
+                    keys: &["↑", "↓"],
+                    what: "a line",
+                    meaning: Meaning::Move,
+                },
+            ],
+        },
+        Group {
+            title: "Leave",
+            keys: &[
+                Key {
+                    keys: &["q"],
+                    what: "quit",
+                    meaning: Meaning::Leave,
+                },
+                Key {
+                    keys: &["?"],
+                    what: "these keys",
+                    meaning: Meaning::Help,
+                },
+            ],
+        },
+    ],
+    mouse: "the wheel scrolls; Shift+wheel goes sideways",
+};
+
+/// Scrolled, the column is wrapped one narrower for its scrollbar, so
+/// the description exactly the box's room wraps there, under its column,
+/// never from the box's edge; fitting, it stays on its row; the mouse's
+/// continuation hangs under its text.
+#[test]
+fn a_scrolled_column_wraps_one_narrower_under_its_column() {
+    let hung = format!("│{}abcdef", " ".repeat(21));
+    let mut overlay = Overlay::default();
+    overlay.open();
+    let rows = drawn_keys(&mut overlay, &HANGING, 40, 8);
+    let all = rows.join("\n");
+    assert!(all.contains("↑↓ scroll"), "{all}");
+    assert!(all.contains("PgUp PgDn b Space  abcdefgh"), "{all}");
+    assert!(rows.iter().any(|row| row.contains(&hung)), "{all}");
+    assert!(!all.contains("│abcdef"), "{all}");
+    overlay.key(plain_key(KeyCode::End));
+    let all = drawn_keys(&mut overlay, &HANGING, 40, 8).join("\n");
+    assert!(
+        all.contains(&format!("│{}Shift+wheel goes sideways", " ".repeat(8))),
+        "{all}"
+    );
+    // Fitting, nothing scrolls, and the description keeps its one row.
+    let mut overlay = Overlay::default();
+    overlay.open();
+    let all = drawn_keys(&mut overlay, &HANGING, 40, 24).join("\n");
+    assert!(all.contains("any key closes"), "{all}");
+    assert!(all.contains("PgUp PgDn b Space  abcdefgh abcdef"), "{all}");
 }
