@@ -40,7 +40,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Once, PoisonError};
 use std::time::Duration;
 
-use crossterm::cursor::Show;
+use crossterm::cursor::{MoveTo, Show};
 use crossterm::event::{
     DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
     Event as Input, EventStream, KeyModifiers,
@@ -51,6 +51,7 @@ use crossterm::terminal::{
 use crossterm::{Command as _, execute};
 use futures_util::{FutureExt as _, Stream, StreamExt as _};
 use ratatui::backend::{Backend, CrosstermBackend};
+use ratatui::layout::Position;
 use ratatui::{DefaultTerminal, Frame, Terminal};
 use sb_cli_core::cancel::{RestoreHook, Shutdown};
 use tokio::sync::{Notify, mpsc};
@@ -282,22 +283,15 @@ impl Tui {
         }
     }
 
-    /// The screen's area cleared, the last step before it is left, so a
-    /// terminal without an alternate screen (GNU screen's default) keeps no
-    /// frame with plain values (the maintainer, 2026-11-19: every screen
-    /// is left blank). ratatui's `Backend::clear`, crossterm's `Clear(All)`
-    /// (<https://docs.rs/ratatui/0.30.2/ratatui/backend/trait.Backend.html#tymethod.clear>).
-    /// Why not `Terminal::clear`
-    /// (<https://docs.rs/ratatui/0.30.2/ratatui/struct.Terminal.html#method.clear>):
-    /// it asks the terminal for the cursor's position first
-    /// (ratatui-core 0.1.2 `terminal/buffers.rs`), waiting for an answer a
-    /// terminal or a test's PTY may never send, and fails without clearing
-    /// when none comes; the cursor's place doesn't matter as the screen
-    /// goes.
+    /// The screen's rows erased in place, the last step before it is left,
+    /// so a terminal without an alternate screen (GNU screen's default,
+    /// tmux with `alternate-screen off`) keeps no frame with plain values
+    /// (the maintainer, 2026-11-19: every screen is left blank). [`erase_rows`], on
+    /// stdout or on the tty.
     fn clear(&mut self) -> io::Result<()> {
         match &mut self.screen {
-            Screen::Stdout(terminal) => terminal.backend_mut().clear(),
-            Screen::Tty(terminal) => terminal.backend_mut().clear(),
+            Screen::Stdout(terminal) => erase_rows(terminal.backend_mut()),
+            Screen::Tty(terminal) => erase_rows(terminal.backend_mut()),
         }
     }
 
@@ -386,9 +380,39 @@ fn forced_exit_restore(out: File) -> impl Fn() + Send + 'static {
     }
 }
 
-/// Mouse capture and bracketed paste off, the screen cleared ("Blank on
-/// exit", as [`Tui::leave`]), the alternate screen left, the cursor shown,
-/// as
+/// Every row of the backend's screen erased in place, one at a time
+/// (ratatui's `Backend::set_cursor_position` and
+/// `Backend::clear_region(ClearType::CurrentLine)`, crossterm's `MoveTo`
+/// and `Clear(CurrentLine)`), then the cursor home.
+///
+/// Why not ratatui's `Terminal::clear`
+/// (<https://docs.rs/ratatui/0.30.2/ratatui/struct.Terminal.html#method.clear>)
+/// or `Backend::clear`: both erase the display (ESC [2J), and GNU screen
+/// 4.09 and tmux 3.2a without an alternate screen move a display erased so
+/// into their scrollback, frame and values included, where row-by-row
+/// erasing leaves nothing (docs/platform-notes/terminal-clear-scrollback.md).
+/// `Terminal::clear` also asks the terminal for the cursor's position
+/// first (ratatui-core 0.1.2 `terminal/buffers.rs`) and fails without
+/// clearing when no answer comes. The size is the backend's (an ioctl, no
+/// query).
+fn erase_rows<B: Backend>(backend: &mut B) -> Result<(), B::Error> {
+    let size = backend.size()?;
+    for row in 0..size.height {
+        backend.set_cursor_position(Position::new(0, row))?;
+        backend.clear_region(ratatui::backend::ClearType::CurrentLine)?;
+    }
+    backend.set_cursor_position(Position::ORIGIN)?;
+    backend.flush()
+}
+
+/// The rows the prepared restore sequence erases: the hook can't ask the
+/// terminal's size, and a cursor moved past the last row stays on it, so
+/// a bound past any real screen erases every row.
+const ERASED_ROWS: u16 = 512;
+
+/// Mouse capture and bracketed paste off, every row erased ("Blank on
+/// exit", as [`Tui::leave`], [`ERASED_ROWS`] of them), the alternate
+/// screen left, the cursor shown, as
 /// crossterm writes them (`Command::write_ansi`), built before any hook
 /// needs it. Why not `execute!` in the hook: it formats and flushes
 /// several writes on the restore thread; one prepared write is the
@@ -398,7 +422,11 @@ fn restore_sequence() -> String {
     // Writing to a `String` can't fail.
     let _ = DisableMouseCapture.write_ansi(&mut sequence);
     let _ = DisableBracketedPaste.write_ansi(&mut sequence);
-    let _ = Clear(ClearType::All).write_ansi(&mut sequence);
+    for row in 0..ERASED_ROWS {
+        let _ = MoveTo(0, row).write_ansi(&mut sequence);
+        let _ = Clear(ClearType::CurrentLine).write_ansi(&mut sequence);
+    }
+    let _ = MoveTo(0, 0).write_ansi(&mut sequence);
     let _ = LeaveAlternateScreen.write_ansi(&mut sequence);
     let _ = Show.write_ansi(&mut sequence);
     sequence
@@ -1082,9 +1110,13 @@ mod tests {
         DisableBracketedPaste
             .write_ansi(&mut expected)
             .expect("write");
-        Clear(ClearType::All)
-            .write_ansi(&mut expected)
-            .expect("write");
+        for row in 0..ERASED_ROWS {
+            MoveTo(0, row).write_ansi(&mut expected).expect("write");
+            Clear(ClearType::CurrentLine)
+                .write_ansi(&mut expected)
+                .expect("write");
+        }
+        MoveTo(0, 0).write_ansi(&mut expected).expect("write");
         LeaveAlternateScreen
             .write_ansi(&mut expected)
             .expect("write");

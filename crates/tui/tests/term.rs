@@ -382,6 +382,7 @@ fn q_leaves_the_screen_and_restores_the_terminal() {
     assert!(status.success(), "{status:?}");
     assert!(pty.parser.screen().contents().contains("ending Ok(Quit)"));
     pty.assert_restored();
+    assert_cleared_before_leaving(&pty.raw);
 }
 
 /// An SGR mouse report, as a terminal sends one while capture is on.
@@ -434,6 +435,7 @@ fn dropping_the_screen_restores_the_terminal() {
     assert!(pty.exit().success());
     assert!(pty.parser.screen().contents().contains("ending Ok(Quit)"));
     pty.assert_restored();
+    assert_cleared_before_leaving(&pty.raw);
 }
 
 #[test]
@@ -469,6 +471,7 @@ fn sigterm_restores_the_terminal_then_ends_by_the_signal() {
             .contains("ending Ok(Cancelled)")
     );
     pty.assert_restored();
+    assert_cleared_before_leaving(&pty.raw);
 }
 
 #[test]
@@ -535,6 +538,7 @@ fn a_second_signal_on_a_stuck_screen_restores_the_terminal_through_the_hook() {
     );
     assert!(!pty.parser.screen().contents().contains("ending"));
     pty.assert_restored();
+    assert_cleared_before_leaving(&pty.raw);
 }
 
 #[test]
@@ -548,6 +552,7 @@ fn on_the_tty_q_leaves_the_screen_and_restores_the_terminal() {
     pty.assert_restored();
     assert!(pty.stdout().contains("ending Ok(Quit)"), "{}", pty.stdout());
     pty.assert_stdout_clean();
+    assert_cleared_before_leaving(&pty.raw);
 }
 
 #[test]
@@ -559,6 +564,7 @@ fn on_the_tty_dropping_the_screen_restores_the_terminal() {
     pty.assert_restored();
     assert!(pty.stdout().contains("ending Ok(Quit)"), "{}", pty.stdout());
     pty.assert_stdout_clean();
+    assert_cleared_before_leaving(&pty.raw);
 }
 
 #[test]
@@ -579,6 +585,7 @@ fn on_the_tty_a_panic_restores_the_terminal_once() {
         pty.run_log()
     );
     pty.assert_stdout_clean();
+    assert_cleared_before_leaving(&pty.raw);
 }
 
 #[test]
@@ -618,6 +625,7 @@ fn on_the_tty_a_second_signal_on_a_stuck_screen_restores_the_terminal() {
     );
     pty.assert_restored();
     pty.assert_stdout_clean();
+    assert_cleared_before_leaving(&pty.raw);
 }
 
 /// Key to screen change, `count` times; the median. The pause before each
@@ -666,56 +674,26 @@ fn input_reaches_the_screen_within_a_few_frames() {
     assert!(added < Duration::from_millis(100), "{added:?} added");
 }
 
-/// The screen's area cleared (crossterm's `Clear(All)`, ESC [2J) after its
-/// last frame and before the alternate screen is left, so a terminal
-/// without one (GNU screen's default) keeps no frame with plain values
-/// (the maintainer, 2026-11-19: every screen is left blank; tui spec, "Keys: one map
-/// for every screen", Decisions).
+/// The screen's rows erased in place (crossterm's `MoveTo` and
+/// `Clear(CurrentLine)`, ESC [2K) after its last frame and before the
+/// alternate screen is left, and no ESC [2J after the frame: GNU screen and
+/// tmux without an alternate screen move a frame erased by ESC [2J into
+/// their scrollback (docs/platform-notes/terminal-clear-scrollback.md), so
+/// a terminal without one keeps no frame with plain values (the
+/// maintainer, 2026-11-19: every screen is left blank; tui spec, "Keys: one map for
+/// every screen", decision 6).
 fn assert_cleared_before_leaving(raw: &[u8]) {
     let raw = String::from_utf8_lossy(raw);
     let leave = raw.rfind("\x1b[?1049l").expect("the alternate screen left");
-    let clear = raw[..leave]
-        .rfind("\x1b[2J")
-        .unwrap_or_else(|| panic!("no clear before leaving: {raw:?}"));
-    let drawn = raw[..leave].rfind("keys").expect("a frame");
+    let drawn = ["keys", "stuck"]
+        .iter()
+        .filter_map(|text| raw[..leave].rfind(text))
+        .max()
+        .expect("a frame");
+    let after = &raw[drawn..leave];
     assert!(
-        drawn < clear,
-        "the clear comes after the last frame: {raw:?}"
+        after.matches("\x1b[2K").count() >= 24,
+        "each of the 24 rows erased after the last frame: {raw:?}"
     );
-}
-
-#[test]
-fn q_clears_the_screen_before_leaving_it() {
-    let mut pty = Pty::spawn("screen");
-    pty.assert_up();
-    pty.send(b"q");
-    assert!(pty.exit().success());
-    assert_cleared_before_leaving(&pty.raw);
-}
-
-#[test]
-fn a_dropped_screen_is_cleared_before_it_is_left() {
-    let mut pty = Pty::spawn("dropped");
-    pty.assert_up();
-    pty.send(b"q");
-    assert!(pty.exit().success());
-    assert_cleared_before_leaving(&pty.raw);
-}
-
-#[test]
-fn sigterm_clears_the_screen_before_leaving_it() {
-    let mut pty = Pty::spawn("screen");
-    pty.assert_up();
-    pty.signal(Signal::TERM);
-    pty.exit();
-    assert_cleared_before_leaving(&pty.raw);
-}
-
-#[test]
-fn on_the_tty_q_clears_the_screen_before_leaving_it() {
-    let mut pty = Pty::spawn_on_tty("screen");
-    pty.assert_up();
-    pty.send(b"q");
-    assert!(pty.exit().success());
-    assert_cleared_before_leaving(&pty.raw);
+    assert!(!after.contains("\x1b[2J"), "no erase-display: {raw:?}");
 }

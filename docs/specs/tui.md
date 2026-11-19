@@ -1549,6 +1549,13 @@ the test's directory.
 ### Known limits
 
 - OSC 52 copy can't confirm success. The status line says so.
+- Blank on exit ("Keys: one map for every screen", decision 6) has two
+  gaps. A panic on a screen on stdout leaves it through ratatui's own
+  restore, which erases nothing (on the tty, sb's hook erases every row).
+  And ratatui erases the display (ESC [2J) when the window is resized
+  (ratatui-core 0.1.2 `terminal/resize.rs`), so under GNU screen or tmux
+  without an alternate screen a frame shown before a resize, values
+  included, can reach their scrollback.
 - A commit across several roles has no rollback. A failure leaves the
   earlier roles applied, and the outcome dialog says which.
 - A `;` line that doesn't continue a value (at column 0, say) is a
@@ -2312,9 +2319,10 @@ mask, `s` and `a`, and the masked last frame it drew as it closed.
 sb-config's `facts::secret::is_secret` and `is_secret_value` (the value
 rule, a URL with credentials) stay, with no caller now: their only
 caller was the restore pane, and they are ready for output meant for
-sharing. Every screen is cleared as the last step before it is left
-(decision 6), so a terminal without an alternate screen (GNU screen's
-default) keeps no frame with plain values.
+sharing. Every screen erases its rows as the last step before it is
+left (decision 6), so a terminal without an alternate screen (GNU
+screen's default) keeps no frame with plain values, but for the two gaps
+in Known limits (a panic on stdout, a resize).
 
 ### Decisions (the maintainer, 2026-11-18)
 
@@ -2329,16 +2337,21 @@ default) keeps no frame with plain values.
 5. **The tail** `? keys · q quit` sits right-aligned on every screen
    (option A).
 6. **Blank on exit** (the maintainer, 2026-11-19, on the security
-   review's question of 2026-11-18): every screen clears its area as the
-   last step before the alternate screen is left, so a terminal without
-   one (GNU screen's default, tmux with `alternate-screen off`) keeps no
-   frame with plain values. Nothing is hidden while the screen is up.
-   Built in `Tui::leave` and the screen's drop with ratatui's
-   `Backend::clear` (crossterm's `Clear(All)`), and in the forced exit's
-   restore sequence; not `Terminal::clear`, which asks the terminal for
-   the cursor's position first and fails without clearing when no answer
-   comes. A panic leaves the screen through ratatui's own restore, which
-   doesn't clear.
+   review's question of 2026-11-18): before leaving `sb fact`,
+   restore's viewer and every other screen, the screen's area is cleared
+   as the last step, so a terminal without an alternate screen (GNU
+   screen's default) keeps no frame with plain values.
+
+Built as (2026-11-19): every row erased in place (each row's
+`MoveTo` and `Clear(CurrentLine)`, through ratatui's `Backend`), then
+the cursor home, in `Tui::leave`, the screen's drop and the forced
+exit's prepared sequence (on stdout and on the tty). Not ratatui's
+`Terminal::clear`, which the decision named, nor `Backend::clear`: both
+erase the display (ESC [2J), which GNU screen 4.09 and tmux 3.2a without
+an alternate screen move into their scrollback, frame and values
+included (docs/platform-notes/terminal-clear-scrollback.md); and
+`Terminal::clear` first asks the terminal for the cursor's position and
+fails without clearing when no answer comes.
 
 ## Verification notes
 

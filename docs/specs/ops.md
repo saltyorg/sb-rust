@@ -1970,9 +1970,10 @@ the real services.
   root could point it elsewhere. The root is the operator's (Saltbox's
   seed user's), so this is left as it is. Its copies of the file (the
   lines, the frames) aren't cleared; the file is on disk anyway.
-- The viewer shows every value; the screen is cleared before it is left
-  (tui spec, "Keys: one map for every screen", decision 6), so a terminal
-  without an alternate screen keeps no frame of them. A file past 2,000
+- The viewer shows every value; the screen's rows are erased before it
+  is left (tui spec, "Keys: one map for every screen", decision 6), so a
+  terminal without an alternate screen keeps no frame of them, but for
+  the tui spec's two gaps (a panic, a resize). A file past 2,000
   wrapped rows is cut there in the pane, as the
   announcement viewer's.
 - The form's fields are ratatui-textarea `String`s, not cleared on drop:
