@@ -116,6 +116,37 @@ not a directory` (cmd/update.go:391-400).
   the order holds for each: `--keep-branch` on a branch without an
   upstream, or a reset to a local branch whose upstream was removed, is
   refused with the checkout untouched.
+- **`discards(current, branch)`** *(added 2026-11-19, decision 13)*:
+  what `fetch_and_reset(branch)` would throw away, read before anything
+  changes, each a local read (10 s), the counts as of the last fetch:
+  - **local commits:** when `refs/heads/<branch>` resolves, `git
+    rev-list --count <branch>@{u}..refs/heads/<branch>`, the commits the
+    final reset to `@{u}` drops; a branch only on the remote has none. A
+    local branch, or the current one, without an upstream is step 3's
+    refusal, `<Repo>: branch '<b>' has no upstream to update from`,
+    returned here, so no question is asked that would only lead to it
+    (found in review, 2026-11-19);
+  - **detached commits:** when `current` is `HEAD` and `branch` isn't,
+    `git rev-list --count HEAD --not --branches --remotes --tags`, the
+    commits only the detached HEAD reaches, which the checkout leaves
+    behind;
+  - **tracked changes:** `git diff --name-only -z --no-renames
+    --ignore-submodules=dirty HEAD`, staged or not, what `reset --hard`
+    puts back (a file touched but unchanged isn't one: git's index
+    refresh);
+  - **untracked files:** `git -c core.quotePath=false clean -dn`'s
+    `Would remove <path>` lines (names outside ASCII as they are, as
+    `diff -z` gives the tracked ones),
+    exactly what the reset's first `clean -df` removes; ignored files
+    aren't among them (no `-x`), so Saltbox's config stays out of it.
+  `local_changes()` is the last two alone, for a checkout left as it is.
+  Nothing changes but git's index stat cache, which `git diff`
+  refreshes.
+  The texts are `Discards::summary`: `2 local commits on 'master', 1
+  commit only on the detached HEAD, 1 tracked change and 3 untracked
+  files`, each part only when not zero, singular or plural as its
+  number needs. Whether to ask, refuse or go on is the caller's
+  (assumption 5).
 - **`clone(url, branch, step)`** and **`init_from_remote(url, branch,
   step)`** for `sb setup` (G-ops research §2: `clone --progress --depth 1
   -b <b>`, then submodules; or `init -b <b>` (difference 12), `remote add origin`, `fetch --all
@@ -200,6 +231,11 @@ Every fetch, clone and submodule update goes through one wrapper
 13. A branch without an upstream is refused before the worktree changes
     (decision 12); sb-go ran `clean -df` first, so untracked files were
     lost before its `reset --hard @{u}` failed.
+
+14. *Added 2026-11-19 (decision 13):* `discards` says what an update
+    would throw away before anything changes, so the commands can ask;
+    sb-go discarded local commits, tracked changes and untracked files
+    without a word.
 
 ### Scope
 
@@ -308,6 +344,15 @@ No test touches a Saltbox checkout or the network.
   - a submodule added upstream is initialised.
   - `head()` before and after differs; `current_branch()` on detached is
     `HEAD`.
+  - `discards` (2026-11-19): a clean clone has none; a local commit, a
+    staged and an unstaged edit, an untracked file and directory are
+    each counted, an ignored file and a touched-but-unchanged file
+    aren't; a switch counts the target's commits, not the current
+    branch's; a detached HEAD's own commits are counted, not once a tag
+    holds them; a branch only on the remote has no commits to lose; a
+    kept branch without an upstream is the "no upstream" refusal; a name
+    outside ASCII comes as it is; the reads change nothing (the tree
+    byte for byte, the refs).
 - **HTTP/1.1 retry:** a stand-in `git` first on `PATH` (as exec's tests
   use stand-in programs) that prints the three phrases and exits 128
   unless its arguments start with `-c http.version=HTTP/1.1`, then runs
@@ -393,8 +438,26 @@ No test touches a Saltbox checkout or the network.
     on a branch without an upstream destroyed tracked edits and untracked
     files, then failed; decision 8's rule, extended to the upstream).
 
+13. **What an update discards is known first** (the maintainer,
+    2026-11-19, from a test agent's finding: plain `update` dropped a
+    local commit, a tracked edit and two untracked files and printed the
+    step backwards as a move): `discards` counts it with git's own reads,
+    `git clean -dn` the dry run of the clean it predicts. The counts are
+    as of the last fetch, before the fetch the update runs (Known limits).
+
 ## Known limits
 
+- `discards` reads before the fetch: a local commit the fetch then
+  finds upstream is still counted (asked about needlessly), and upstream
+  commits a force-push removes aren't counted (they weren't local work).
+  A switch to another branch runs a second `clean -df` after the
+  checkout; a file the current branch ignores and the target doesn't is
+  removed there and not counted. Saltbox's branches share their
+  `.gitignore`, so it doesn't arise on Saltbox. Checked on public clones
+  (Saltbox 03fce9e, Sandbox 61676e3, 2026-11-19): with the default
+  configs copied in, `cache.json`, `ansible_facts.d/saltbox.fact`,
+  `inventories/host_vars/localhost.yml`, logs and retry files, `git
+  clean -dn` lists nothing in either checkout.
 - Two sb runs updating the same checkout at once: the second fails on
   git's `index.lock` with git's message. sb-go is the same.
 - A host without Saltbox's `safe.directory` entries gets git's "dubious

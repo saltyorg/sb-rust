@@ -105,7 +105,7 @@ checkout to the named branch, as asked, every time.
 
 **Flags:** `--branch/-b <name>` (default `master`), `--force`,
 `--keep-branch` / `--reset-branch` (mutually exclusive, as on `update`;
-decision 29), and `--verbose/-v`, hidden and ignored (decision 1). The flags are clap
+decision 29), `--discard-local` (2026-11-19, decision 42), and `--verbose/-v`, hidden and ignored (decision 1). The flags are clap
 `global`, as sb-go's persistent flags, so the contract test's lines
 match. Help texts are sb-go's.
 
@@ -131,6 +131,14 @@ answer from `--keep-branch` or `--reset-branch` without asking. With no
 terminal and neither flag, setup fails before any step with an error
 naming both flags, exit 1 (decision 29; difference 6). It only arises
 with `--force` over an existing checkout on another branch.
+
+*Amended 2026-11-19 (decision 42):* then, on a checkout, update's local
+changes rule for the resolved branch ("Local changes", under `sb
+update`): the question on a terminal, `Saltbox: Discard these local
+changes and update?`; declined, the phase skips the fetch and reset
+(the notice `Saltbox: Left as is, keeping ... (your answer)`) and the
+rest of setup runs; without a terminal, refused before any step, naming
+the counts and `--discard-local` (a new setup flag, as on `update`).
 
 **3. The runner tree.** Root step `Installing Saltbox` (success
 `Saltbox installation completed`), then these phases in order, each
@@ -585,9 +593,9 @@ signal, the disk test's file and the temporary directory removed.
 
 | Command | Arguments and flags | Hidden |
 |---|---|---|
-| `update` | `--keep-branch` / `--reset-branch` (conflict: clap's error, exit 2), `--skip-self-update`, `--migrations <run\|skip>` (new) | no |
-| `branch <name>` | the branch, required | no |
-| `branch-sandbox <name>` | the branch, required | no |
+| `update` | `--keep-branch` / `--reset-branch` (conflict: clap's error, exit 2), `--skip-self-update`, `--migrations <run\|skip>` (new), `--discard-local` (new, 2026-11-19), `--skip-git` (new, hidden, 2026-11-19; conflicts with both branch flags and `--discard-local`) | no |
+| `branch <name>` | the branch, required; `--discard-local` (new, 2026-11-19) | no |
+| `branch-sandbox <name>` | the branch, required; `--discard-local` (new, 2026-11-19) | no |
 | `announcements` | none (decision 27, amended 2026-11-17: sb-go's `--before`, `--after` and `--repo` removed, difference 45) | no |
 | `announcements preview` | `--since <ref>` (default `HEAD`), `--repo <saltbox\|sandbox>`, `--run-migrations` (decision 34, 2026-11-18) | yes |
 | `announcements check` | `[file]`, `--repo <saltbox\|sandbox>` (decision 35, 2026-11-18) | yes |
@@ -609,7 +617,16 @@ required (`cobra.ExactArgs(1)`, cmd/branch.go:24).
      branch isn't `master` (repo's `current_branch`);
    - `--migrations` always (its question comes after the checkouts have
      moved, and the next run can't ask it again: the announcement diff
-     is then empty).
+     is then empty);
+   - *added 2026-11-19 (decision 40):* `--discard-local` or `--skip-git`
+     when a checkout whose branch is decided (on `master`, or a branch
+     flag given) has local changes its update would discard (repo's
+     `discards` for that branch), naming each such checkout and its
+     counts (`Saltbox has 1 local commit on 'master' and 2 untracked
+     files that the update would discard`).
+
+   With `--skip-git` none of these is needed: no branch question, no
+   discard question and no migrations (decision 41).
 
    Missing ones: one error naming each flag and why, exit 1, before any
    step. "A terminal" is term-ui's prompt rule: `/dev/tty` opens and sb
@@ -645,6 +662,11 @@ migrations question) and below for the migrations' playbooks.
    is a `›` notice under the checkout's step: `<Repo>: Kept branch '<b>'
    (your answer)` or `<Repo>: Reset from branch '<b>' to 'master' (your
    answer)`, in place of repo's notices for the choice.
+
+   *Added 2026-11-19 (decision 40):* after each checkout's branch
+   question, its **local changes question**, when its update to the
+   chosen branch would discard anything (repo's `discards`) and neither
+   `--discard-local` nor `--skip-git` is given ("Local changes", below).
 5. **"Updating apt package cache"** with the sub-step "Refreshing apt
    package lists": host's `update_lists`.
 6. **Announcements before:** both files read (below).
@@ -659,6 +681,9 @@ migrations question) and below for the migrations' playbooks.
    reset, before the runtime (HEAD doesn't move in between; what moved
    is then known even if the runtime fails, decision 38), and the old
    cache entry is read before the rebuild writes over it (step 13).
+   A checkout left as it is (`--skip-git`, or its local changes question
+   declined) skips "Updating <Repo> repository" and reads `head()` once;
+   its tags cache is rebuilt always ("Local changes", below).
 8. **"Securing Saltbox configuration permissions"** / "Saltbox
    configuration permissions secured": `secure_existing_configs`
    (`sb setup`, above).
@@ -684,6 +709,73 @@ migrations question) and below for the migrations' playbooks.
 Errors keep sb-go's wrapping: `error updating Saltbox: ...`, `error
 updating Sandbox: ...`, `error securing Saltbox configuration
 permissions: ...`, `error validating Saltbox configuration: ...`; exit 1.
+
+#### Local changes, `--discard-local` and `--skip-git`
+
+The maintainer's decisions of 2026-11-19 (decisions 40 and 41).
+
+- **What counts:** repo's `discards` for the branch the checkout is
+  updated to: its local commits not on its upstream (the branch named),
+  a detached HEAD's own commits, tracked changes, staged or not, and the
+  untracked files and directories `git clean -df` removes. Ignored files
+  never count: the clean has no `-x`, and Saltbox's configs, facts and
+  sb's tags cache are ignored in both checkouts (repo, Known limits).
+  A clean checkout gets no question and its output doesn't change, so
+  cron runs on clean hosts behave exactly as before.
+- **On a terminal:** the question on the alternate screen (term-ui's
+  `confirm_over`, the tree paused over it), its context:
+  ```
+  Saltbox: updating to 'master' would discard 1 local commit on 'master',
+  1 tracked change and 2 untracked files:
+    roles/foo/tasks/main.yml
+    notes.txt
+    scratch/
+  Declining leaves Saltbox as it is; the rest of the update goes on.
+  ```
+  at most five names (the tracked ones first), each escaped and cut to
+  78 columns with `…`, then `  and <n> more`; the question `Saltbox:
+  Discard these local changes and update?` (default no). The answer is
+  a `›` notice under the checkout's step: `Saltbox: Discarding 1 local
+  commit on 'master', 1 tracked change and 2 untracked files (your
+  answer)`, or `Saltbox: Left as is, keeping 1 local commit on 'master',
+  ... (your answer)`. Declining skips that checkout's git steps only, as
+  `--skip-git` would for it, and the run goes on; the branch's notice
+  (`Reset from branch ...`, `Updating the current branch ...`) is then
+  left out, since it didn't happen (found in review, 2026-11-19). Ctrl-C
+  ends the run as at a branch question. A local branch, or the current
+  one, without an upstream gets no question: repo's `discards` returns
+  the update's own "no upstream" refusal, which fails the checkout's
+  step before anything changes, as before.
+- **Without a terminal:** the up-front refusal (step 1).
+- **`--discard-local`** (visible, for automation): no question; the
+  notice `Saltbox: Discarding ... (--discard-local)`, and the update
+  goes on as before.
+- **`--skip-git`** (hidden, not in help or completion): both checkouts
+  left exactly as they are: no refspec write, fetch, clean, reset,
+  checkout, submodule update or branch question, and no up-front branch
+  flag or `--migrations` without a terminal. Everything else runs as
+  before: the run lock, self-update, the disk check, apt, the runtime
+  (venv, fact, deadsnakes; the venv step's recursive chown of the
+  checkout included), the config permissions, validation and
+  completions. Besides:
+  - both tags caches are rebuilt, always (HEAD can't move, so the
+    moved-or-missing rule would leave them stale after a manual pull or
+    a role edit);
+  - the announcements step compares nothing: it ends `Announcements not
+    compared (--skip-git)`, its one notice `To see them: sb announcements
+    preview --since <ref>` (decided: a notice under the
+    run's newest step read as Sandbox's); no viewer, no migrations;
+  - clap refuses it with `--keep-branch`, `--reset-branch` or
+    `--discard-local` (exit 2).
+- **A checkout left as it is,** by the flag or the answer: what moved
+  prints `Saltbox  left as is (e4f5a6b, dev-x, 3 local changes)`, its
+  HEAD, its branch (`detached HEAD` when detached) and its tracked and
+  untracked changes counted (repo's `local_changes`; `no local changes`
+  for none). It isn't moved, so it takes no hint (below).
+- **The run log:** `local changes` with `repo`, `branch`, `commits`,
+  `detached`, `tracked`, `untracked` and `decided` (`answer`,
+  `--discard-local`) and `discard` (true or false); `git skipped` with
+  `repo` and `reason` (`--skip-git`, `declined`).
 
 #### Announcements
 
@@ -772,7 +864,10 @@ the mock-ups; decisions 36 to 38). sb-go printed none of this.
   - moved, the tags compared, some added or removed: the range line,
     then `  New tags:      <tags>` and `  Removed tags:  <tags>`, each
     only when its list isn't empty, the tags starting at column 18;
-  - moved, the tags not compared: the range line only.
+  - moved, the tags not compared: the range line only;
+  - *added 2026-11-19:* left as it is (`--skip-git`, or the local
+    changes question declined): `Saltbox  left as is (e4f5a6b, master,
+    2 local changes)`, the id in Muted ("Local changes", above).
 - **The tags** as the user types them: Saltbox's as listed, Sandbox's
   with `sandbox-`; the new ones in the new listing's order, the removed
   ones in the old one's; each escaped (cli-core's `escaped`: a tag is
@@ -856,6 +951,17 @@ the mock-ups; decisions 36 to 38). sb-go printed none of this.
    as sb-go.
 
 No prompt: the argument is the answer (decision 20).
+
+*Amended 2026-11-19 (decision 42):* before the runner starts, after the
+name and user checks, repo's `discards` for `<name>`: when the switch
+would discard anything, update's rule ("Local changes"): on a terminal
+the question `<Repo>: Discard these local changes and switch to
+'<name>'?` with the same context; declined, nothing runs and sb ends with
+exit 0 after the warning `<Repo> left as is: not switched to '<name>'
+(your answer)`, since the switch is the command's whole work; accepted,
+the notice under the switch step. Without a terminal, refused before
+anything changes, naming the counts and `--discard-local`, which skips
+the question.
 
 ### `sb announcements`
 
@@ -1262,6 +1368,16 @@ Every text from the file is escaped as sb's other output (cli-core's
     tree too, its questions and the migration table on the normal
     screen between its lines.
 
+Local changes (the maintainer, 2026-11-19; decisions 40 to 42):
+65. `update`, `branch`, `branch-sandbox` and `setup --force` ask before
+    discarding a checkout's local commits, tracked changes or untracked
+    files, and without a terminal refuse unless `--discard-local` (or,
+    on `update`, `--skip-git`) is given. sb-go discarded them without a
+    word, and its update printed the step backwards as a move.
+66. `update --skip-git`, hidden, leaves both checkouts as they are and
+    runs the rest, the tags caches always rebuilt; sb-go had no way to
+    update without resetting the checkouts.
+
 ## Scope
 
 **In:**
@@ -1564,6 +1680,15 @@ the real services.
       checkout off master without a branch flag: the error naming both;
     - `update` on a PTY (rexpect): the branch questions before the first
       step; the migration confirm after the viewer;
+    - local changes (decisions 40 to 42): git fixtures with a local
+      commit, a tracked edit, untracked and ignored files; on a PTY the
+      question on the alternate screen, yes discarding (the notice) and
+      no leaving the checkout byte for byte as it was; piped, the
+      refusal before any step naming the counts, and `--discard-local`
+      going on; a clean checkout unchanged in output; `--skip-git`
+      leaving both trees byte for byte, rebuilding both tags caches,
+      the announcements notice and `left as is`; clap's conflicts; the
+      same rule in `branch` and `setup`;
     - a new announcement with a migration upstream: listed, run with
       `--migrations run` (the stand-in records `--tags <tag>` and the
       working directory), skipped with `skip` (the warning);
@@ -1962,6 +2087,30 @@ the real services.
     (`branch::resolve`; setup asks before its runner starts, on the
     normal screen, as before); and the table left off stdout when stdout
     is the tree's terminal and the flag answered.
+40. **Ask before discarding local changes** (the maintainer,
+    2026-11-19, from a test agent's run: plain `update` dropped a local
+    commit, a tracked edit and two untracked files without a word): on a
+    terminal a question per checkout with something to discard, after
+    its branch question; declining leaves that checkout as it is and the
+    run goes on; without a terminal a refusal up front, before
+    self-update, naming the counts and the two flags; `--discard-local`
+    for automation; nothing changes for a clean checkout. Decided: the texts, the five names, a notice for `--discard-local` too,
+    and the left-as-is count being the working tree's changes
+    (`local_changes`), since a checkout left as it is has no target to
+    count commits against.
+41. **A hidden `update --skip-git`** (the maintainer, 2026-11-19): for
+    developers, both checkouts untouched and the rest of update run; the
+    tags caches always rebuilt, the announcements a pointer to `sb
+    announcements preview`, what moved `left as is`, the venv's chown of
+    the checkout kept. Decided: no `--migrations` needed
+    without a terminal either, since no migration is offered.
+42. **`branch`, `branch-sandbox` and `setup` take the same rule** where
+    they reset (the maintainer, 2026-11-19), each
+    with `--discard-local`. A declined `branch` ends with nothing run and
+    exit 0 and a warning, since switching is its whole work (the
+    recorded choice: its answer is the user's own, as a declined
+    self-update's warning); a declined `setup` skips the fetch and reset
+    and goes on, as update does.
 
 ## Known limits
 
@@ -2009,6 +2158,13 @@ the real services.
   gives those lines for it and the ones left (difference 43).
 - A Sandbox checkout that doesn't exist fails `update` with repo's
   `inspect required directory` error, as sb-go.
+- `update --skip-git` compares no announcements: one a developer pulled
+  by hand, or wrote, is never offered by update, this run or the next
+  (the next one's before file already has it); the notice points to
+  `sb announcements preview --since <ref> [--run-migrations]`.
+- The local changes are counted before the fetch (repo, Known limits),
+  and asked about before the run's steps: a file written between the
+  question and the reset is discarded without being named.
 
 ## Open questions
 
