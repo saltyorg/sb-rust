@@ -89,6 +89,17 @@ async fn a_healthy_tree_is_kept_with_sb_gos_steps() {
     ] {
         assert!(ran.screen.contains(line), "{line}:\n{}", ran.screen);
     }
+    // The active venv's probes run in a step of their own, before the
+    // step that reports what they found (spec, step 4).
+    let inspected = ran
+        .screen
+        .find("Active Ansible virtual environment inspected")
+        .unwrap_or_else(|| panic!("inspected:\n{}", ran.screen));
+    let reported = ran
+        .screen
+        .find("Ansible virtual environment was already up to date")
+        .expect("reported");
+    assert!(inspected < reported, "{}", ran.screen);
     // The healthy path cleans without a step of its own (spec, step 6).
     assert!(!ran.screen.contains("old environments"), "{}", ran.screen);
     // The active generation and its Python stay; the old ones and the
@@ -563,6 +574,74 @@ async fn a_cancelled_rebuild_keeps_the_previous_generation() {
     assert_eq!(kept(&tree), before);
 }
 
+/// Ctrl-C during the inspection's probes (the stand-in `uv pip check`
+/// hangs): the inspection's step is interrupted, not done, and nothing
+/// after it runs; the active venv is as it was.
+#[tokio::test]
+async fn a_cancelled_inspection_is_interrupted() {
+    let _spawns = SPAWNS.lock().await;
+    let tree = wrapped_tree();
+    let before = kept(&tree);
+    tree.hang("pip-check");
+    let env = tree.env();
+    let started = tree.root.path().join("hang/started");
+    let ran = in_step_with(async |step, shutdown| {
+        let cancel = async {
+            appears(&started).await;
+            shutdown.signalled(2);
+        };
+        let (result, ()) = tokio::join!(reconcile_venv(step, &env, None, Force::None), cancel);
+        result?;
+        Ok(())
+    })
+    .await;
+    assert!(ran.error.is_some(), "{}", ran.screen);
+    for line in [
+        "Active Ansible virtual environment inspected",
+        "Checking Ansible virtual environment for updates",
+        "update required",
+    ] {
+        assert!(!ran.screen.contains(line), "{line}:\n{}", ran.screen);
+    }
+    assert_eq!(kept(&tree), before);
+}
+
+/// Ctrl-C during the staged check's probes: its step is interrupted, the
+/// build isn't retried, and the previous generation stays active.
+#[tokio::test]
+async fn a_cancelled_staged_check_is_interrupted_not_retried() {
+    let _spawns = SPAWNS.lock().await;
+    let tree = wrapped_tree();
+    // A changed lock: unhealthy without a probe, so only the staged
+    // check's `uv pip check` hangs.
+    std::fs::write(&tree.layout.lock, "changed\n").expect("lock");
+    let before = kept(&tree);
+    tree.hang("pip-check");
+    let env = tree.env();
+    let started = tree.root.path().join("hang/started");
+    let ran = in_step_with(async |step, shutdown| {
+        let cancel = async {
+            appears(&started).await;
+            shutdown.signalled(2);
+        };
+        let (result, ()) = tokio::join!(reconcile_venv(step, &env, None, Force::None), cancel);
+        result?;
+        Ok(())
+    })
+    .await;
+    assert!(ran.error.is_some(), "{}", ran.screen);
+    assert!(
+        ran.screen
+            .contains("Validating the new Ansible virtual environment"),
+        "{}",
+        ran.screen
+    );
+    for line in ["New Ansible virtual environment validated", "Retrying"] {
+        assert!(!ran.screen.contains(line), "{line}:\n{}", ran.screen);
+    }
+    assert_eq!(kept(&tree), before);
+}
+
 /// A rebuild gives the tree to the Saltbox user, as the healthy path does.
 #[tokio::test]
 async fn a_rebuilt_tree_is_given_to_the_saltbox_user() {
@@ -610,9 +689,14 @@ async fn a_rebuild_shows_the_removal_and_the_ownership_as_steps() {
                 .unwrap_or_else(|| panic!("{force:?}: {line}:\n{}", ran.screen))
         };
         let synced = at("Syncing hashed Saltbox requirements");
+        let validated = at("New Ansible virtual environment validated");
         let removed = at("Old environments cleaned up");
         let owned = at("Ownership set");
-        assert!(synced < removed && removed < owned, "{}", ran.screen);
+        assert!(
+            synced < validated && validated < removed && removed < owned,
+            "{}",
+            ran.screen
+        );
     }
 }
 
@@ -758,18 +842,20 @@ async fn the_active_venv_is_inspected_as_sb_go_does() {
     }
 
     // A manifest that can't be read for another reason still fails the
-    // inspection with sb-go's words.
+    // inspection with sb-go's words, in the inspection's own step.
     let tree = Tree::new();
     let active = tree.healthy();
     let manifest = active.dir.join("manifest.json");
     std::fs::remove_file(&manifest).expect("rm");
     std::fs::create_dir(&manifest).expect("a directory");
     let ran = run(&tree, Force::None).await;
-    let error = ran.error.expect("unreadable");
-    assert!(
-        error.starts_with("inspect active Ansible environment: read generation manifest "),
-        "{error}"
-    );
+    assert!(ran.error.is_some(), "unreadable:\n{}", ran.screen);
+    for line in [
+        "✗ Inspecting the active Ansible virtual environment",
+        "inspect active Ansible environment: read generation manifest ",
+    ] {
+        assert!(ran.screen.contains(line), "{line}:\n{}", ran.screen);
+    }
 }
 
 /// A failure's cause shows once in its block, not again as a source.

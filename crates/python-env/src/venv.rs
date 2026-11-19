@@ -201,6 +201,9 @@ pub enum InspectError {
     /// The active path couldn't be looked at.
     #[error("{}: {cause}", path.display())]
     Io { path: PathBuf, cause: io::Error },
+    /// Ctrl-C (or a stop) came during the environment check's probes.
+    #[error("interrupted while checking the active Ansible environment")]
+    Interrupted,
     /// The generation's manifest couldn't be read for a reason other than
     /// its absence or its text (those make the venv unhealthy).
     #[error(transparent)]
@@ -267,6 +270,9 @@ pub(crate) async fn inspect(
     let healthy = if matches {
         match check_environment(env, &target, &toolchain.python, token).await {
             Ok(()) => true,
+            // A probe Ctrl-C ended says nothing of the venv: the
+            // inspection's step ends interrupted, not done.
+            Err(_) if token.is_cancelled() => return Err(InspectError::Interrupted),
             Err(err) => {
                 tracing::info!(cause = %err, "the active venv is unhealthy");
                 false
@@ -293,6 +299,8 @@ pub enum VenvError {
     // (as sb-host's `OwnerError`).
     #[error("check native Python build prerequisites: {0}")]
     Prerequisites(PackageQueryError),
+    /// Shown in the inspection's own step; the reconcile then ends as
+    /// [`VenvError::Stopped`].
     #[error("inspect active Ansible environment: {0}")]
     Inspect(InspectError),
     #[error("refresh Ansible command wrappers: {0}")]
@@ -341,9 +349,9 @@ pub(crate) fn status_label(healthy: bool, force: Force) -> &'static str {
 
 /// Bring the active venv in line with the checkout (spec, "The venv
 /// reconcile", sb-go's `Reconcile`): the toolchain; "Ensuring uv <v> is
-/// installed"; libpq-dev, installed when missing; the active venv
-/// inspected; "Checking Ansible virtual environment for updates" with
-/// sb-go's done label. On a healthy venv and no force, the wrappers
+/// installed"; libpq-dev, installed when missing; "Inspecting the active
+/// Ansible virtual environment"; "Checking Ansible virtual environment
+/// for updates" with sb-go's done label. On a healthy venv and no force, the wrappers
 /// rewritten, old generations cleaned and ownership given to `user`
 /// (skipped when `None`). Otherwise a new generation is built into
 /// staging ([`build`]; a failed build on the normal path is retried
@@ -375,9 +383,19 @@ pub async fn reconcile_venv(
     })
     .await?;
     prerequisites(step, env, &token).await?;
-    let active = inspect(env, &toolchain, &token)
-        .await
-        .map_err(VenvError::Inspect)?;
+    // Its probes take about a second on a Saltbox venv: a step of its
+    // own, so the run doesn't sit silent before the next one (spec, step 4).
+    let inspecting = Labels::new(
+        "Inspecting the active Ansible virtual environment",
+        "Active Ansible virtual environment inspected",
+    );
+    let active = step
+        .step(inspecting, async |step| {
+            inspect(env, &toolchain, &step.token())
+                .await
+                .map_err(|err| anyhow::Error::from(VenvError::Inspect(err)))
+        })
+        .await?;
     let checking = "Checking Ansible virtual environment for updates";
     let labels = Labels::new(checking, status_label(active.healthy, force));
     step.step(labels, async |_| anyhow::Ok(())).await?;
@@ -609,6 +627,8 @@ pub enum BuildError {
     UnsafeName(String),
     #[error("required command {0} is missing from staged venv")]
     Missing(&'static str),
+    /// Shown in the validation's own step; the build then ends as
+    /// [`BuildError::Stopped`], its text kept as the cause.
     #[error("validate staged Ansible environment: {0}")]
     Staged(CheckError),
     #[error(transparent)]
@@ -916,8 +936,8 @@ async fn install_python<'a>(
 /// virtual environment" (`uv venv`); "Syncing hashed Saltbox
 /// requirements" (`uv pip sync --require-hashes`, `--no-cache` when
 /// forced), both streamed into their steps with no timeout (Ctrl-C stops
-/// them); the exported commands; the environment check on the new venv;
-/// the manifest. `previous` is the active generation's manifest, if any.
+/// them); the exported commands; "Validating the new Ansible virtual
+/// environment" ([`validate`]); the manifest. `previous` is the active generation's manifest, if any.
 ///
 /// # Errors
 ///
@@ -1033,9 +1053,7 @@ async fn stage<'a>(
     })
     .await?;
     let commands = discover(&venv)?;
-    check_environment(env, &venv, &toolchain.python, &step.token())
-        .await
-        .map_err(BuildError::Staged)?;
+    validate(step, env, &venv, &toolchain.python).await?;
     let manifest = Manifest {
         schema_version: manifest::SCHEMA,
         generation_id: id,
@@ -1050,6 +1068,28 @@ async fn stage<'a>(
     };
     manifest::write(&generation, &manifest)?;
     Ok((generation, venv, manifest))
+}
+
+/// "Validating the new Ansible virtual environment" (spec, step 11;
+/// decision 24): the environment check on the staged venv, whose probes
+/// take about two seconds on a Saltbox venv, in a step of its own.
+async fn validate(
+    step: &mut Step,
+    env: &Env<'_>,
+    venv: &Path,
+    version: &str,
+) -> Result<(), BuildError> {
+    let validating = Labels::new(
+        "Validating the new Ansible virtual environment",
+        "New Ansible virtual environment validated",
+    );
+    nested(step, validating, async |step| {
+        check_environment(env, venv, version, &step.token())
+            .await
+            .map_err(BuildError::Staged)?;
+        anyhow::Ok(())
+    })
+    .await
 }
 
 /// "Clearing the uv cache" (spec, step 7; difference 18) before a forced

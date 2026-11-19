@@ -117,7 +117,12 @@ build it on a temporary root (sb-go's `releaseLayout` injection).
    prerequisites: <cause>`, `update apt cache for native Python build
    prerequisites: <cause>`, `install native Python build prerequisites:
    <cause>`.
-4. **Inspect the active venv** (venv.go:281-317):
+4. **Inspect the active venv** (venv.go:281-317), in the step
+   **"Inspecting the active Ansible virtual environment"** (done "Active
+   Ansible virtual environment inspected"; decision 24), where its error,
+   `inspect active Ansible environment: <cause>`, shows; Ctrl-C during
+   its probes ends it interrupted, not done or unhealthy (`interrupted
+   while checking the active Ansible environment`):
    - missing: unhealthy;
    - a real directory: legacy, unhealthy, adopted at activation;
    - a file or any other non-link: unhealthy, replaced at activation
@@ -172,7 +177,11 @@ build it on a temporary root (sb-go's `releaseLayout` injection).
     `ansible*`, `certbot` or `apprise`. ansible, certbot and apprise are
     required. A name with `/`, `\n` or `\r` fails: `unsafe venv command name
     "<n>"`.
-11. **Staged check:** the environment check on the new venv, then
+11. **Staged check:** the environment check on the new venv, in the step
+    **"Validating the new Ansible virtual environment"** (done "New
+    Ansible virtual environment validated"; decision 24), where its
+    error, `validate staged Ansible environment: <cause>`, shows (a build
+    failure, retried on the normal path as any other); then
     `manifest.json` written through `tempfile`, mode 0644, with sb-go's
     fields in sb-go's order (venv.go:42-53): `schema_version` (1),
     `generation_id`, `python_version`, `python_path`, `python_install`
@@ -497,8 +506,9 @@ moved), so `ops` callers and the tests can read them.
     --help`) keeps sb-go's sentence as its about, which fits there. The
     contract test's `REWORDED` list pairs the two lines.
 16. **After a rebuild, "Cleaning up old environments" and
-    "Setting ownership" are steps** (decision 23). sb-go ran both inside
-    its parent step, with nothing drawn.
+    "Setting ownership" are steps** (decision 23), and the active venv's
+    inspection and the staged check are steps on every path (decision
+    24). sb-go ran all four inside its parent step, with nothing drawn.
 17. **A broken active venv is rebuilt, not a dead end** (coordinator,
     2026-11-19, from a container test of each breakage): a generation
     whose `manifest.json` is missing, empty or not JSON, and a file (or
@@ -833,14 +843,24 @@ developer's host. Every path is a `Layout` field on a `tempfile` root.
     work first, as repo's "Setting repository ownership" does; the next
     run's cleanup and walk finish the job). They ran inside the parent
     with no step of their own, and the run paused after its last step
-    showed as done (the maintainer, 2026-11-19). Measured in a throwaway `ubuntu:22.04` container on a
-    Saltbox-like tree (a `--depth 1` Saltbox checkout of about 1,000
+    showed as done (the maintainer, 2026-11-19). Measured in a throwaway
+    `ubuntu:22.04` container on a Saltbox-like tree (a `--depth 1` Saltbox checkout of about 1,000
     entries, a venv synced from Saltbox's requirements of about 36,000,
     a uv Python release of about 5,000), each run's run log read: the
     cleanup took 1.4 to 2.1 s, the ownership walk 1.1 to 1.5 s, in
     `reinstall-venv` and `reinstall-python` alike; neither dominates, so
     the walk is unchanged. The healthy path keeps them without steps
     (step 6). Amends decision 19 for these two steps only.
+24. **The active venv's inspection and the staged check are steps**
+    (steps 4 and 11), for the same reason (coordinator, 2026-11-19): in
+    decision 23's measurement the staged check's probes (`ansible
+    --version` the longest) ran 1.8 to 2.6 s after the sync's step
+    ended, and the inspection's 0.9 to 1.1 s before "Checking Ansible
+    virtual environment for updates" started, with nothing new drawn.
+    The inspection is a step of its own before that one, whose done label
+    reports what it found, as term-ui's labels are fixed when a step
+    starts. Both failures now show in their own step, the steps above
+    quiet (difference 14). Amends decision 19 for these two steps.
 
 ## Known limits
 
@@ -859,11 +879,6 @@ developer's host. Every path is a `Layout` field on a `tempfile` root.
   runs as root anyway. A local writer can also keep a fact that reports
   a newer version (decision 2 keeps a newer one). Added with module
   build M19, from its security review.
-- **The staged check (step 11) has no step of its own:** after the
-  sync's step ends, its probes (`ansible --version` the longest) ran 1.8
-  to 2.6 s with nothing new drawn in the 2026-11-19 measurement (decision
-  23), and the active venv's inspection (step 4) runs the same probes
-  before "Checking Ansible virtual environment for updates" starts.
 - **No lock between concurrent sb runs** (sb-go has none).
 - **A broken published fact release** is installed and kept; the fix is a
   new release.

@@ -226,9 +226,9 @@ async fn a_retried_build_says_so() {
     );
 }
 
-/// A failure the staged check finds, outside a nested step, is retried
-/// too, its own text as the cause (the stand-in `uv pip check` fails for
-/// good here, so the retry fails as well).
+/// A failure the staged check finds, in its own step, is retried too,
+/// its own text as the cause (the stand-in `uv pip check` fails for good
+/// here, so the retry fails as well, in that step).
 #[tokio::test]
 async fn a_failed_staged_check_is_retried() {
     let _spawns = SPAWNS.lock().await;
@@ -245,10 +245,16 @@ async fn a_failed_staged_check_is_retried() {
     );
     assert!(ran.screen.contains(&line), "{}", ran.screen);
     assert_eq!(syncs(&tree).len(), 2, "{:?}", uv_calls(&tree));
-    let error = ran.error.expect("failed twice");
+    assert!(ran.error.is_some(), "failed twice:\n{}", ran.screen);
+    // The second failure shows in the step, the steps above it quiet.
+    let failed = ran
+        .screen
+        .rfind("✗ Validating the new Ansible virtual environment")
+        .unwrap_or_else(|| panic!("failed step:\n{}", ran.screen));
     assert!(
-        error.starts_with("validate staged Ansible environment: "),
-        "{error}"
+        ran.screen[failed..].contains("validate staged Ansible environment: "),
+        "{}",
+        ran.screen
     );
 }
 

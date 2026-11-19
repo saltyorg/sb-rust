@@ -243,8 +243,8 @@ fn reinstall_python_rebuilds_python_and_the_venv() {
 
 /// A failed rebuild exits 1 with sb-go's wrapping under the step that
 /// ran it, the previous generation still active. The staged check fails
-/// here (the stand-in `uv pip check`): a failing nested step (the sync)
-/// shows its own cause, and the steps above it end quietly.
+/// here (the stand-in `uv pip check`), in its own nested step, which
+/// shows its own cause; the steps above it end quietly (difference 14).
 #[test]
 fn a_failed_reinstall_keeps_the_previous_venv() {
     if !root_gate::requested() {
@@ -255,15 +255,19 @@ fn a_failed_reinstall_keeps_the_previous_venv() {
             "reinstall-venv",
             "✗ Reinstalling Ansible virtual environment",
         ),
-        ("reinstall-python", "✗ Ansible virtual environment"),
+        (
+            "reinstall-python",
+            "✗ Recreating Ansible virtual environment",
+        ),
     ] {
         let tree = tree("nobody");
         let active = tree.healthy();
         std::fs::create_dir_all(tree.root.path().join("fail")).expect("fail dir");
         std::fs::write(tree.root.path().join("fail/pip-check"), "").expect("marker");
         run(&tree, command).code(1).stderr(
-            // The error block: the chain, one cause a line.
-            predicate::str::contains("  error managing Ansible venv\n")
+            // The failed step's block: its cause, the steps above quiet.
+            predicate::str::contains("✗ Validating the new Ansible virtual environment")
+                .and(predicate::str::contains("error managing Ansible venv").not())
                 .and(predicate::str::contains(
                     "  validate staged Ansible environment: \
                      installed Python packages are incompatible: ",
