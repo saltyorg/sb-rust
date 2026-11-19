@@ -53,9 +53,9 @@ pub fn diag(shutdown: &Shutdown) -> anyhow::Result<()> {
         Tags::Literal("diag"),
         &RunArgs::default(),
         shutdown,
-        &mut std::io::stdout(),
+        &mut sb_cli_core::tail::Tracked::stdout(std::io::stdout()),
     ))??;
-    sb_ansible::pass_through(ran, &mut anstream::stderr())?;
+    sb_ansible::pass_through(ran, &mut crate::stderr())?;
     Ok(())
 }
 
@@ -112,10 +112,10 @@ pub fn install(
                     Tags::Given(tags),
                     &run_args,
                     shutdown,
-                    &mut std::io::stdout(),
+                    &mut sb_cli_core::tail::Tracked::stdout(std::io::stdout()),
                 )
                 .await?;
-            sb_ansible::pass_through(ran, &mut anstream::stderr())?;
+            sb_ansible::pass_through(ran, &mut crate::stderr())?;
         }
         Ok(())
     })?
@@ -162,7 +162,7 @@ async fn check_tags(
     let pointer = log.map(RunLog::pointer);
     let text = sb_ansible::render_suggestions(&suggestions, theme::current(), pointer.as_deref());
     // As cli-core's error block: nothing better to do if stderr fails.
-    let _ = anstream::stderr().write_all(text.as_bytes());
+    let _ = crate::stderr().write_all(text.as_bytes());
     Err(Exit(1).into())
 }
 
@@ -218,9 +218,9 @@ pub fn list(args: &ListArgs, shutdown: &Shutdown, log: Option<&RunLog>) -> anyho
             }
         };
         if let Some(text) = text {
-            std::io::stdout()
-                .write_all(text.as_bytes())
-                .and_then(|()| std::io::stdout().flush())
+            let mut out = sb_cli_core::tail::Tracked::stdout(std::io::stdout());
+            out.write_all(text.as_bytes())
+                .and_then(|()| out.flush())
                 .map_err(sb_cli_core::exit::output_error)?;
         }
         match sb_ansible::list_failures(&listing, query.is_some()) {

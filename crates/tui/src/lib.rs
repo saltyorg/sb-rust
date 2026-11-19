@@ -42,6 +42,7 @@ use std::sync::Arc;
 use jiff::Timestamp;
 use sb_cli_core::cancel::Shutdown;
 use sb_cli_core::exit;
+use sb_cli_core::tail;
 use sb_cli_core::theme::Theme;
 use sb_docker::connect::Daemon;
 use sb_docker::ps::Row as ContainerRow;
@@ -151,8 +152,10 @@ pub async fn inline(
     let word = kind.word();
     tracing::info!(kind = word, name, "source opened");
     let format = Format::new(zone, stream);
-    let mut out = io::BufWriter::new(io::stdout());
-    let ending = stream_log(open, &format, &token, &mut out, &mut io::stderr()).await;
+    // Recorded for the blank line at the end (cli-core's `tail`).
+    let mut out = io::BufWriter::new(tail::Tracked::stdout(io::stdout()));
+    let mut err = tail::Tracked::stderr(io::stderr());
+    let ending = stream_log(open, &format, &token, &mut out, &mut err).await;
     tracing::info!(kind = word, name, ending = ?ending.as_ref().ok(), "stream ended");
     ending
 }

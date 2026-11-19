@@ -363,7 +363,12 @@ impl Table {
         let width = crate::stdout_width();
         let colour = crate::colour_on(crate::Stream::Stdout);
         let text = self.render(theme::current(), colour, width);
-        writeln!(std::io::stdout(), "{text}").map_err(output_error)
+        // Recorded for the blank line at the end (cli-core's `tail`).
+        writeln!(
+            sb_cli_core::tail::Tracked::stdout(std::io::stdout()),
+            "{text}"
+        )
+        .map_err(output_error)
     }
 }
 

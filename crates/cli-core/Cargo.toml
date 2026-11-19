@@ -36,6 +36,10 @@ tabled.workspace = true
 # A combining mark stays with its base character in escaped text
 # (plan decision 40).
 icu_properties.workspace = true
+# The run's tail on the terminal (`tail`, the blank line at the end): its
+# stripper of escape sequences, kept across writes. Already in sb, through
+# every crate's output.
+anstream.workspace = true
 
 [features]
 # The run lock's directory under a test's (`run_lock::DIR_VAR`), for sb's

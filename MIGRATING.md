@@ -90,6 +90,8 @@ completion files call a command sb doesn't have.
   set comes from the GitHub Dark Colorblind palette instead of sb-go's
   charmtone defaults, and `--generate-config` writes those colours.
 - **Announcements** join line breaks inside a paragraph, as Markdown does.
+- **A blank line before the prompt** on a terminal, after every run's
+  last line (never in a pipe or a log, so scripts see the same bytes).
 - **`sb update` and `sb self-update` draw one tree,** printed when the
   run ends. Their questions (the branch questions, `Run all migration
   tags?`, `Do you want to update`) open on the alternate screen, with

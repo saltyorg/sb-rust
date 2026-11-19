@@ -151,7 +151,7 @@ pub async fn restore(
     };
     let key = user_key(&user);
     drop(user);
-    let mut out = io::stdout();
+    let mut out = sb_cli_core::tail::Tracked::stdout(io::stdout());
     writeln!(out, "Fetching files from {}...", escape_controls(base))
         .map_err(exit::output_error)?;
     let mut failed = None;
@@ -250,10 +250,14 @@ async fn on_screen(
     })
     .await?;
     if closed.cancelled {
-        writeln!(io::stdout(), "Restore cancelled.").map_err(exit::output_error)?;
+        writeln!(
+            sb_cli_core::tail::Tracked::stdout(io::stdout()),
+            "Restore cancelled."
+        )
+        .map_err(exit::output_error)?;
         return Ok(());
     }
-    let mut out = io::stdout();
+    let mut out = sb_cli_core::tail::Tracked::stdout(io::stdout());
     if closed.started {
         writeln!(out, "Fetching files from {}...", escape_controls(base))
             .map_err(exit::output_error)?;

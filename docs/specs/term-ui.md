@@ -1116,7 +1116,10 @@ Choices behind it:
         redraw's line count.
     - **The end's print is one `MultiProgress::println`** of the whole
       tree (it splits the lines itself), so the area is redrawn once,
-      not once per line.
+      not once per line. What it prints, the plain lines and tables are
+      recorded in cli-core's `tail` for the blank line at the end of the
+      run (cli-core spec, "The blank line at the end"), and a question
+      answered on the normal screen counts as a line there.
     - **`Runner::info` and `Runner::warn`:** a notice under the run's
       newest top-level step, finished or not, for what a command decides
       between steps (a question's answer, the migrations run or skipped),

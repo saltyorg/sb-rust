@@ -106,7 +106,7 @@ pub fn update(args: &UpdateArgs, shutdown: &Shutdown, log: Option<&RunLog>) -> a
             confirm,
             runner,
             shutdown,
-            &mut anstream::stderr(),
+            &mut crate::stderr(),
         ))?
     })
 }

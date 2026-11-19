@@ -327,7 +327,7 @@ pub(crate) fn print_closing(log: Option<&RunLog>, fix: &[File], shutdown: &Shutd
     let pointer = log.map(RunLog::pointer);
     let text = closing(pointer.as_deref(), fix, sb_cli_core::theme::current());
     // As cli-core's block: nothing better to do if stderr itself fails.
-    let _ = std::io::Write::write_all(&mut anstream::stderr(), text.as_bytes());
+    let _ = std::io::Write::write_all(&mut crate::stderr(), text.as_bytes());
 }
 
 /// term-ui's confirm for `question`, `no_edit_again` answering no.

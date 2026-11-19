@@ -73,6 +73,9 @@ you could trip over.
 - **`-v`/`--verbose` no longer changes the output** of the commands that
   had it; it is accepted with a note, and the run log keeps the detail.
   `install` keeps `-v` to `-vvvv` for Ansible.
+- **A blank line before the prompt:** on a terminal, every run ends
+  with one blank line after its last line, unless it ends in one
+  already. Pipes and logs get the same bytes as before.
 - **One tree per command run,** printed once, at the end, with every
   time in one column: `sb update` and `sb self-update` no longer draw a
   tree per phase. Their questions open on the alternate screen, and

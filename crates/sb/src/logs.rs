@@ -73,7 +73,7 @@ async fn run(shutdown: &Shutdown) -> anyhow::Result<()> {
     };
     let no_containers = matches!(&docker, sb_tui::Docker::Listed { rows, .. } if rows.is_empty());
     if services.is_empty() && no_containers {
-        let mut out = std::io::stdout().lock();
+        let mut out = sb_cli_core::tail::Tracked::stdout(std::io::stdout().lock());
         writeln!(out, "{NOTHING_FOUND}").map_err(exit::output_error)?;
         out.flush().map_err(exit::output_error)?;
         return Ok(());

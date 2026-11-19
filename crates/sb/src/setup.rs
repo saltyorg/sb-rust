@@ -121,6 +121,6 @@ pub(crate) fn ask_branch(
     question: &str,
     shutdown: &Shutdown,
 ) -> Result<bool, sb_term_ui::PromptError> {
-    let _ = writeln!(anstream::stderr(), "{}", exit::escaped(shown));
+    let _ = writeln!(crate::stderr(), "{}", exit::escaped(shown));
     sb_term_ui::confirm(question, None, BRANCH_FLAGS, shutdown)
 }

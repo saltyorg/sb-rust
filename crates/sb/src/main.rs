@@ -17,6 +17,7 @@ use sb_cli_core::help;
 use sb_cli_core::log::{self, RunLog};
 use sb_cli_core::root;
 use sb_cli_core::run_lock;
+use sb_cli_core::tail;
 use sb_cli_core::theme;
 use sb_ops::Checkout;
 
@@ -711,7 +712,7 @@ fn take_run_lock(
     let name = format!("sb {}", command.name());
     let taken = run_lock::take(&run_lock::dir(), &name, &shutdown.token(), |holder| {
         let line = exit::escaped(&run_lock::waiting_line(holder));
-        let _ = writeln!(anstream::stderr(), "{line}");
+        let _ = writeln!(stderr(), "{line}");
     })?;
     match &taken {
         run_lock::Taken::Held {
@@ -734,7 +735,7 @@ fn take_run_lock(
     let checkout = config::saltbox_dir(std::env::var_os("SB_SALTBOX_DIR"));
     let waited = run_lock::wait_for_backup(&checkout, &shutdown.token(), |since| {
         let line = exit::escaped(&run_lock::backup_waiting_line(&shown_time(since)));
-        let _ = writeln!(anstream::stderr(), "{line}");
+        let _ = writeln!(stderr(), "{line}");
     })?;
     if let Some(waited) = waited {
         tracing::info!(
@@ -761,7 +762,30 @@ fn shown_time(at: std::time::SystemTime) -> String {
     )
 }
 
+/// sb's run, then one blank line before the shell's prompt when stderr is
+/// a terminal and what sb left there doesn't end in one (cli-core spec,
+/// "The blank line at the end"). The completion request exits inside
+/// `start` before anything is printed, and a run handing over to sudo is
+/// replaced there too: neither gets here.
 fn main() -> RunEnd {
+    let end = start();
+    tail::finish(&mut anstream::stderr());
+    end
+}
+
+/// sb's stderr: anstream's (`--color`, `NO_COLOR`), each byte recorded for
+/// the blank line at the end (cli-core's `tail`).
+pub(crate) fn stderr() -> tail::Tracked<anstream::Stderr> {
+    tail::Tracked::stderr(anstream::stderr())
+}
+
+/// sb's stdout, as [`stderr`].
+pub(crate) fn stdout() -> tail::Tracked<anstream::Stdout> {
+    tail::Tracked::stdout(anstream::stdout())
+}
+
+/// The run, from startup to how it ends ([`main`]).
+fn start() -> RunEnd {
     // A completion request first, before anything is printed or read
     // (clap_complete's rule; completion spec, "Tab completion"): it prints
     // only candidates, as the calling user, and is never logged (cli-core
@@ -807,7 +831,7 @@ fn main() -> RunEnd {
         }
     }
     if let Err(unsupported) = support {
-        return exit::report(&unsupported, None, &mut anstream::stderr()).into();
+        return exit::report(&unsupported, None, &mut stderr()).into();
     }
     let cli = parsed.unwrap_or_else(|err| parse_failed(err));
     // The real parse's choice is the one that counts for the run, for
@@ -824,7 +848,7 @@ fn main() -> RunEnd {
         for warning in &warnings {
             warn(warning);
         }
-        return exit::report(&err, None, &mut anstream::stderr()).into();
+        return exit::report(&err, None, &mut stderr()).into();
     }
     // A root run holds secrets: no core dump of sb (cli-core spec, startup
     // step 3); for help and version it costs nothing. Failing both ways
@@ -877,7 +901,7 @@ fn main() -> RunEnd {
         log.finished(&log::outcome(&ending, error), error);
     }
     let pointer = log.as_ref().map(RunLog::pointer);
-    exit::finish_run(&ending, error, pointer.as_deref(), &mut anstream::stderr())
+    exit::finish_run(&ending, error, pointer.as_deref(), &mut stderr())
 }
 
 /// sb's tree for a completion request: the tag completer on `install`'s
@@ -974,11 +998,19 @@ fn parse_failed(err: clap::Error) -> ! {
         // (https://docs.rs/clap/4.6.7/clap/error/enum.ErrorKind.html#variant.DisplayHelpOnMissingArgumentOrSubcommand).
         clap::error::ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand => {
             // Write errors are ignored, as clap ignores them for `--help`.
-            let mut out = anstream::stdout();
+            let mut out = stdout();
             let _ = write!(out, "{}", err.render().ansi()).and_then(|()| out.flush());
+            tail::finish(&mut anstream::stderr());
             std::process::exit(0)
         }
-        clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion => err.exit(),
+        // clap's own `exit` (help on stdout, exit 0), written through the
+        // tail so the blank line at the end follows it.
+        clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion => {
+            let mut out = stdout();
+            let _ = write!(out, "{}", err.render().ansi()).and_then(|()| out.flush());
+            tail::finish(&mut anstream::stderr());
+            std::process::exit(err.exit_code())
+        }
         _ => parse_error(err),
     }
 }
@@ -992,7 +1024,8 @@ fn parse_error(err: clap::Error) -> ! {
         .collect();
     let err = hinted(err, &args);
     let block = help::parse_error_block(err, theme::current(), help::error_width());
-    let _ = write!(anstream::stderr(), "{block}");
+    let _ = write!(stderr(), "{block}");
+    tail::finish(&mut anstream::stderr());
     std::process::exit(code)
 }
 
@@ -1131,7 +1164,7 @@ fn open_log(dir: &std::path::Path) -> Option<RunLog> {
 fn warn(message: impl std::fmt::Display) {
     let style = theme::current().style(theme::Role::Warn);
     let message = exit::escaped(&message.to_string());
-    let _ = writeln!(anstream::stderr(), "{style}warning:{style:#} {message}");
+    let _ = writeln!(stderr(), "{style}warning:{style:#} {message}");
 }
 
 /// A notice line on stderr before any step, as term-ui marks a warning
@@ -1141,7 +1174,7 @@ fn warn(message: impl std::fmt::Display) {
 fn notice(message: impl std::fmt::Display) {
     let style = theme::current().style(theme::Role::Warn);
     let message = exit::escaped(&message.to_string());
-    let _ = writeln!(anstream::stderr(), "{style}!{style:#} {message}");
+    let _ = writeln!(stderr(), "{style}!{style:#} {message}");
 }
 
 fn run(command: &Command, shutdown: &Shutdown, log: Option<&RunLog>) -> anyhow::Result<()> {
@@ -1223,7 +1256,7 @@ fn run(command: &Command, shutdown: &Shutdown, log: Option<&RunLog>) -> anyhow::
         } => docker_control(command.name(), &Control::Restart(ignore), shutdown, log)?,
         Command::Version { json } => {
             let info = BuildInfo::current(env!("CARGO_PKG_VERSION"));
-            let mut out = std::io::stdout().lock();
+            let mut out = tail::Tracked::stdout(std::io::stdout().lock());
             let text = if json {
                 info.version_json()
             } else {
@@ -1335,7 +1368,7 @@ fn docker_ps(json: bool, shutdown: &Shutdown) -> anyhow::Result<()> {
         anyhow::bail!("interrupted");
     }
     if json {
-        let mut out = std::io::stdout().lock();
+        let mut out = tail::Tracked::stdout(std::io::stdout().lock());
         out.write_all(sb_docker::json::json(&listing.rows).as_bytes())
             .map_err(exit::output_error)?;
         out.flush().map_err(exit::output_error)?;
@@ -1381,7 +1414,7 @@ fn validate_config(json: bool, shutdown: &Shutdown, log: Option<&RunLog>) -> any
             edit::print_closing(log, &fix, shutdown);
         }
         if let Some(document) = json_document(json, shutdown.token().is_cancelled(), &results) {
-            let mut out = std::io::stdout().lock();
+            let mut out = tail::Tracked::stdout(std::io::stdout().lock());
             out.write_all(document.as_bytes())
                 .and_then(|()| out.flush())
                 .map_err(exit::output_error)?;

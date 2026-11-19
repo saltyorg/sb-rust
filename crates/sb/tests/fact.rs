@@ -435,6 +435,11 @@ fn the_page_shows_the_facts_and_q_quits() {
     let status = pty.exit();
     assert_eq!(status.exit_code(), 0, "{}", pty.contents());
     pty.assert_restored();
+    // The page was on the alternate screen and left nothing on the normal
+    // one, so no blank line is added (cli-core spec, "The blank line at
+    // the end"): the cursor is where it started.
+    assert_eq!(pty.contents().trim(), "", "{}", pty.contents());
+    assert_eq!(pty.parser.screen().cursor_position(), (0, 0));
     // The lock is free again: a second session could take it.
     let lock = std::fs::File::open(world.facts().join(".fact-editor.lock")).expect("lock");
     rustix::fs::flock(&lock, rustix::fs::FlockOperation::NonBlockingLockExclusive)

@@ -396,6 +396,51 @@ one line of the block, and none can be forged. A cancellation shows
 "interrupted" rather than an error chain. Errors already shown (a failed
 step's tree) exit quietly, as the runner does.
 
+**The blank line at the end** (the maintainer, 2026-11-19, first for
+`sb update`, then for every command): when sb's stderr is a terminal, a
+run ends with one blank line between sb's last visible line and the
+shell's next prompt, whenever there wouldn't be one otherwise. Never
+two.
+- **Only on a terminal:** stderr must be one (std's `IsTerminal`). A
+  pipe, a file, CI and plain logs, the run log, and update-motd.d's
+  capture of `sb motd` at login get the same bytes as before; so do the
+  sb-go contract and parity tests, which read pipes. When stdout is a
+  terminal and stderr isn't: nothing (the line
+  would go on stderr, and stdout is never written for it).
+- **What is tracked** (`cli-core`'s `tail`): what sb writes to a
+  terminal, on stdout or stderr, through `tail::Tracked` (sb's own
+  lines, the error block, help, version, tables, the commands' output)
+  or `tail::note` (term-ui's tree when it is printed at the run's end):
+  whether anything visible was written, whether the last line ended, and
+  whether it held nothing visible (escape sequences left out with
+  anstream's `StripBytes`, which keeps its state across writes;
+  whitespace and `\r` don't count). A write to a stream that isn't a
+  terminal isn't recorded. What sb doesn't see is recorded as a line
+  that ended and wasn't blank (`tail::other`): an attached child's
+  output (exec's `attached`: Ansible, an editor) and a question answered
+  on the normal screen. Why not ask the terminal: the cursor position
+  report gives the row and column, not whether the line above is blank,
+  no sequence reads a line back, and a run ending by a signal can't wait
+  for a reply.
+- **At the end** (`tail::finish`, on stderr): nothing visible written,
+  nothing; the last line blank, nothing; the last line ended, one `\n`;
+  in the middle of a line, `\n\n`. A full-screen view leaves the normal
+  screen as it found it (the alternate screen), so only what was printed
+  before and after it counts: a TUI that left nothing on the normal
+  screen (`sb fact` closed with `q`) adds nothing, and the prompt
+  follows the command line as after any silent command.
+- **Every ending:** sb's `main` calls it after the run: success; an
+  error block; a quiet exit (a step's block already shown); a requested
+  exit code; "interrupted" after Ctrl-C or a signal, before sb ends by
+  the signal; the quiet SIGPIPE exit 141 (stdout's reader is gone; the
+  rule reads what reached the terminal); the unsupported-release refusal
+  and a failed relaunch. Help (`--help`, bare `sb`) and clap's version
+  output are written through the tracker, then the line. A parse error's
+  block ends in a blank line already, so nothing is added. Not for the
+  completion request (it prints candidates only, before startup), nor
+  in a run that hands over to sudo (it is replaced; the root run ends
+  with the line).
+
 **Help and parse errors** (maintainer, 2026-10-30, after proto-help): help
 follows sb-go's (fang's) format in sb's palette: the about (long text when
 there is one), bold section headings, the usage line in a shaded block,

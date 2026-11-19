@@ -44,7 +44,7 @@ fn install(shells: &[Shell], explicit: bool, shutdown: &Shutdown) -> anyhow::Res
     // retired name is looked for besides the bin directories.
     let own_dir = executable.parent().unwrap_or(std::path::Path::new("/"));
     let report = crate::block_on(install::install(&paths, shells, &names, own_dir, &token))?;
-    let mut out = std::io::stdout().lock();
+    let mut out = sb_cli_core::tail::Tracked::stdout(std::io::stdout().lock());
     for line in &report.lines {
         writeln!(out, "{line}").map_err(exit::output_error)?;
     }
@@ -70,7 +70,7 @@ fn install(shells: &[Shell], explicit: bool, shutdown: &Shutdown) -> anyhow::Res
 /// clap's stub for `sb`, looked up on `PATH` at Tab time (completion
 /// spec, "`sb completion generate`").
 fn generate(shell: Shell) -> anyhow::Result<()> {
-    let mut out = std::io::stdout().lock();
+    let mut out = sb_cli_core::tail::Tracked::stdout(std::io::stdout().lock());
     out.write_all(&shell.registration("sb", "sb"))
         .map_err(exit::output_error)?;
     out.flush().map_err(exit::output_error)?;

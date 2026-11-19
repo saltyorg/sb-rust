@@ -64,7 +64,7 @@ pub fn preview(
         confirm,
         runner,
         shutdown,
-        &mut anstream::stderr(),
+        &mut crate::stderr(),
     ))?
 }
 
@@ -88,6 +88,6 @@ pub fn check(
     super::block_on(sb_ops::announcements::check::check(
         &check,
         shutdown,
-        &mut std::io::stdout().lock(),
+        &mut sb_cli_core::tail::Tracked::stdout(std::io::stdout().lock()),
     ))?
 }

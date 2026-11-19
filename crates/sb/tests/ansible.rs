@@ -1374,6 +1374,10 @@ fn list_shows_the_mod_listing_only_while_it_runs() {
         shown.trim_end().ends_with("\nsb list <query> search"),
         "{shown}"
     );
+    // Its last line, then one blank line before the prompt (cli-core
+    // spec, "The blank line at the end").
+    assert!(output.stdout.ends_with(b"\r\n\r\n"), "{output:?}");
+    assert!(!output.stdout.ends_with(b"\r\n\r\n\r\n"), "{output:?}");
     // The step is logged as every step is.
     let log = world.log();
     assert!(log.contains("Listing Saltbox_mod tags"), "{log}");

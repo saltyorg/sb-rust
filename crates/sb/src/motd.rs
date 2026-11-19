@@ -250,7 +250,7 @@ pub fn motd(args: &Args, shutdown: &Shutdown, log: Option<&RunLog>) -> anyhow::R
     for warning in &report.warnings {
         super::warn(warning);
     }
-    let mut out = std::io::stdout().lock();
+    let mut out = sb_cli_core::tail::Tracked::stdout(std::io::stdout().lock());
     out.write_all(report.text.as_bytes())
         .map_err(exit::output_error)?;
     out.flush().map_err(exit::output_error)?;
@@ -273,7 +273,7 @@ fn json(options: &sb_motd::Options, shutdown: &Shutdown) -> anyhow::Result<()> {
     for warning in &report.warnings {
         super::warn(warning);
     }
-    let mut out = std::io::stdout().lock();
+    let mut out = sb_cli_core::tail::Tracked::stdout(std::io::stdout().lock());
     out.write_all(report.text.as_bytes())
         .map_err(exit::output_error)?;
     out.flush().map_err(exit::output_error)?;
@@ -308,7 +308,7 @@ fn listed(err: sb_motd::Error, log: Option<&RunLog>) -> anyhow::Error {
         );
     }
     // As cli-core's error block: nothing better to do if stderr fails.
-    let _ = anstream::stderr().write_all(text.as_bytes());
+    let _ = crate::stderr().write_all(text.as_bytes());
     Exit(1).into()
 }
 
@@ -321,7 +321,7 @@ fn generate_config() -> anyhow::Result<()> {
     let example = sb_motd::config::generate(&root).map_err(|err| {
         anyhow::anyhow!("failed to generate example config: failed to load schema: {err}")
     })?;
-    let mut out = std::io::stdout().lock();
+    let mut out = sb_cli_core::tail::Tracked::stdout(std::io::stdout().lock());
     out.write_all(example.as_bytes())
         .map_err(exit::output_error)?;
     out.flush().map_err(exit::output_error)?;

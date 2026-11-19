@@ -73,14 +73,20 @@ pub fn confirm(
     flag: &'static str,
     shutdown: &Shutdown,
 ) -> Result<bool, PromptError> {
-    confirm_on(
+    let asked = confirm_on(
         question,
         answer,
         flag,
         shutdown,
         crate::runner_live(),
         || OpenOptions::new().read(true).write(true).open("/dev/tty"),
-    )
+    );
+    // Asked on the normal screen, the answered question is a line there,
+    // as far as the blank line at the end knows (cli-core's `tail`).
+    if answer.is_none() && asked.is_ok() {
+        sb_cli_core::tail::other();
+    }
+    asked
 }
 
 /// [`confirm`] on the alternate screen, for a question asked while a

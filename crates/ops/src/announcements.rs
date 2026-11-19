@@ -492,7 +492,7 @@ pub fn show(shown: &[(Checkout, Vec<Announcement>)]) -> anyhow::Result<()> {
         .collect();
     let theme = stdout_theme();
     let width = sb_term_ui::stdout_width().and_then(|w| u16::try_from(w).ok());
-    let mut out = io::stdout().lock();
+    let mut out = sb_cli_core::tail::Tracked::stdout(io::stdout().lock());
     markdown::write_inline(&mut out, &items, &theme, width).map_err(exit::output_error)?;
     Ok(())
 }
@@ -510,7 +510,7 @@ pub fn show(shown: &[(Checkout, Vec<Announcement>)]) -> anyhow::Result<()> {
 pub fn show_migrations(pending: &[Pending]) -> anyhow::Result<()> {
     let colour = sb_term_ui::colour_on(sb_term_ui::Stream::Stdout);
     let rendered = migrations_table(pending, colour, sb_term_ui::stdout_width());
-    let mut out = io::stdout().lock();
+    let mut out = sb_cli_core::tail::Tracked::stdout(io::stdout().lock());
     writeln!(out, "\n{rendered}")
         .and_then(|()| out.flush())
         .map_err(exit::output_error)?;

@@ -274,6 +274,10 @@ impl Cmd {
             elapsed: start.elapsed(),
         };
         log_end(&command, &outcome);
+        // The child wrote to the terminal itself: what it left there is
+        // a line, as far as the blank line at the end knows (cli-core's
+        // `tail`).
+        sb_cli_core::tail::other();
         Ok(Ran { outcome, command })
     }
 

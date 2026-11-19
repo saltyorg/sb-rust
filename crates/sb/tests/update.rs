@@ -405,6 +405,13 @@ fn on_a_terminal_both_questions_come_before_the_first_step() {
         assert_eq!(count, want, "{once}:\n{shown}");
     }
     assert!(!shown.contains("Do you want to reset"), "{shown}");
+    // The hint, then one blank line before the prompt (cli-core spec, "The
+    // blank line at the end").
+    assert!(
+        text.ends_with("the apps you run\r\n\r\n"),
+        "{:?}",
+        &text[text.len().saturating_sub(200)..]
+    );
     assert_eq!(
         World::branch(&world.saltbox()),
         ("master".into(), "master".into())
@@ -451,6 +458,10 @@ fn on_a_terminal_ctrl_c_at_a_question_leaves_the_screen_and_ends_by_sigint() {
         World::branch(&world.saltbox()),
         ("develop".into(), "develop".into())
     );
+    // The interrupted block, then one blank line before the prompt (cli-core
+    // spec, "The blank line at the end").
+    assert!(text.ends_with("\r\n\r\n"), "{text:?}");
+    assert!(!text.ends_with("\r\n\r\n\r\n"), "{text:?}");
 }
 
 /// stderr not a terminal (redirected to a file) while the questions can

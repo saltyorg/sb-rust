@@ -927,6 +927,12 @@ the mock-ups; decisions 36 to 38). sb-go printed none of this.
       sb install sandbox-roles   the apps you list in sandbox_roles
     ```
   - when nothing moved: no hint.
+- **The last line** (the maintainer, 2026-11-19): on a terminal the run
+  then ends with one blank line before the prompt, after the hint, after
+  `already up to date`, after an error block or "interrupted", and after
+  a self-update that ends the run; cli-core does it for every command
+  (cli-core spec, "The blank line at the end"), so `update` has nothing
+  of its own. Piped, nothing changes.
 - **A failed or interrupted run** (decision 38): the block shows the
   checkouts whose pull finished (their HEAD read after the fetch and
   reset), each by the rules above (its tags only if its rebuild

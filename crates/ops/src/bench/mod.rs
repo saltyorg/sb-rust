@@ -137,13 +137,14 @@ pub struct Out<W> {
     width: Option<usize>,
 }
 
-impl Out<io::Stdout> {
+impl Out<sb_cli_core::tail::Tracked<io::Stdout>> {
     /// Stdout, as [`Table::print`] writes it but at [`PIPED_WIDTH`] when
     /// it isn't a terminal.
     #[must_use]
     pub fn stdout() -> Self {
         Self {
-            writer: io::stdout(),
+            // Recorded for the blank line at the end (cli-core's `tail`).
+            writer: sb_cli_core::tail::Tracked::stdout(io::stdout()),
             colour: sb_term_ui::colour_on(sb_term_ui::Stream::Stdout),
             width: Some(sb_term_ui::stdout_width().unwrap_or(PIPED_WIDTH)),
         }

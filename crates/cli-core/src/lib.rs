@@ -15,4 +15,5 @@ pub mod log;
 pub mod root;
 pub mod run_lock;
 pub mod spawn;
+pub mod tail;
 pub mod theme;

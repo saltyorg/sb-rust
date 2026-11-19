@@ -652,7 +652,7 @@ pub(crate) async fn run_pending(
                 Tags::Given(&tags),
                 &RunArgs::default(),
                 shutdown,
-                &mut io::stdout(),
+                &mut sb_cli_core::tail::Tracked::stdout(io::stdout()),
             )
             .await
             .with_context(context)?;

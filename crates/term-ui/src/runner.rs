@@ -144,7 +144,11 @@ impl Area {
             if printed.last().is_some_and(String::is_empty) {
                 text.push('\n');
             }
-            let _ = self.multi.println(text);
+            let _ = self.multi.println(&text);
+            // What is printed for good, recorded for the blank line at the
+            // end (cli-core's `tail`); the live area is cleared after.
+            text.push('\n');
+            sb_cli_core::tail::note(sb_cli_core::tail::Stream::Stderr, text.as_bytes());
         }
         // indicatif's cursor-moving redraw doesn't clear rows below a
         // shorter area (draw_target.rs `draw_to_term`), so the area keeps
@@ -1624,8 +1628,12 @@ async fn frames(shared: Shared, stop: Arc<AtomicBool>) {
 /// A plain-mode line on stderr (sb-go's plain mode when not interactive;
 /// its verbose half is dropped, decision 9).
 fn plain_line(line: &str) {
-    // anstream strips the codes when stderr's choice is no colour.
-    let _ = writeln!(anstream::stderr(), "{line}");
+    // anstream strips the codes when stderr's choice is no colour;
+    // recorded for the blank line at the end (cli-core's `tail`).
+    let _ = writeln!(
+        sb_cli_core::tail::Tracked::stderr(anstream::stderr()),
+        "{line}"
+    );
 }
 
 /// A plain-mode end line: `✓ <done label>   2.0s`, or ✗ with the label and
