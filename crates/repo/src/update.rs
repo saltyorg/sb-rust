@@ -17,7 +17,7 @@ use sb_host::child_failure as failure;
 /// nothing: 1 when `@{u}` resolves to no commit (its remote branch gone),
 /// 128 when it can't be resolved at all (no upstream configured, no such
 /// branch).
-const UNRESOLVED: &[i32] = &[1, 128];
+pub(crate) const UNRESOLVED: &[i32] = &[1, 128];
 
 /// The refspec that fetches every branch.
 const ALL_BRANCHES: &str = "+refs/heads/*:refs/remotes/origin/*";
@@ -444,7 +444,7 @@ impl Repo {
     /// Whether `rev` names a commit: `git rev-parse --verify --quiet
     /// <rev>` exits 0, or one of the codes in `missing`, which mean it
     /// doesn't; any other ending is git's error.
-    async fn resolves(
+    pub(crate) async fn resolves(
         &self,
         rev: String,
         missing: &[i32],

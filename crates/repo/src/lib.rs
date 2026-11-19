@@ -8,15 +8,18 @@
 //! [`Repo::current_branch`], [`Repo::check_branch_name`],
 //! [`Repo::ensure_fetch_all_branches`] and [`Repo::fetch_and_reset`], then
 //! [`Repo::head`], [`branch_choice`] and [`branch_notices`], and setup's
-//! [`Repo::clone`] and [`Repo::init_from_remote`].
+//! [`Repo::clone`] and [`Repo::init_from_remote`], then what an update
+//! would discard ([`Repo::discards`], [`Repo::local_changes`]).
 
 // Output goes through steps; `print!`/`eprint!` panic on a closed pipe.
 #![deny(clippy::print_stdout, clippy::print_stderr)]
 
+mod discards;
 mod git;
 mod remote;
 mod update;
 
+pub use discards::{Changes, Discards, counted};
 pub use remote::PublicRepoError;
 
 use std::io;

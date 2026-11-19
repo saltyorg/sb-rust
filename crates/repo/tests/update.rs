@@ -1479,3 +1479,171 @@ async fn a_clone_asked_for_credentials_is_retried_with_its_values() {
     );
     assert!(ran.screen.contains("Sandbox Git clone"), "{}", ran.screen);
 }
+
+/// A clean clone has nothing an update would discard: no question, no
+/// output change (repo spec, `discards`; ops decision 40).
+#[tokio::test]
+async fn a_clean_checkout_has_nothing_to_discard() {
+    let fixture = Fixture::new();
+    // Saltbox's config is ignored: never counted (no `clean -x`).
+    std::fs::write(fixture.checkout.join("accounts.yml"), "user: me\n").expect("write");
+    let repo = fixture.repo();
+    let discards = repo
+        .discards("master", "master", &token())
+        .await
+        .expect("discards");
+    assert!(discards.is_empty(), "{discards:?}");
+    assert_eq!(discards.summary(), "");
+    let changes = repo.local_changes(&token()).await.expect("changes");
+    assert!(changes.is_empty(), "{changes:?}");
+    assert_eq!(changes.count(), 0);
+}
+
+/// A local commit, a staged and an unstaged edit, an untracked file, an
+/// untracked directory and an empty one: each counted as the reset and
+/// the clean would drop them; an ignored file and a file touched but not
+/// changed aren't; the reads change nothing.
+#[tokio::test]
+async fn local_commits_edits_and_untracked_files_are_counted() {
+    let fixture = Fixture::new();
+    std::fs::write(fixture.checkout.join("local.txt"), "commit\n").expect("write");
+    git(&fixture.checkout, &["add", "local.txt"]);
+    git(&fixture.checkout, &["commit", "--quiet", "-m", "local"]);
+    local_changes(&fixture.checkout);
+    std::fs::write(fixture.checkout.join("accounts.yml"), "user: me\n").expect("write");
+    // Rewritten with the same bytes: a newer mtime, no change.
+    std::fs::write(fixture.checkout.join("local.txt"), "commit\n").expect("write");
+    let before = snapshot(&fixture.checkout);
+    let repo = fixture.repo();
+    let discards = repo
+        .discards("master", "master", &token())
+        .await
+        .expect("discards");
+    assert_eq!(discards.branch, "master");
+    assert_eq!(discards.commits, 1);
+    assert_eq!(discards.detached, 0);
+    assert_eq!(discards.changes.tracked, [".gitignore", "tracked.txt"]);
+    assert_eq!(
+        discards.changes.untracked,
+        ["drafts/", "empty/", "notes.txt"]
+    );
+    assert_eq!(
+        discards.summary(),
+        "1 local commit on 'master', 2 tracked changes and 3 untracked files"
+    );
+    assert_eq!(
+        repo.local_changes(&token()).await.expect("changes"),
+        discards.changes
+    );
+    assert_eq!(snapshot(&fixture.checkout), before);
+    // And an update discards exactly that: the commit, the edits and the
+    // untracked entries gone, the ignored file kept.
+    let ran = update(&repo, "master").await;
+    assert_eq!(ran.error, None, "{}", ran.screen);
+    let after = repo
+        .discards("master", "master", &token())
+        .await
+        .expect("discards");
+    assert!(after.is_empty(), "{after:?}");
+    assert!(fixture.checkout.join("accounts.yml").exists());
+}
+
+/// A switch to another branch counts the target's local commits, which
+/// its reset drops, never the current branch's, which stay on it.
+#[tokio::test]
+async fn a_switch_counts_the_targets_commits_not_the_current_ones() {
+    let fixture = Fixture::new();
+    std::fs::write(fixture.checkout.join("ahead.txt"), "ahead\n").expect("write");
+    git(&fixture.checkout, &["add", "ahead.txt"]);
+    git(&fixture.checkout, &["commit", "--quiet", "-m", "ahead"]);
+    git(&fixture.checkout, &["checkout", "--quiet", "-b", "feature"]);
+    for file in ["a.txt", "b.txt"] {
+        std::fs::write(fixture.checkout.join(file), file).expect("write");
+        git(&fixture.checkout, &["add", file]);
+        git(&fixture.checkout, &["commit", "--quiet", "-m", file]);
+    }
+    let discards = fixture
+        .repo()
+        .discards("feature", "master", &token())
+        .await
+        .expect("discards");
+    assert_eq!((discards.commits, discards.detached), (1, 0));
+    assert_eq!(discards.summary(), "1 local commit on 'master'");
+    // A branch with no upstream is the update's own refusal, before any
+    // question: answering one would only lead to it (decision 12).
+    let kept = fixture
+        .repo()
+        .discards("feature", "feature", &token())
+        .await
+        .expect_err("no upstream");
+    assert_eq!(
+        kept.to_string(),
+        "Sandbox: branch 'feature' has no upstream to update from"
+    );
+    // A branch only on the remote has no local commits to lose.
+    let remote = fixture
+        .repo()
+        .discards("feature", "develop", &token())
+        .await
+        .expect("discards");
+    assert!(remote.is_empty(), "{remote:?}");
+}
+
+/// A detached HEAD's own commits are left behind by the checkout of the
+/// branch: counted as such; one a tag holds isn't lost.
+#[tokio::test]
+async fn a_detached_heads_own_commits_are_counted() {
+    let fixture = Fixture::new();
+    git(&fixture.checkout, &["checkout", "--quiet", "--detach"]);
+    for file in ["x.txt", "y.txt"] {
+        std::fs::write(fixture.checkout.join(file), file).expect("write");
+        git(&fixture.checkout, &["add", file]);
+        git(&fixture.checkout, &["commit", "--quiet", "-m", file]);
+    }
+    let discards = fixture
+        .repo()
+        .discards("HEAD", "master", &token())
+        .await
+        .expect("discards");
+    assert_eq!((discards.commits, discards.detached), (0, 2));
+    assert_eq!(discards.summary(), "2 commits only on the detached HEAD");
+    git(&fixture.checkout, &["tag", "kept"]);
+    let tagged = fixture
+        .repo()
+        .discards("HEAD", "master", &token())
+        .await
+        .expect("discards");
+    assert!(tagged.is_empty(), "{tagged:?}");
+}
+
+/// Outside a repository each read is git's error, never "nothing to
+/// discard".
+#[tokio::test]
+async fn outside_a_repository_the_reads_are_gits_errors() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let repo = Repo::open("Sandbox", dir.path()).expect("open");
+    let err = repo
+        .local_changes(&token())
+        .await
+        .expect_err("not a repository");
+    assert!(matches!(err, RepoError::Git(_)), "{err:?}");
+    let err = repo
+        .discards("HEAD", "master", &token())
+        .await
+        .expect_err("not a repository");
+    assert!(matches!(err, RepoError::Git(_)), "{err:?}");
+}
+
+/// An untracked name outside ASCII comes as it is, as the tracked ones
+/// do (`core.quotePath=false`), not in git's octal escapes.
+#[tokio::test]
+async fn an_untracked_name_outside_ascii_is_as_it_is() {
+    let fixture = Fixture::new();
+    std::fs::write(fixture.checkout.join("café.txt"), "mine\n").expect("write");
+    let changes = fixture
+        .repo()
+        .local_changes(&token())
+        .await
+        .expect("changes");
+    assert_eq!(changes.untracked, ["café.txt"]);
+}
