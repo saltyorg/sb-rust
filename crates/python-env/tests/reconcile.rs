@@ -640,22 +640,25 @@ async fn without_a_user_a_rebuild_has_no_ownership_step() {
 const UNKNOWN: &str = "sb-rust-user-that-does-not-exist-7fcd24d1";
 
 /// The active venv as found: a dangling link and an incomplete manifest
-/// are unhealthy; a file there, or a generation without its manifest,
-/// fails the inspection with sb-go's words.
+/// are unhealthy, as sb-go has them; so are a file at the active path and
+/// a generation whose manifest is missing or isn't JSON, which sb-go
+/// fails on (spec, difference 17): each is rebuilt, by the normal path
+/// and by a forced one, and the old generation is cleaned away.
 #[tokio::test]
 async fn the_active_venv_is_inspected_as_sb_go_does() {
+    type Breaks = fn(&Path);
     let _spawns = SPAWNS.lock().await;
-    let run = async |tree: &Tree| {
+    let run = async |tree: &Tree, force: Force| {
         let env = tree.env();
         in_step(async |step| {
-            reconcile_venv(step, &env, None, Force::None).await?;
+            reconcile_venv(step, &env, None, force).await?;
             Ok(())
         })
         .await
     };
     let tree = Tree::new();
     tree.activate(&tree.root.path().join("gone/venv"));
-    let ran = run(&tree).await;
+    let ran = run(&tree, Force::None).await;
     assert!(ran.screen.contains("update required"), "{}", ran.screen);
 
     let tree = Tree::new();
@@ -666,24 +669,54 @@ async fn the_active_venv_is_inspected_as_sb_go_does() {
         .expect("object")
         .remove("saltbox_commit");
     std::fs::write(active.dir.join("manifest.json"), value.to_string()).expect("manifest");
-    let ran = run(&tree).await;
+    let ran = run(&tree, Force::None).await;
     assert!(ran.screen.contains("update required"), "{}", ran.screen);
 
-    let tree = Tree::new();
-    std::fs::create_dir_all(&tree.layout.ansible).expect("ansible");
-    std::fs::write(&tree.layout.active_venv, "a file").expect("file");
-    let ran = run(&tree).await;
-    let want = format!(
-        "inspect active Ansible environment: {} is neither a directory nor a symlink",
-        tree.layout.active_venv.display()
-    );
-    assert_eq!(ran.error.as_deref(), Some(want.as_str()));
+    for force in [Force::None, Force::Venv, Force::Python] {
+        let tree = Tree::new();
+        std::fs::create_dir_all(&tree.layout.ansible).expect("ansible");
+        std::fs::write(&tree.layout.active_venv, "a file").expect("file");
+        let ran = run(&tree, force).await;
+        assert_eq!(ran.error, None, "a file, {force:?}:\n{}", ran.screen);
+        let generation = active_generation(&tree);
+        assert!(generation.starts_with(&tree.layout.ansible_releases));
+    }
 
+    let breaks: [(&str, Breaks); 3] = [
+        ("missing", |manifest| {
+            std::fs::remove_file(manifest).expect("rm");
+        }),
+        ("not JSON", |manifest| {
+            std::fs::write(manifest, "{ not json").expect("garbage");
+        }),
+        ("empty", |manifest| {
+            std::fs::write(manifest, "").expect("empty");
+        }),
+    ];
+    for (what, breaks) in breaks {
+        for force in [Force::None, Force::Venv, Force::Python] {
+            let tree = Tree::new();
+            let active = tree.healthy();
+            breaks(&active.dir.join("manifest.json"));
+            let ran = run(&tree, force).await;
+            assert_eq!(ran.error, None, "{what}, {force:?}:\n{}", ran.screen);
+            if force == Force::None {
+                assert!(ran.screen.contains("update required"), "{}", ran.screen);
+            }
+            assert_ne!(active_generation(&tree), active.dir, "{what}, {force:?}");
+            assert!(!active.dir.exists(), "{what}, {force:?}: cleaned away");
+        }
+    }
+
+    // A manifest that can't be read for another reason still fails the
+    // inspection with sb-go's words.
     let tree = Tree::new();
     let active = tree.healthy();
-    std::fs::remove_file(active.dir.join("manifest.json")).expect("rm");
-    let ran = run(&tree).await;
-    let error = ran.error.expect("no manifest");
+    let manifest = active.dir.join("manifest.json");
+    std::fs::remove_file(&manifest).expect("rm");
+    std::fs::create_dir(&manifest).expect("a directory");
+    let ran = run(&tree, Force::None).await;
+    let error = ran.error.expect("unreadable");
     assert!(
         error.starts_with("inspect active Ansible environment: read generation manifest "),
         "{error}"

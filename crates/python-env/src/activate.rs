@@ -24,8 +24,6 @@ pub enum ActivateError {
     LegacyDir(io::Error),
     #[error("adopt legacy venv: {0}")]
     Adopt(io::Error),
-    #[error("{} is not a managed venv directory or symlink", .0.display())]
-    Unmanaged(PathBuf),
     #[error("activate Ansible venv: {0}")]
     Switch(io::Error),
 }
@@ -71,7 +69,7 @@ fn activate_with(
         .create(&layout.ansible_releases)
         .map_err(ActivateError::Releases)?;
     let active = &layout.active_venv;
-    let legacy = match found(active, std::fs::symlink_metadata(active))? {
+    let legacy = match found(std::fs::symlink_metadata(active))? {
         Found::Replaceable => None,
         Found::Legacy => {
             let id = format!("legacy-{}", crate::venv::stamp(jiff::Timestamp::now()));
@@ -96,20 +94,21 @@ fn activate_with(
 /// What the active path holds before a switch.
 #[derive(Debug, PartialEq, Eq)]
 enum Found {
-    /// Nothing, or a link: the switch replaces it.
+    /// Nothing, a link, or any other non-directory (a file there, which
+    /// sb-go refuses; python-env spec, difference 17): the switch
+    /// replaces it.
     Replaceable,
     /// A real directory: sb-go's legacy venv, adopted first.
     Legacy,
 }
 
-/// The active path at `path` as `lstat` found it (`meta`).
-fn found(path: &Path, meta: io::Result<std::fs::Metadata>) -> Result<Found, ActivateError> {
+/// The active path as `lstat` found it (`meta`).
+fn found(meta: io::Result<std::fs::Metadata>) -> Result<Found, ActivateError> {
     match meta {
         Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(Found::Replaceable),
         Err(err) => Err(ActivateError::Inspect(err)),
-        Ok(meta) if meta.file_type().is_symlink() => Ok(Found::Replaceable),
         Ok(meta) if meta.is_dir() => Ok(Found::Legacy),
-        Ok(_) => Err(ActivateError::Unmanaged(path.to_path_buf())),
+        Ok(_) => Ok(Found::Replaceable),
     }
 }
 
@@ -397,34 +396,23 @@ mod tests {
         assert!(strays(&layout).is_empty(), "{:?}", strays(&layout));
     }
 
+    /// A file at the active path is replaced as a link is (python-env
+    /// spec, difference 17; sb-go refuses it).
     #[test]
-    fn a_file_at_the_active_path_is_refused() {
+    fn a_file_at_the_active_path_is_replaced() {
         let (_dir, layout, venv) = staged();
         std::fs::write(&layout.active_venv, "a file").expect("file");
-        let err = activate_generation(&layout, &venv).expect_err("a file");
-        assert_eq!(
-            err.to_string(),
-            format!(
-                "{} is not a managed venv directory or symlink",
-                layout.active_venv.display()
-            )
-        );
-        assert_eq!(
-            std::fs::read_to_string(&layout.active_venv).expect("kept"),
-            "a file"
-        );
+        activate_generation(&layout, &venv).expect("replaced");
+        assert_eq!(std::fs::read_link(&layout.active_venv).expect("link"), venv);
+        assert!(strays(&layout).is_empty(), "{:?}", strays(&layout));
     }
 
     /// Any `lstat` failure but a missing path stops the switch.
     #[test]
     fn an_uninspectable_active_path_is_refused() {
-        let path = Path::new("/srv/ansible/venv");
         let missing = io::Error::from(io::ErrorKind::NotFound);
-        assert_eq!(
-            found(path, Err(missing)).expect("missing"),
-            Found::Replaceable
-        );
-        let err = found(path, Err(io::Error::other("injected"))).expect_err("other");
+        assert_eq!(found(Err(missing)).expect("missing"), Found::Replaceable);
+        let err = found(Err(io::Error::other("injected"))).expect_err("other");
         assert_eq!(
             err.to_string(),
             "inspect active venv before switch: injected"

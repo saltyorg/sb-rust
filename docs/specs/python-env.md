@@ -120,6 +120,12 @@ build it on a temporary root (sb-go's `releaseLayout` injection).
 4. **Inspect the active venv** (venv.go:281-317):
    - missing: unhealthy;
    - a real directory: legacy, unhealthy, adopted at activation;
+   - a file or any other non-link: unhealthy, replaced at activation
+     (difference 17; sb-go fails);
+   - a symlink whose generation's `manifest.json` is missing or isn't
+     JSON of the right shape: unhealthy, no previous manifest (difference
+     17; sb-go fails); another read error still fails, `inspect active
+     Ansible environment: read generation manifest <path>: <cause>`;
    - a symlink: read its generation's `manifest.json`. Healthy only when
      the schema is 1, the Python version and lock digest match, and the
      **environment check** passes:
@@ -178,9 +184,10 @@ build it on a temporary root (sb-go's `releaseLayout` injection).
     exec /srv/ansible/venv/bin/<cmd> "$@"
     ```
 13. **Activation** (activation.go:32-92): a legacy directory moves to
-    `releases/legacy-<ts>/venv`; `/srv/ansible/venv` is replaced by a
-    temporary symlink plus `rename`; on failure a moved legacy directory
-    is put back.
+    `releases/legacy-<ts>/venv`; `/srv/ansible/venv` (a link, or a file
+    there: difference 17) is replaced by a temporary symlink plus
+    `rename`; on failure a moved legacy directory is put back, and a
+    replaced link or file is as it was.
 14. **Stale wrappers:** a wrapper the previous manifest listed and the new
     one doesn't is removed, only when its first two lines are exactly the
     marker header (wrappers.go:225-249).
@@ -485,6 +492,17 @@ moved), so `ops` callers and the tests can read them.
 16. **After a rebuild, "Cleaning up old environments" and
     "Setting ownership" are steps** (decision 23). sb-go ran both inside
     its parent step, with nothing drawn.
+17. **A broken active venv is rebuilt, not a dead end** (coordinator,
+    2026-11-19, from a container test of each breakage): a generation
+    whose `manifest.json` is missing, empty or not JSON, and a file (or
+    any other non-link, non-directory) at `/srv/ansible/venv`, make the
+    venv unhealthy with no previous manifest, so `update`, `update-venv`
+    and both reinstall commands rebuild it (a new Python release, as for
+    a missing venv); activation renames the new link over the file. sb-go
+    failed all of them (python/venv.go:126, :304-307: `inspect active
+    Ansible environment: ...`), and only removing the path by hand
+    helped. Nothing outside the layout's paths is touched: the old
+    generation goes in step 15's cleanup, as any old one does.
 
 ### Scope
 

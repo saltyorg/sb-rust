@@ -201,20 +201,21 @@ pub enum InspectError {
     /// The active path couldn't be looked at.
     #[error("{}: {cause}", path.display())]
     Io { path: PathBuf, cause: io::Error },
-    /// The active path is a file or some other thing.
-    #[error("{} is neither a directory nor a symlink", .0.display())]
-    Other(PathBuf),
-    /// The generation's manifest couldn't be read.
+    /// The generation's manifest couldn't be read for a reason other than
+    /// its absence or its text (those make the venv unhealthy).
     #[error(transparent)]
     Manifest(#[from] ManifestError),
 }
 
 /// The active venv (sb-go's `inspectActive`): missing or a dangling
 /// link, unhealthy; a real directory (the legacy layout, which
-/// activation adopts), unhealthy; a symlink, its generation's manifest,
-/// healthy when the schema is 1, the Python and the lock match the
-/// toolchain and the environment check passes. Why a check failed goes to
-/// the run log.
+/// activation adopts), unhealthy; a file or any other non-link,
+/// unhealthy (activation replaces it; sb-go fails); a symlink, its
+/// generation's manifest, healthy when the schema is 1, the Python and
+/// the lock match the toolchain and the environment check passes. A
+/// manifest that is missing or isn't JSON of the right shape makes it
+/// unhealthy too (sb-go fails; spec, difference 17). Why a check failed
+/// goes to the run log.
 pub(crate) async fn inspect(
     env: &Env<'_>,
     toolchain: &Toolchain,
@@ -235,7 +236,8 @@ pub(crate) async fn inspect(
         return Ok(Active::default());
     }
     if !meta.file_type().is_symlink() {
-        return Err(InspectError::Other(active.clone()));
+        tracing::info!("the active venv path is neither a directory nor a symlink");
+        return Ok(Active::default());
     }
     // Go's `filepath.EvalSymlinks` (sb-go): the whole path resolved.
     let target = match std::fs::canonicalize(active) {
@@ -244,7 +246,18 @@ pub(crate) async fn inspect(
         Ok(target) => target,
     };
     let generation = target.parent().unwrap_or(&target);
-    let Some(manifest) = manifest::read(generation)? else {
+    let read = match manifest::read(generation) {
+        Err(ManifestError::Read { cause, .. }) if cause.kind() == io::ErrorKind::NotFound => {
+            tracing::info!("the active manifest is missing");
+            return Ok(Active::default());
+        }
+        Err(err @ ManifestError::Parse { .. }) => {
+            tracing::info!(cause = %err, "the active manifest is unreadable");
+            return Ok(Active::default());
+        }
+        read => read?,
+    };
+    let Some(manifest) = read else {
         tracing::info!("the active manifest is incomplete");
         return Ok(Active::default());
     };
