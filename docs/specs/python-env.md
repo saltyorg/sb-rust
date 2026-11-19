@@ -148,7 +148,14 @@ build it on a temporary root (sb-go's `releaseLayout` injection).
    of their own (decision 23): nothing is usually left to remove, and the
    ownership walk only looks (about half a second over a Saltbox tree in
    the 2026-11-19 measurement).
-7. **Python.** Reuse the manifest's Python when `force` isn't `Python`, its
+7. **uv's cache, when forced.** When `force` isn't `None` (the
+   reinstall commands, and the clean retry), step **"Clearing the uv
+   cache"** (done "uv cache cleared") runs `uv cache clean` on sb's cache
+   (`UV_CACHE_DIR`), streamed, no timeout (uv waits at most 5 minutes for
+   another uv's lock; Ctrl-C stops it). Error: `clear uv cache: <cause>`,
+   a build failure (step 17). Difference 18.
+
+   **Python.** Reuse the manifest's Python when `force` isn't `Python`, its
    version matches and it passes the Python check. Otherwise step
    **"Installing Python <v>"**: `uv python install --managed-python --no-bin
    --install-dir <release dir> [--reinstall] [--no-cache] <v>`, then `uv
@@ -394,8 +401,8 @@ their own order, as sb-go does. `branch` calls `reconcile_runtime`, as
 - **one clean retry (new):** when a non-forced build fails in steps 7-11
   (Python install or find, `uv venv`, `pip sync`, command discovery, the
   staged check), the partial generation and Python release are removed and
-  the build runs once more as `Python` force (a fresh Python release, both
-  uv calls with `--no-cache`). The info line before it reads `Retrying
+  the build runs once more as `Python` force (uv's cache cleared, a fresh
+  Python release, both uv calls with `--no-cache`). The info line before it reads `Retrying
   with a fresh Python and no uv cache after: <cause>`, the cause
   on one line with its controls escaped and its quotes, apostrophes and
   backslashes as the child wrote them (host's `child_failure`, by
@@ -503,6 +510,17 @@ moved), so `ops` callers and the tests can read them.
     Ansible environment: ...`), and only removing the path by hand
     helped. Nothing outside the layout's paths is touched: the old
     generation goes in step 15's cleanup, as any old one does.
+18. **A forced build clears uv's cache first** (step 7; coordinator,
+    2026-11-19, from a container test): uv hardlinks a venv's files to
+    their cache entries (its default link mode on Linux, link count 2
+    observed), so a venv file damaged in place damages the cache too,
+    and the next normal build activated the damage while reporting
+    success; `--no-cache` alone kept the venv clean but left the cache
+    as it was. `uv cache clean`
+    (<https://docs.astral.sh/uv/concepts/cache/#clearing-the-cache>)
+    runs before `reinstall-venv`'s, `reinstall-python`'s and the clean
+    retry's build; the next normal build downloads again. sb-go never
+    cleared the cache.
 
 ### Scope
 

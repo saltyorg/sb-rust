@@ -366,6 +366,23 @@ async fn a_forced_rebuild_says_so_and_builds() {
             .find(|call| call.starts_with("pip sync"))
             .expect("sync");
         assert!(sync.contains(" --no-cache "), "{label}: {sync}");
+        // uv's cache is cleared first, in its own step: the venv's files
+        // are hardlinks into it, so damage to one would come back in the
+        // next normal build.
+        let clean = calls
+            .iter()
+            .position(|call| call.starts_with("cache clean"))
+            .unwrap_or_else(|| panic!("{label}: {calls:?}"));
+        let first_build = calls
+            .iter()
+            .position(|call| call.starts_with("python install") || call.starts_with("venv "))
+            .expect("build");
+        assert!(clean < first_build, "{label}: {calls:?}");
+        assert!(
+            ran.screen.contains("uv cache cleared"),
+            "{label}:\n{}",
+            ran.screen
+        );
         let python = entries(&tree.layout.python_releases);
         if force == Force::Venv {
             assert!(install.is_empty(), "{install:?}");
@@ -478,7 +495,13 @@ fn wrapped_tree() -> Tree {
 #[tokio::test]
 async fn a_failed_rebuild_keeps_the_previous_generation() {
     let _spawns = SPAWNS.lock().await;
-    for op in ["python-install", "venv---python", "pip-sync", "pip-check"] {
+    for op in [
+        "cache-clean",
+        "python-install",
+        "venv---python",
+        "pip-sync",
+        "pip-check",
+    ] {
         let tree = wrapped_tree();
         let before = kept(&tree);
         tree.fail(op);

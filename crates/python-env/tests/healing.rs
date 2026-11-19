@@ -130,6 +130,14 @@ async fn a_venv_failing_the_wider_check_is_rebuilt_once() {
     assert!(ran.screen.contains("update required"), "{}", ran.screen);
     assert!(!ran.screen.contains(RETRYING), "{}", ran.screen);
     assert_eq!(syncs(&tree).len(), 1, "{:?}", uv_calls(&tree));
+    // A normal rebuild keeps uv's cache.
+    assert!(
+        !uv_calls(&tree)
+            .iter()
+            .any(|call| call.starts_with("cache clean")),
+        "{:?}",
+        uv_calls(&tree)
+    );
     assert_ne!(active_generation(&tree), active.dir);
 }
 
@@ -159,6 +167,23 @@ async fn a_failed_build_is_retried_once_cleanly() {
     assert_eq!(syncs.len(), 2, "{syncs:?}");
     assert!(!syncs[0].contains("--no-cache"), "{syncs:?}");
     assert!(syncs[1].contains(" --no-cache "), "{syncs:?}");
+    // uv's cache is cleared once, between the two builds: a damaged
+    // cache entry can't come back in the next normal build.
+    let calls = uv_calls(&tree);
+    let at = |prefix: &str| {
+        calls
+            .iter()
+            .enumerate()
+            .filter(|(_, call)| call.starts_with(prefix))
+            .map(|(at, _)| at)
+            .collect::<Vec<_>>()
+    };
+    let (cleans, sync_calls) = (at("cache clean"), at("pip sync"));
+    assert_eq!(cleans.len(), 1, "{calls:?}");
+    assert!(
+        sync_calls[0] < cleans[0] && cleans[0] < sync_calls[1],
+        "{calls:?}"
+    );
     let installs: Vec<String> = uv_calls(&tree)
         .into_iter()
         .filter(|call| call.starts_with("python install"))

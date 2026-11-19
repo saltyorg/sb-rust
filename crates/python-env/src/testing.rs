@@ -355,6 +355,7 @@ exit 0"#;
              case \"$op\" in\n\
              --version-) echo 'uv {uv} (stand-in)' ;;\n\
              pip-check) ;;\n\
+             cache-clean) ;;\n\
              python-install) mkdir -p \"$dir/cpython/bin\" && cp '{root}/templates/python3' \"$dir/cpython/bin/python3.12\" ;;\n\
              python-find) if [ -e '{root}/find-answer' ]; then cat '{root}/find-answer'; \
              else echo \"$UV_PYTHON_INSTALL_DIR/cpython/bin/python3.12\"; fi ;;\n\

@@ -910,7 +910,8 @@ async fn install_python<'a>(
     })
 }
 
-/// Build a new generation into staging (spec, steps 7-11): the Python
+/// Build a new generation into staging (spec, steps 7-11): uv's cache
+/// cleared when forced ([`clear_cache`]); the Python
 /// (the active one's, or a new release); `releases/<stamp>-<lock[:12]>/`; "Creating Ansible
 /// virtual environment" (`uv venv`); "Syncing hashed Saltbox
 /// requirements" (`uv pip sync --require-hashes`, `--no-cache` when
@@ -958,6 +959,9 @@ async fn stage<'a>(
     force: Force,
     leftovers: &mut Leftovers<'a>,
 ) -> Result<(PathBuf, PathBuf, Manifest), BuildError> {
+    if force != Force::None {
+        clear_cache(step, env).await?;
+    }
     let Python {
         path: python_path,
         install: python_install,
@@ -1046,6 +1050,33 @@ async fn stage<'a>(
     };
     manifest::write(&generation, &manifest)?;
     Ok((generation, venv, manifest))
+}
+
+/// "Clearing the uv cache" (spec, step 7; difference 18) before a forced
+/// build, which the retry is too: `uv cache clean`, which "removes all
+/// cache entries from the cache directory", sb's own (`UV_CACHE_DIR`)
+/// (<https://docs.astral.sh/uv/concepts/cache/#clearing-the-cache>; the
+/// same page: "it's never safe to modify the cache directly"). uv
+/// hardlinks a venv's files to their cache entries, so a venv file
+/// damaged in place damages its entry too, and the next normal build
+/// would bring it back. Streamed into the step with no timeout: uv waits
+/// at most 5 minutes for another uv process's lock (that page, "Cache
+/// safety"), and Ctrl-C stops it.
+async fn clear_cache(step: &mut Step, env: &Env<'_>) -> Result<(), BuildError> {
+    let clearing = Labels::new("Clearing the uv cache", "uv cache cleared");
+    nested(step, clearing, async |step| {
+        let clean = env
+            .isolated(Kind::Uv { cache: true }, &env.layout.uv)?
+            .map(|cmd| cmd.arg("cache").arg("clean"));
+        let _streamed = clean
+            .cmd
+            .stream(step)
+            .await?
+            .check()
+            .context("clear uv cache")?;
+        anyhow::Ok(())
+    })
+    .await
 }
 
 /// A UTC time in Go's `20060102T150405.000000000` (generation and
