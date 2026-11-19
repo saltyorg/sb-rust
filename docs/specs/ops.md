@@ -1970,10 +1970,10 @@ the real services.
   root could point it elsewhere. The root is the operator's (Saltbox's
   seed user's), so this is left as it is. Its copies of the file (the
   lines, the frames) aren't cleared; the file is on disk anyway.
-- The viewer shows every value, so a frame left on a terminal without an
-  alternate screen (GNU screen's default) keeps them after sb exits
-  (2026-11-18; blanking it before leaving is an open question in the tui
-  spec). A file past 2,000 wrapped rows is cut there in the pane, as the
+- The viewer shows every value; the screen is cleared before it is left
+  (tui spec, "Keys: one map for every screen", decision 6), so a terminal
+  without an alternate screen keeps no frame of them. A file past 2,000
+  wrapped rows is cut there in the pane, as the
   announcement viewer's.
 - The form's fields are ratatui-textarea `String`s, not cleared on drop:
   sb takes the answers into `Zeroizing` buffers and empties the fields

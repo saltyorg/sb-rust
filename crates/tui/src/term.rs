@@ -46,7 +46,7 @@ use crossterm::event::{
     Event as Input, EventStream, KeyModifiers,
 };
 use crossterm::terminal::{
-    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+    Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
 use crossterm::{Command as _, execute};
 use futures_util::{FutureExt as _, Stream, StreamExt as _};
@@ -282,6 +282,25 @@ impl Tui {
         }
     }
 
+    /// The screen's area cleared, the last step before it is left, so a
+    /// terminal without an alternate screen (GNU screen's default) keeps no
+    /// frame with plain values (the maintainer, 2026-11-19: every screen
+    /// is left blank). ratatui's `Backend::clear`, crossterm's `Clear(All)`
+    /// (<https://docs.rs/ratatui/0.30.2/ratatui/backend/trait.Backend.html#tymethod.clear>).
+    /// Why not `Terminal::clear`
+    /// (<https://docs.rs/ratatui/0.30.2/ratatui/struct.Terminal.html#method.clear>):
+    /// it asks the terminal for the cursor's position first
+    /// (ratatui-core 0.1.2 `terminal/buffers.rs`), waiting for an answer a
+    /// terminal or a test's PTY may never send, and fails without clearing
+    /// when none comes; the cursor's place doesn't matter as the screen
+    /// goes.
+    fn clear(&mut self) -> io::Result<()> {
+        match &mut self.screen {
+            Screen::Stdout(terminal) => terminal.backend_mut().clear(),
+            Screen::Tty(terminal) => terminal.backend_mut().clear(),
+        }
+    }
+
     /// Raw mode off and the alternate screen left: ratatui's restore, or
     /// its two steps on the tty (`ratatui::try_restore`'s, written there).
     /// The cursor comes back with the terminal's drop (ratatui's
@@ -333,10 +352,11 @@ impl Tui {
             .await;
         self.task.abort();
         let _ = (&mut self.task).await;
+        let cleared = self.clear();
         let restored = self.restore();
         SCREEN.store(false, Ordering::SeqCst);
         self.left = true;
-        mouse.and(restored)
+        mouse.and(cleared).and(restored)
     }
 }
 
@@ -348,6 +368,7 @@ impl Drop for Tui {
         self.task.abort();
         if !self.left && SCREEN.swap(false, Ordering::SeqCst) {
             let _ = self.mouse_off();
+            let _ = self.clear();
             let _ = self.restore();
         }
     }
@@ -365,8 +386,9 @@ fn forced_exit_restore(out: File) -> impl Fn() + Send + 'static {
     }
 }
 
-/// Mouse capture and bracketed paste off, the alternate screen left, the
-/// cursor shown, as
+/// Mouse capture and bracketed paste off, the screen cleared ("Blank on
+/// exit", as [`Tui::leave`]), the alternate screen left, the cursor shown,
+/// as
 /// crossterm writes them (`Command::write_ansi`), built before any hook
 /// needs it. Why not `execute!` in the hook: it formats and flushes
 /// several writes on the restore thread; one prepared write is the
@@ -376,6 +398,7 @@ fn restore_sequence() -> String {
     // Writing to a `String` can't fail.
     let _ = DisableMouseCapture.write_ansi(&mut sequence);
     let _ = DisableBracketedPaste.write_ansi(&mut sequence);
+    let _ = Clear(ClearType::All).write_ansi(&mut sequence);
     let _ = LeaveAlternateScreen.write_ansi(&mut sequence);
     let _ = Show.write_ansi(&mut sequence);
     sequence
@@ -1057,6 +1080,9 @@ mod tests {
             .write_ansi(&mut expected)
             .expect("write");
         DisableBracketedPaste
+            .write_ansi(&mut expected)
+            .expect("write");
+        Clear(ClearType::All)
             .write_ansi(&mut expected)
             .expect("write");
         LeaveAlternateScreen

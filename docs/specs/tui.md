@@ -335,7 +335,10 @@ docs/community/support.md:34) and sb-go's screens can't give.
   an unbounded channel; rendering runs on a 60 fps interval, only when
   something changed; a 4/s tick runs beside it (proto-logs' "root cause of
   the whole series of input bugs").
-- **Leaving the screen** drains input for 150 ms after mouse capture is
+- **Leaving the screen** clears it as the last step before the
+  alternate screen is left (*amended 2026-11-19,* "Keys: one map for
+  every screen", decision 6: "Blank on exit"). Before that, it drains
+  input for 150 ms after mouse capture is
   turned off, so late mouse codes don't reach the shell (proto-logs
   measured 600 bytes leaked without it, 0 with it). No documentation
   covers it: marked UNVERIFIED in the code, with that measurement.
@@ -1546,10 +1549,6 @@ the test's directory.
 ### Known limits
 
 - OSC 52 copy can't confirm success. The status line says so.
-- Values show as they are, so a frame left on a terminal without an
-  alternate screen (GNU screen's default) keeps them after sb exits. It
-  follows from showing every value (2026-11-18); blanking the screen
-  before leaving is an open question for the maintainer.
 - A commit across several roles has no rollback. A failure leaves the
   earlier roles applied, and the outcome dialog says which.
 - A `;` line that doesn't continue a value (at column 0, say) is a
@@ -2313,9 +2312,9 @@ mask, `s` and `a`, and the masked last frame it drew as it closed.
 sb-config's `facts::secret::is_secret` and `is_secret_value` (the value
 rule, a URL with credentials) stay, with no caller now: their only
 caller was the restore pane, and they are ready for output meant for
-sharing. A frame left on a terminal without an alternate screen (GNU
-screen's default) now holds the values as shown (Known limits; an open
-question).
+sharing. Every screen is cleared as the last step before it is left
+(decision 6), so a terminal without an alternate screen (GNU screen's
+default) keeps no frame with plain values.
 
 ### Decisions (the maintainer, 2026-11-18)
 
@@ -2329,16 +2328,17 @@ question).
 4. **Esc** leaves a top-level screen when nothing is open (option A).
 5. **The tail** `? keys · q quit` sits right-aligned on every screen
    (option A).
-
-### Open question
-
-1. **Blank the last frame?** A terminal without an alternate screen (GNU
-   screen's default, tmux with `alternate-screen off`) keeps the screen's
-   last frame after sb leaves, values included, in `sb fact` and
-   restore's viewer. A: leave it (today). B: blank the screen just before
-   leaving (ratatui's `Terminal::clear`), so nothing stays; nothing is
-   hidden while the screen is up. Raised by the security review of
-   2026-11-18.
+6. **Blank on exit** (the maintainer, 2026-11-19, on the security
+   review's question of 2026-11-18): every screen clears its area as the
+   last step before the alternate screen is left, so a terminal without
+   one (GNU screen's default, tmux with `alternate-screen off`) keeps no
+   frame with plain values. Nothing is hidden while the screen is up.
+   Built in `Tui::leave` and the screen's drop with ratatui's
+   `Backend::clear` (crossterm's `Clear(All)`), and in the forced exit's
+   restore sequence; not `Terminal::clear`, which asks the terminal for
+   the cursor's position first and fails without clearing when no answer
+   comes. A panic leaves the screen through ratatui's own restore, which
+   doesn't clear.
 
 ## Verification notes
 
@@ -2638,10 +2638,9 @@ question).
 
 ## Open questions
 
-The key map's five questions were answered on 2026-11-18 ("Keys: one
-map for every screen", Decisions); its open question (blank the last
-frame?) waits for the maintainer. decided.md settled the brief's nine;
-decisions 18 to 20 follow from recorded decisions. The editors' question (when `sb fact` takes a
+None. The key map's questions were answered on 2026-11-18 and 2026-11-19
+("Keys: one map for every screen", Decisions). decided.md settled the
+brief's nine; decisions 18 to 20 follow from recorded decisions. The editors' question (when `sb fact` takes a
 role's lock) was decided on 2026-11-13 from recorded rules: decision 38.
 
 ## Amendments to other specs

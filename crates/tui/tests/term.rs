@@ -665,3 +665,57 @@ fn input_reaches_the_screen_within_a_few_frames() {
     eprintln!("input latency: median {screen:?} on the screen, {base:?} baseline, {added:?} added");
     assert!(added < Duration::from_millis(100), "{added:?} added");
 }
+
+/// The screen's area cleared (crossterm's `Clear(All)`, ESC [2J) after its
+/// last frame and before the alternate screen is left, so a terminal
+/// without one (GNU screen's default) keeps no frame with plain values
+/// (the maintainer, 2026-11-19: every screen is left blank; tui spec, "Keys: one map
+/// for every screen", Decisions).
+fn assert_cleared_before_leaving(raw: &[u8]) {
+    let raw = String::from_utf8_lossy(raw);
+    let leave = raw.rfind("\x1b[?1049l").expect("the alternate screen left");
+    let clear = raw[..leave]
+        .rfind("\x1b[2J")
+        .unwrap_or_else(|| panic!("no clear before leaving: {raw:?}"));
+    let drawn = raw[..leave].rfind("keys").expect("a frame");
+    assert!(
+        drawn < clear,
+        "the clear comes after the last frame: {raw:?}"
+    );
+}
+
+#[test]
+fn q_clears_the_screen_before_leaving_it() {
+    let mut pty = Pty::spawn("screen");
+    pty.assert_up();
+    pty.send(b"q");
+    assert!(pty.exit().success());
+    assert_cleared_before_leaving(&pty.raw);
+}
+
+#[test]
+fn a_dropped_screen_is_cleared_before_it_is_left() {
+    let mut pty = Pty::spawn("dropped");
+    pty.assert_up();
+    pty.send(b"q");
+    assert!(pty.exit().success());
+    assert_cleared_before_leaving(&pty.raw);
+}
+
+#[test]
+fn sigterm_clears_the_screen_before_leaving_it() {
+    let mut pty = Pty::spawn("screen");
+    pty.assert_up();
+    pty.signal(Signal::TERM);
+    pty.exit();
+    assert_cleared_before_leaving(&pty.raw);
+}
+
+#[test]
+fn on_the_tty_q_clears_the_screen_before_leaving_it() {
+    let mut pty = Pty::spawn_on_tty("screen");
+    pty.assert_up();
+    pty.send(b"q");
+    assert!(pty.exit().success());
+    assert_cleared_before_leaving(&pty.raw);
+}
