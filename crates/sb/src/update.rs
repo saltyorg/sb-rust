@@ -56,7 +56,7 @@ pub fn update(args: &UpdateArgs, shutdown: &Shutdown, log: Option<&RunLog>) -> a
     // A second signal SIGKILLs the children still running (a migration's
     // playbook, apt, git), as `sb install` registers it (exec decision 12).
     let _children = sb_exec::on_forced_exit(shutdown);
-    super::python_env::with_env(log, |python, releases| {
+    super::python_env::with_env(log, args.verify_venv, |python, releases| {
         let self_update = target.as_deref().map(|target| SelfUpdate {
             repo: SB_REPO,
             build: &build,

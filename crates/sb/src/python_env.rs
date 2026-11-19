@@ -51,7 +51,7 @@ fn run_without_user(
     log: Option<&RunLog>,
     body: impl AsyncFnOnce(&mut Step, &Env<'_>) -> anyhow::Result<()>,
 ) -> anyhow::Result<()> {
-    with_env(log, |env, _| {
+    with_env(log, false, |env, _| {
         super::block_on(async {
             let mut runner = Runner::start(name, shutdown, log, Options::default());
             let result = runner
@@ -67,13 +67,15 @@ fn run_without_user(
 /// it reaches uv's and the fact's releases through (the proxy or GitHub,
 /// as `sb self-update` reaches sb's; in a test build, the fake GitHub
 /// only). The deadsnakes backup is named by the run log's id (python-env
-/// spec, "Deadsnakes cleanup"); without a log, `Env`'s own.
+/// spec, "Deadsnakes cleanup"); without a log, `Env`'s own. `verify` is
+/// `sb update --verify-venv` (python-env decision 25).
 ///
 /// # Errors
 ///
 /// The release client or the architecture, or `body`'s.
 pub(crate) fn with_env<T>(
     log: Option<&RunLog>,
+    verify: bool,
     body: impl FnOnce(&Env<'_>, &Releases) -> anyhow::Result<T>,
 ) -> anyhow::Result<T> {
     let layout = Layout::for_sb();
@@ -83,6 +85,7 @@ pub(crate) fn with_env<T>(
     if let Some(log) = log {
         log.id().clone_into(&mut env.run_id);
     }
+    env.verify = verify;
     body(&env, &releases)
 }
 

@@ -30,7 +30,7 @@ use std::time::Duration;
 use reqwest::Url;
 
 pub use activate::{ElfError, activate, check_elf};
-pub use asset::{Asset, sha256_file};
+pub use asset::{Asset, sha256_file, sha256_reader};
 pub use download::{Stage, Staged};
 pub use lookup::{Failure, Query, Release, Track};
 pub use self_update::{Outcome, SelfUpdate, asset_name, self_update};

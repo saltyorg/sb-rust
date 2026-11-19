@@ -25,6 +25,7 @@ pub mod testing;
 pub mod toolchain;
 pub mod uv;
 pub mod venv;
+pub mod verify;
 pub mod wrappers;
 
 pub use deadsnakes::{DeadsnakesError, RepositoriesError, cleanup_deadsnakes};
@@ -69,6 +70,10 @@ pub struct Layout {
     pub python: PathBuf,
     /// `/srv/python/releases`: the Python releases sb manages.
     pub python_releases: PathBuf,
+    /// `/var/lib/sb/python-releases`: each release's file manifest, which
+    /// sb writes when it installs the release (decision 25), outside
+    /// `/srv/python`, which step 16 gives to the Saltbox user.
+    pub python_manifests: PathBuf,
     /// `/usr/local/bin/uv`.
     pub uv: PathBuf,
     /// `/usr/local/bin/uvx`.
@@ -123,6 +128,7 @@ impl Layout {
             ansible_releases: ansible.join("releases"),
             ansible,
             python_releases: python.join("releases"),
+            python_manifests: at("var/lib/sb/python-releases"),
             python,
             uv: bin.join("uv"),
             uvx: bin.join("uvx"),
@@ -160,6 +166,10 @@ pub struct Env<'a> {
     /// the run's start in UTC, `YYYYmmddTHHMMSSnnnnnnnnn`, letters and
     /// digits as a run id must be.
     pub run_id: String,
+    /// `sb update --verify-venv` (decision 25): the active venv's files
+    /// checked against their wheels' RECORDs and its Python release's
+    /// against sb's manifest; off for every other run.
+    pub verify: bool,
 }
 
 impl<'a> Env<'a> {
@@ -185,6 +195,7 @@ impl<'a> Env<'a> {
             run_id: jiff::Timestamp::now()
                 .strftime("%Y%m%dT%H%M%S%N")
                 .to_string(),
+            verify: false,
         }
     }
 
@@ -307,6 +318,7 @@ mod tests {
             (&layout.uv, "/usr/local/bin/uv"),
             (&layout.uvx, "/usr/local/bin/uvx"),
             (&layout.uv_cache, "/var/cache/sb-go/uv"),
+            (&layout.python_manifests, "/var/lib/sb/python-releases"),
             (&layout.wrappers, "/usr/local/bin"),
             (
                 &layout.fact,

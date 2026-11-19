@@ -157,6 +157,10 @@ pub enum CleanupError {
         releases.display()
     )]
     PythonOutside { install: String, releases: PathBuf },
+    /// A releases directory that is a link or a file (python-env spec,
+    /// step 15): never listed or emptied.
+    #[error("releases {} is not a directory", .0.display())]
+    NotDirectory(PathBuf),
     #[error("read releases {}: {cause}", dir.display())]
     List { dir: PathBuf, cause: io::Error },
     #[error("remove unretained release {}: {cause}", path.display())]
@@ -215,7 +219,12 @@ pub fn cleanup_generations(layout: &Layout) -> Result<(), CleanupError> {
         });
     }
     remove_others(&layout.ansible_releases, &generation)?;
-    remove_others(&layout.python_releases, &install)
+    remove_others(&layout.python_releases, &install)?;
+    // The kept release's manifest only (decision 25): sb's own directory.
+    remove_others(
+        &layout.python_manifests,
+        &crate::verify::manifest_path(layout, &install),
+    )
 }
 
 /// Remove `path` when it is the obsolete `previous` symlink; a missing
@@ -233,9 +242,18 @@ fn remove_previous_link(path: &Path) -> Result<(), CleanupError> {
 }
 
 /// Remove every entry of `root` but `keep` (sb-go's
-/// `removeUnretainedDirectories`); a missing `root` has none. A symlink
-/// entry is removed itself, never followed.
+/// `removeUnretainedDirectories`); a missing `root` has none, and a
+/// `root` that is a link is refused (sb-go followed it). A symlink entry
+/// is removed itself, never followed.
 fn remove_others(root: &Path, keep: &Path) -> Result<(), CleanupError> {
+    // `root`'s parent is the Saltbox user's (step 16): a link there would
+    // have root empty whatever it points at. `lstat` first; a missing
+    // root is `read_dir`'s below.
+    if let Ok(meta) = std::fs::symlink_metadata(root)
+        && !meta.is_dir()
+    {
+        return Err(CleanupError::NotDirectory(root.to_path_buf()));
+    }
     let entries = match std::fs::read_dir(root) {
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(()),
         Err(cause) => {

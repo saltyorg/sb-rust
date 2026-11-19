@@ -91,6 +91,12 @@ pub struct UpdateArgs {
     // have moved, and the next run can't ask it again (ops decision 19).
     #[arg(long, global = true, value_enum, value_name = "run|skip")]
     pub migrations: Option<Migrations>,
+    /// Check the Ansible virtual environment's files against their
+    /// records, and its Python against sb's manifest; rebuild what differs
+    // Hidden while its cost is tried on real hosts (python-env decision
+    // 25): unhiding it is dropping `hide`.
+    #[arg(long, global = true, hide = true)]
+    pub verify_venv: bool,
 }
 
 /// The answer to the migrations question.

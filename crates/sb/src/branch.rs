@@ -25,7 +25,7 @@ pub fn branch(
 ) -> anyhow::Result<()> {
     let root = config::saltbox_dir(std::env::var_os("SB_SALTBOX_DIR"));
     let ansible = super::ansible::ansible();
-    super::python_env::with_env(log, |python, _| {
+    super::python_env::with_env(log, false, |python, _| {
         let tools = Tools {
             python,
             ansible: &ansible,

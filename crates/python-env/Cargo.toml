@@ -52,6 +52,14 @@ hex.workspace = true
 tempfile.workspace = true
 thiserror.workspace = true
 tokio-util.workspace = true
+# `sb update --verify-venv` (spec, decision 25): a wheel's RECORD (CSV,
+# its digests urlsafe base64), each file opened without following a link
+# or blocking on a FIFO (rustix's `open`), and the Python release walked
+# for its manifest (walkdir, as sb-host's ownership walk).
+base64.workspace = true
+csv.workspace = true
+rustix.workspace = true
+walkdir.workspace = true
 # The fake release's digests (`testing` only).
 sha2 = { workspace = true, optional = true }
 

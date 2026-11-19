@@ -35,6 +35,11 @@ you could trip over.
 - **A theme file,** `<appdata>/sb/config.toml`: the built-in theme, with
   the colour depth and colours per role.
 - **`sb docker ps --json`.**
+- **`sb update --verify-venv`** (hidden while its cost is tried): checks
+  every file of the Ansible virtual environment against its package's
+  record, and the Python against a manifest sb writes when it installs
+  it, and rebuilds what differs. It catches damage the health checks
+  don't, such as a package Saltbox doesn't import at startup.
 - **`sb update` says what moved:** each checkout's commit range, the
   tags its pull added or removed, and how to apply the update (`sb
   install saltbox`, or `core` plus your apps). The run log keeps the

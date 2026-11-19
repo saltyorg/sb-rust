@@ -934,6 +934,28 @@ async fn cleanup_removes_stray_entries_too() {
     assert!(active.python_install.exists());
 }
 
+/// A `releases/` directory that is a link (its parent is the Saltbox
+/// user's) is refused, never listed and emptied: what it points at keeps
+/// every entry.
+#[tokio::test]
+async fn cleanup_refuses_a_linked_releases_directory() {
+    let _spawns = SPAWNS.lock().await;
+    let tree = Tree::new();
+    let active = tree.healthy();
+    let elsewhere = tree.root.path().join("elsewhere");
+    std::fs::create_dir(&elsewhere).expect("elsewhere");
+    std::fs::write(elsewhere.join("precious"), "x").expect("precious");
+    // The active Python's release moved behind a link to `elsewhere`.
+    let releases = &tree.layout.python_releases;
+    let name = active.python_install.file_name().expect("name");
+    std::fs::rename(&active.python_install, elsewhere.join(name)).expect("move");
+    std::fs::remove_dir(releases).expect("rmdir");
+    std::os::unix::fs::symlink(&elsewhere, releases).expect("link");
+    let err = activate::cleanup_generations(&tree.layout).expect_err("refused");
+    assert!(err.to_string().contains("is not a directory"), "{err}");
+    assert!(elsewhere.join("precious").exists());
+}
+
 /// sb-go's `TestCleanupGenerationsFailsClosedWithoutActiveGeneration`.
 #[tokio::test]
 async fn cleanup_without_an_active_generation_removes_nothing() {

@@ -66,6 +66,7 @@ something unvalidated.
 | Legacy venv, adopted | `/srv/ansible/releases/legacy-<ts>/venv` |
 | uv, uvx | `/usr/local/bin/uv`, `/usr/local/bin/uvx` |
 | uv cache | `/var/cache/sb-go/uv` |
+| Python release manifests (sb's, decision 25) | `/var/lib/sb/python-releases/<release dir name>.json` |
 | Wrappers | `/usr/local/bin/<cmd>` for each exported command |
 | Fact | `<checkout>/ansible_facts.d/saltbox.fact` |
 | Metadata proxy | `https://svm.saltbox.dev/version?url=<GitHub API URL>` (release's) |
@@ -142,6 +143,46 @@ build it on a temporary root (sb-go's `releaseLayout` injection).
      - `ansible`, `certbot` and `apprise` each run `--version`. ansible runs
        with `ANSIBLE_CONFIG` empty and every other `ANSIBLE_*` removed.
      Each probe: capture, 30 s.
+4a. **With `sb update --verify-venv` only** (decision 25; hidden, as
+   `Env::verify`), when the active venv has a manifest: step
+   **"Verifying Ansible virtual environment files"** (done "Ansible
+   virtual environment files verified"), on the blocking pool, four
+   threads:
+   - every `lib/python*/site-packages/*.dist-info/RECORD` row with a
+     `sha256=` digest (urlsafe base64, no padding) and its size. The
+     venv is the Saltbox user's, so each file is opened beneath the
+     venv's directory with `openat2` and `RESOLVE_NO_SYMLINKS |
+     RESOLVE_NO_MAGICLINKS | RESOLVE_NO_XDEV | RESOLVE_BENEATH`,
+     `O_NONBLOCK | O_NOCTTY` (as cli-core's `read_beneath`): no link or
+     mount on the way, never a device or FIFO opened to block, never
+     above the venv. Bad: a row naming a path outside the venv or
+     without a size, a RECORD past 32 MiB or unreadable, a digest that
+     isn't one, a file that isn't a regular file or has a link on its
+     way, another size or digest. Missing: a file not there, or no
+     `site-packages`. Rows naming one file alike count once; rows that
+     disagree (two wheels shipping one file) are set apart, counted in
+     the notice and not damage, as a rebuild wouldn't change them.
+     Ctrl-C stops a read at its next 64 KiB;
+   - the manifest's Python release (when it is directly under
+     `/srv/python/releases/`) against sb's manifest of it: each regular
+     file's sha256 and size and each link's target. The manifest is
+     used only when it and its directory are owned by sb's euid (root),
+     not writable by group or others, and the manifest is a regular
+     file, both checked on the descriptors read (the directory opened
+     `O_NOFOLLOW`, the manifest `openat` beneath it); `/var/lib/sb`
+     above them is root's on every host, as sb makes it. Otherwise the
+     notice says why, controls escaped, and the Python isn't checked.
+     The release's files are read beneath its directory as the
+     packages' are. No manifest yet (a release from before this, or
+     sb-go's): "not checked", and its next install, or `sb
+     reinstall-python`, writes one.
+   Notices: `Packages: <n> files checked, <b> bad, <m> missing`, the same
+   for `Python:`, or `Python: not checked, <why>`. The run log gets the
+   counts and the first 100 bad and missing paths of each. Damage makes
+   the venv unhealthy: a package's rebuilds the venv as a `Venv` force
+   does (uv's cache cleared, the Python reused when it passes its
+   check); the Python's rebuilds it as a `Python` force does. The retry
+   rule stays the normal path's. Ctrl-C ends the step interrupted.
 5. **Step "Checking Ansible virtual environment for updates"**, done label
    one of sb-go's four (venv.go:238-251): `Ansible virtual environment was
    already up to date`, `Ansible virtual environment update required`,
@@ -166,7 +207,16 @@ build it on a temporary root (sb-go's `releaseLayout` injection).
    --install-dir <release dir> [--reinstall] [--no-cache] <v>`, then `uv
    python find --managed-python --no-project --no-python-downloads <v>`
    with `UV_PYTHON_INSTALL_DIR=<release dir>`. The result must be an
-   absolute path and pass the Python check (uv.go:291-335).
+   absolute path and pass the Python check (uv.go:291-335). Right after
+   the install, inside its step, sb writes the release's manifest
+   (decision 25): every regular file's sha256 and size and every link's
+   target, by path in the release, `__pycache__` and `.pyc` left out
+   (Python rewrites them), as JSON (`{"schema":1,"files":{...},
+   "links":{...}}`) through `tempfile`, synced, mode 0644, its directory
+   0755. The release is held open (`O_NOFOLLOW`) and must be sb's euid's
+   (the directory sb just made; `releases/` is the Saltbox user's, who
+   could swap it), and each file is read beneath it. A failure to write
+   it goes to the run log only.
 8. **Step "Creating Ansible virtual environment":** `uv venv --python <py>
    --no-project --no-python-downloads <gen>/venv`.
 9. **Step "Syncing hashed Saltbox requirements":** `uv pip sync
@@ -211,7 +261,10 @@ build it on a temporary root (sb-go's `releaseLayout` injection).
     `/srv/ansible/previous` symlink goes; only the active generation and
     its Python release are kept; a path that isn't a direct child of
     `releases/` is an error. Nothing outside `/srv/python/releases/` is
-    touched (Saltbox's `python` role installs there too). After a
+    touched (Saltbox's `python` role installs there too). The manifests
+    directory keeps only the kept release's (decision 25). A `releases/`
+    that is a link or a file is refused, `releases <path> is not a
+    directory`, never listed or emptied (difference 20). After a
     rebuild it is the step **"Cleaning up old environments"** (done
     "Old environments cleaned up"; decision 23): its error, `clean old
     Ansible generations: <cause>`, shows in that step.
@@ -435,7 +488,8 @@ newer local fact).
 pub struct Layout { /* the paths above; Layout::saltbox() gives defaults */ }
 pub struct Env<'a> { pub layout: &'a Layout, pub release: &'a sb_release::Releases,
                      pub uv_version: &'a str, pub arch: sb_release::Arch, /* program paths */
-                     pub ubuntu_release: Option<String>, pub run_id: String }
+                     pub ubuntu_release: Option<String>, pub run_id: String,
+                     pub verify: bool /* `--verify-venv`, decision 25 */ }
 pub enum Force { None, Venv, Python }
 pub enum FactMode { Update, Reinstall }
 
@@ -539,6 +593,12 @@ moved), so `ops` callers and the tests can read them.
     retry's build; the next normal build downloads again. sb-go never
     cleared the cache.
 
+19. **`sb update --verify-venv`** (decision 25) is new: sb-go has no
+    file check, and no Python release manifest.
+20. **A linked `releases/` is refused** by the cleanup (step 15; from
+    decision 25's security review): sb-go's `removeUnretainedDirectories`
+    listed through the link and removed what it found there.
+
 ### Scope
 
 **In:**
@@ -571,6 +631,9 @@ moved), so `ops` callers and the tests can read them.
 | `jiff` | 0.2 | generation timestamps, `created_at` | https://docs.rs/jiff/latest/jiff/fmt/strtime/index.html | yes / yes |
 | `thiserror` | workspace | errors | https://docs.rs/thiserror/ | yes / yes |
 | `object` | 0.41.0, `read_core` + `elf` | the ELF check, through release (decision 6) | https://docs.rs/object/0.41.0/object/read/elf/index.html | no / no |
+| `base64` | 0.22.1 | RECORD's digests (decision 25) | https://docs.rs/base64/0.22.1/base64/engine/general_purpose/constant.URL_SAFE_NO_PAD.html | yes / yes |
+| `csv` | 1.4.0 | RECORD, a CSV file (decision 25) | https://docs.rs/csv/1.4.0/csv/struct.ReaderBuilder.html | no / no (new) |
+| `rustix`, `walkdir` | workspace | `open` without following links or blocking; the release walk (decision 25) | https://docs.rs/rustix/1.1.6/rustix/fs/fn.open.html | yes / yes |
 
 Rejected (research §5): uv's own crates ("internal and unstable",
 https://docs.astral.sh/uv/reference/policies/versioning/), rattler and rip
@@ -862,6 +925,29 @@ developer's host. Every path is a `Layout` field on a `tempfile` root.
     starts. Both failures now show in their own step, the steps above
     quiet (difference 14). Amends decision 19 for these two steps.
 
+25. **`sb update --verify-venv` checks the files the probes don't**
+    (step 4a; the maintainer, 2026-11-19, from the measurement in
+    Verification notes): hidden while its cost is tried on real hosts
+    (`hide = true` on the flag in ops' `UpdateArgs`; unhiding it is
+    dropping that, and listing it in the ops spec's help row). Named
+    after `update-venv` and `reinstall-venv`, the commands that act on
+    the same thing; `--verify-venv` rather than `--check-*`, as the step
+    says "Verifying". The packages are checked against their wheels'
+    RECORDs; the Python release has none, so sb writes its own manifest
+    at install, while uv's checksum of the downloaded archive still
+    vouches for the files. It lives under `/var/lib/sb/python-releases/`,
+    not in the release directory: step 16 gives `/srv/python` whole to
+    the Saltbox user on every run, so a manifest there could be
+    rewritten by that user and never be root-owned. Crates: `base64` and
+    `csv` (RECORD's format; csv is what uv writes it with, new to the
+    tree), rustix's `open` and walkdir (already in the tree), and
+    sb-release's `sha256_reader` (amendment R8a). Default runs only
+    gain the manifest at a Python install (about 0.2 s, below). It is an
+    integrity check against damage (a disk, an editor writing in place,
+    a stray redirect), not a control against the Saltbox user: the
+    RECORDs and the generation manifest naming the Python are that
+    user's, who can already change what root runs from the venv.
+
 ## Known limits
 
 - **uv's digest covers the archive, not the installed binary.** A
@@ -884,6 +970,30 @@ developer's host. Every path is a `Layout` field on a `tempfile` root.
   new release.
 
 ## Verification notes
+
+- **`--verify-venv`'s cost (decision 25; 2026-11-19).** A throwaway
+  `ubuntu:22.04` container capped at 4 CPUs, a venv sb built from
+  Saltbox's master lock (30,538 RECORD rows with a digest, 347 MB) on uv
+  0.13.4's Python 3.12.15 (3,486 files and the links in sb's
+  manifest, 4,536 entries checked), each figure the step's time in the
+  run log:
+  - warm page cache: 629 to 669 ms; with the listed files evicted first
+    (`posix_fadvise` `DONTNEED`, not `drop_caches`, which would reach the
+    whole host): 1.21 to 1.54 s. A first version opening each file by
+    its whole path (`O_NOFOLLOW` on the last part only) took 362 to 396
+    ms and 0.94 to 1.00 s: `openat2`'s checked resolution of every
+    component costs about 0.27 s, kept for what it refuses (step 4a);
+  - the manifest at a Python install: 0.17 to 0.19 s inside "Installing
+    Python" (1.3 to 1.4 s in all);
+  - healing: `docker/__init__.py` with a syntax error passes every probe
+    ("already up to date" without the flag); with it, 1 bad, the venv
+    rebuilt with uv's cache cleared, the next check clean. A changed
+    `smtplib.py` in the Python release: 1 bad, the Python reinstalled,
+    the next check clean. The manifest made 0664: "Python: not checked,
+    ... is writable by group or others (mode 664)".
+  An earlier standalone measurement of the same check (the scratch
+  program behind decision 25): 1 thread 0.97 s warm, 4 threads 0.29 to
+  0.34 s, about 0.26 s user and 0.7 to 0.9 s system CPU in all.
 
 - **Live acceptance (M21, 2026-11-15).** `crates/python-env/tests/live.sh`
   in throwaway containers of each supported release, one at a time: sb
@@ -967,6 +1077,9 @@ under its names, which this spec uses:
 >   with `object`; python-env words its two variants with sb-go's fact
 >   texts.
 > - **R8. `sha256_file(path)`,** streaming.
+> - **R8a. `sha256_reader(reader)`** (2026-11-19, decision 25): the same
+>   loop on any `Read`, which `sha256_file` now calls, for files
+>   python-env opens itself (`O_NOFOLLOW | O_NONBLOCK`).
 
 **`host` (approved 2026-11-08).** Amendments (applied 2026-11-13):
 

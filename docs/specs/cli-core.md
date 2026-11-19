@@ -164,7 +164,8 @@ restore\tlocal\tuser`, `flag\tsb restore\tlocal\tpassword-file`,
 `--keep-branch` and `--reset-branch` (ops decision 29; entries
 `flag\tsb setup\tglobal\tkeep-branch` and `flag\tsb
 setup\tglobal\treset-branch`); and the new `--migrations` on `sb update`
-(`flag\tsb update\tlocal\tmigrations`). `sb announcements` is shown where
+(`flag\tsb update\tlocal\tmigrations`), and its hidden `--verify-venv`
+(python-env decision 25; `flag\tsb update\tglobal\tverify-venv`). `sb announcements` is shown where
 sb-go hid it (ops decision 27): a `REWORDED` entry for its command line.
 sb-go's `-v/--verbose` on the 14 commands where sb has no verbose mode
 (all but `install`, whose `-v` is Ansible's, and `setup`, whose is

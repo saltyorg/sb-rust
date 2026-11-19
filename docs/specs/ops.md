@@ -593,7 +593,7 @@ signal, the disk test's file and the temporary directory removed.
 
 | Command | Arguments and flags | Hidden |
 |---|---|---|
-| `update` | `--keep-branch` / `--reset-branch` (conflict: clap's error, exit 2), `--skip-self-update`, `--migrations <run\|skip>` (new), `--discard-local` (new, 2026-11-19), `--skip-git` (new, hidden, 2026-11-19; conflicts with both branch flags and `--discard-local`) | no |
+| `update` | `--keep-branch` / `--reset-branch` (conflict: clap's error, exit 2), `--skip-self-update`, `--migrations <run\|skip>` (new), `--discard-local` (new, 2026-11-19), `--skip-git` (new, hidden, 2026-11-19; conflicts with both branch flags and `--discard-local`), `--verify-venv` (new, hidden while its cost is tried: python-env decision 25, step 4a) | no |
 | `branch <name>` | the branch, required; `--discard-local` (new, 2026-11-19) | no |
 | `branch-sandbox <name>` | the branch, required; `--discard-local` (new, 2026-11-19) | no |
 | `announcements` | none (decision 27, amended 2026-11-17: sb-go's `--before`, `--after` and `--repo` removed, difference 45) | no |

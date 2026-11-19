@@ -3,7 +3,7 @@
 //! (decided.md D-Q2); assets pinned in source (bench's Speedtest); and
 //! the streamed digest of an installed file ([`sha256_file`]).
 
-use std::io::Read as _;
+use std::io::Read;
 use std::path::Path;
 
 use reqwest::Url;
@@ -149,10 +149,20 @@ impl Asset {
     }
 }
 
-/// The SHA-256 of the file at `path`.
+/// The SHA-256 of the file at `path` ([`sha256_reader`] on it).
+///
+/// # Errors
+///
+/// The file's open or read error.
+pub fn sha256_file(path: &Path) -> std::io::Result<[u8; 32]> {
+    sha256_reader(std::fs::File::open(path)?)
+}
+
+/// The SHA-256 of what `reader` yields to its end.
 ///
 /// Read in parts (python-env's digest rule: the installed fact against
-/// its release's [`Asset::sha256`]); sha2's `update` takes each part
+/// its release's [`Asset::sha256`]; its `--verify-venv` check, on files it
+/// opened itself); sha2's `update` takes each part
 /// (<https://docs.rs/sha2/0.11.1/sha2/>); why not `io::copy` into the
 /// hasher: digest 0.11's hashers implement no `io::Write` (its crate docs
 /// point to `digest-io`, which isn't in the tree), and this loop is all
@@ -160,13 +170,12 @@ impl Asset {
 ///
 /// # Errors
 ///
-/// The file's open or read error.
-pub fn sha256_file(path: &Path) -> std::io::Result<[u8; 32]> {
-    let mut file = std::fs::File::open(path)?;
+/// The reader's error.
+pub fn sha256_reader(mut reader: impl Read) -> std::io::Result<[u8; 32]> {
     let mut hasher = Sha256::new();
     let mut part = vec![0; 64 << 10];
     loop {
-        match file.read(&mut part) {
+        match reader.read(&mut part) {
             Ok(0) => return Ok(hasher.finalize().into()),
             Ok(read) => hasher.update(&part[..read]),
             Err(err) if err.kind() == std::io::ErrorKind::Interrupted => {}

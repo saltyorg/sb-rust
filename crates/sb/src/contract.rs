@@ -31,7 +31,8 @@ const SB_GO_TREE: &str = include_str!("../tests/fixtures/sb-go-command-tree.tsv"
 /// (motd decision 28), `sb edit --no-edit-again` (tui spec, editors,
 /// difference 22), `sb setup`'s `--keep-branch` and
 /// `--reset-branch`, update's flags (ops decision 29, difference 6),
-/// `sb update --migrations` (ops decision 19, difference 23), and
+/// `sb update --migrations` (ops decision 19, difference 23), its hidden
+/// `--verify-venv` (python-env decision 25, difference 19), and
 /// `sb restore --user` and `--password-file` (ops spec, decision 8; the
 /// cli-core spec's extensions), `sb announcements`' hidden `preview`
 /// and `check` with their flags (ops decisions 34 and 35, differences 60
@@ -50,6 +51,7 @@ const EXTENSIONS: &[&str] = &[
     "flag\tsb setup\tglobal\tkeep-branch",
     "flag\tsb setup\tglobal\treset-branch",
     "flag\tsb update\tglobal\tmigrations",
+    "flag\tsb update\tglobal\tverify-venv",
     "flag\tsb restore\tlocal\tuser",
     "flag\tsb restore\tlocal\tpassword-file",
     "command\tsb announcements preview",

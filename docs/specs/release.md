@@ -416,6 +416,9 @@ pub fn check_elf(path: &Path, arch: Arch) -> Result<(), ElfError>;
 pub enum ElfError { NotElf(String), WrongMachine(Arch) }
 /// Streamed SHA-256 of an installed file (python-env's digest rule).
 pub fn sha256_file(path: &Path) -> Result<[u8; 32], std::io::Error>;
+/// The same, of any reader (python-env's R8a, decision 25: files it opens
+/// itself without following links); `sha256_file` calls it.
+pub fn sha256_reader(reader: impl Read) -> Result<[u8; 32], std::io::Error>;
 ```
 
 This is the interface python-env's spec asks for as R1-R8, under
@@ -424,7 +427,7 @@ these names: R1 `Releases::production` and `Releases::testing`; R2
 and `Query`; R3 `Release`, `Asset::sha256` and `Asset::size`, the
 missing-asset error in `release`; R4 `Arch::current`, `go_name`,
 `rust_name`; R5 `download` with `Stage`; R6 `activate`; R7 `check_elf`
-and `ElfError`; R8 `sha256_file`.
+and `ElfError`; R8 `sha256_file`; R8a `sha256_reader` (2026-11-19).
 
 - **uv:** `release(astral-sh/uv, Tag(v), "uv-<rust_name>-unknown-linux-gnu.tar.gz")`,
   `download` to a scratch directory (cap 128 MiB); python-env extracts

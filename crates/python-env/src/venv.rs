@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::Context as _;
-use sb_cli_core::exit::{Exit, shown_chain};
+use sb_cli_core::exit::{Exit, escaped, shown_chain};
 use sb_host::OwnerError;
 use sb_host::apt::PackageQueryError;
 use sb_term_ui::{Labels, Step};
@@ -193,6 +193,8 @@ pub(crate) struct Active {
     pub(crate) manifest: Option<Manifest>,
     /// Whether it passes every check (spec, step 4).
     pub(crate) healthy: bool,
+    /// Its venv, the active link resolved, when it has a manifest.
+    pub(crate) venv: Option<PathBuf>,
 }
 
 /// Why the active venv couldn't be inspected, in sb-go's words.
@@ -285,6 +287,7 @@ pub(crate) async fn inspect(
     Ok(Active {
         manifest: Some(manifest),
         healthy,
+        venv: Some(target),
     })
 }
 
@@ -396,13 +399,17 @@ pub async fn reconcile_venv(
                 .map_err(|err| anyhow::Error::from(VenvError::Inspect(err)))
         })
         .await?;
+    let damage = if env.verify {
+        verify_files(step, env, &active).await?
+    } else {
+        Damage::default()
+    };
+    let healthy = active.healthy && !damage.any();
     let checking = "Checking Ansible virtual environment for updates";
-    let labels = Labels::new(checking, status_label(active.healthy, force));
+    let labels = Labels::new(checking, status_label(healthy, force));
     step.step(labels, async |_| anyhow::Ok(())).await?;
-    if let Active {
-        manifest: Some(manifest),
-        healthy: true,
-    } = &active
+    if let Some(manifest) = &active.manifest
+        && healthy
         && force == Force::None
     {
         wrappers::write_all(env.layout, &manifest.exported_commands)
@@ -412,7 +419,9 @@ pub async fn reconcile_venv(
         return Ok(VenvOutcome::UpToDate);
     }
     let previous = active.manifest;
-    let (staged, outcome) = match build(step, env, &toolchain, previous.as_ref(), force).await {
+    let build_force = damage.raise(force);
+    let (staged, outcome) = match build(step, env, &toolchain, previous.as_ref(), build_force).await
+    {
         Ok(staged) => (staged, VenvOutcome::Rebuilt),
         Err(err) if retries(force, token.is_cancelled()) => {
             // The run log keeps the first cause: in this line, and in the
@@ -467,6 +476,144 @@ async fn finish_steps(
         .await?;
     }
     Ok(())
+}
+
+/// What `--verify-venv` found damaged (spec, decision 25).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct Damage {
+    /// A package file: the venv is rebuilt.
+    packages: bool,
+    /// A file of its Python release: the Python is rebuilt too.
+    python: bool,
+}
+
+impl Damage {
+    fn any(self) -> bool {
+        self.packages || self.python
+    }
+
+    /// The build that repairs it: a damaged Python a `Python` force, a
+    /// damaged package at least a `Venv` one; both clear uv's cache
+    /// first, whose hardlinks may share the damage (step 7).
+    fn raise(self, force: Force) -> Force {
+        if self.python {
+            Force::Python
+        } else if self.packages && force == Force::None {
+            Force::Venv
+        } else {
+            force
+        }
+    }
+}
+
+/// How many bad and how many missing files the run log names, each; the
+/// counts are always there.
+const NAMED: usize = 100;
+
+/// "Verifying Ansible virtual environment files" (spec, decision 25): the
+/// active venv's files against their RECORDs and its Python release's
+/// against sb's manifest, on the blocking pool, the counts shown and the
+/// files named in the run log. Nothing without an active manifest (the
+/// venv is rebuilt anyway).
+async fn verify_files(
+    step: &mut Step,
+    env: &Env<'_>,
+    active: &Active,
+) -> Result<Damage, VenvError> {
+    let (Some(manifest), Some(venv)) = (&active.manifest, &active.venv) else {
+        return Ok(Damage::default());
+    };
+    let labels = Labels::new(
+        "Verifying Ansible virtual environment files",
+        "Ansible virtual environment files verified",
+    );
+    let damage = step
+        .step(labels, async |step| {
+            let token = step.token();
+            let venv = venv.clone();
+            let python = PathBuf::from(&manifest.python_install);
+            let managed = activate::direct_child(&python, &env.layout.python_releases);
+            let stored = crate::verify::manifest_path(env.layout, &python);
+            let owner = sb_cli_core::root::effective_uid();
+            let shown = python.clone();
+            let (packages, release) = sb_cli_core::spawn::blocking(move || {
+                let packages = crate::verify::packages(&venv, &token)?;
+                let release = managed
+                    .then(|| crate::verify::check_release(&python, &stored, owner, &token))
+                    .transpose()?;
+                Ok::<_, crate::verify::Interrupted>((packages, release))
+            })
+            .await??;
+            report(step, "Packages", &packages);
+            let python = match release {
+                Some(crate::verify::ReleaseCheck::Checked(found)) => {
+                    report(step, "Python", &found);
+                    found.damaged()
+                }
+                Some(crate::verify::ReleaseCheck::NoManifest) => {
+                    step.info(
+                        "Python: not checked, no manifest yet (sb writes one when it installs \
+                         the Python: sb reinstall-python)",
+                    );
+                    false
+                }
+                // The reason and the path come from the user's tree in
+                // part: one line, controls escaped (cli-core's rule), so
+                // they can't draw a notice of their own.
+                Some(crate::verify::ReleaseCheck::Untrusted(why)) => {
+                    tracing::warn!(why, "Python release manifest not trusted");
+                    step.info(format!("Python: not checked, {}", escaped(&why)));
+                    false
+                }
+                None => {
+                    let shown = shown.display().to_string();
+                    step.info(format!(
+                        "Python: not checked, {} is not a release sb manages",
+                        escaped(&shown)
+                    ));
+                    false
+                }
+            };
+            anyhow::Ok(Damage {
+                packages: packages.damaged(),
+                python,
+            })
+        })
+        .await?;
+    Ok(damage)
+}
+
+/// `what`'s counts as a notice, and in the run log with the first
+/// [`NAMED`] bad and missing files.
+fn report(step: &mut Step, what: &str, found: &crate::verify::Findings) {
+    let files = if found.checked == 1 { "file" } else { "files" };
+    let conflicting = match found.conflicting.len() {
+        0 => String::new(),
+        n => format!(", {n} listed differently by two packages (not checked)"),
+    };
+    step.info(format!(
+        "{what}: {} {files} checked, {} bad, {} missing{conflicting}",
+        found.checked,
+        found.bad.len(),
+        found.missing.len()
+    ));
+    tracing::info!(
+        what,
+        checked = found.checked,
+        bad = found.bad.len(),
+        missing = found.missing.len(),
+        conflicting = found.conflicting.len(),
+        "files verified"
+    );
+    for path in found.conflicting.iter().take(NAMED) {
+        tracing::info!(what, path = %path.display(), "file listed differently by two packages");
+    }
+    for path in found.bad.iter().take(NAMED) {
+        tracing::warn!(what, path = %path.display(), "file differs from its record");
+    }
+    for path in found.missing.iter().take(NAMED) {
+        tracing::warn!(what, path = %path.display(), "file missing");
+    }
 }
 
 /// Whether a failed build is retried (spec, "Self-healing on the normal
@@ -747,6 +894,7 @@ fn remove_leftovers(layout: &Layout, generation: Option<&Path>, python: Option<&
             .is_some_and(|manifest| Path::new(&manifest.python_install) == python);
         if !named && crate::activate::direct_child(python, &layout.python_releases) {
             remove_tree(python);
+            let _gone = std::fs::remove_file(crate::verify::manifest_path(layout, python));
         }
     }
 }
@@ -832,6 +980,25 @@ async fn python<'a>(
     install_python(step, env, &toolchain.python, force, leftovers).await
 }
 
+/// The new release's file manifest written (spec, decision 25), on the
+/// blocking pool, right after uv installed it from an archive whose
+/// checksum uv verified. A failure only goes to the run log: the release
+/// is then "not checked" by `--verify-venv` until its next install.
+async fn manifest_release(layout: &Layout, release: &Path) {
+    let stored = crate::verify::manifest_path(layout, release);
+    let release = release.to_path_buf();
+    let written = sb_cli_core::spawn::blocking(move || {
+        let owner = sb_cli_core::root::effective_uid();
+        crate::verify::write_release_manifest(&release, &stored, owner)
+    })
+    .await;
+    match written {
+        Ok(Ok(files)) => tracing::info!(files, "Python release manifest written"),
+        Ok(Err(err)) => tracing::warn!(%err, "no Python release manifest"),
+        Err(err) => tracing::warn!(%err, "no Python release manifest"),
+    }
+}
+
 /// A new Python release for `version` (sb-go's `createPythonRelease`):
 /// its directory, "Installing Python <v>", uv's find and the Python
 /// check.
@@ -887,6 +1054,7 @@ async fn install_python<'a>(
             .check()
             .with_context(|| format!("error installing Python {version}"))
             .context("install Python release")?;
+        manifest_release(env.layout, &dir).await;
         anyhow::Ok(())
     })
     .await?;

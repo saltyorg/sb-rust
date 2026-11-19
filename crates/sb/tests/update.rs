@@ -153,8 +153,15 @@ fn update_is_shown_with_sb_gos_flags_and_migrations() {
                 .and(predicate::str::contains("--reset-branch"))
                 .and(predicate::str::contains("--skip-self-update"))
                 .and(predicate::str::contains("--migrations"))
-                .and(predicate::str::contains("--verbose").not()),
+                .and(predicate::str::contains("--verbose").not())
+                // Hidden while its cost is tried (python-env decision 25).
+                .and(predicate::str::contains("--verify-venv").not()),
         );
+    // Hidden, but parsed: `--help` after it runs nothing.
+    common::sb()
+        .args(["update", "--verify-venv", "--help"])
+        .assert()
+        .success();
     common::sb()
         .args(["update", "--keep-branch", "--reset-branch"])
         .assert()
