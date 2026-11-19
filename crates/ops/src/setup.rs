@@ -19,8 +19,9 @@ use sb_python_env::{Env, FactMode, Force, install_fact, reconcile_venv};
 use sb_repo::{Answer, Repo};
 use sb_term_ui::{Labels, PromptError, Runner, Step};
 
-pub use crate::branch::{BRANCH_FLAGS, BranchFlags};
+pub use crate::branch::{BRANCH_FLAGS, BranchFlags, DISCARD_FLAG};
 use crate::completions::{self, Refresh};
+use crate::discard::{self, DiscardFlag, Purpose};
 use crate::locale::Locale;
 use crate::prereq::Dirs;
 use crate::{branch, configs, hooks, locale, prereq};
@@ -44,6 +45,8 @@ pub struct SetupArgs {
     pub force: bool,
     #[command(flatten)]
     pub branch_flags: BranchFlags,
+    #[command(flatten)]
+    pub discard: DiscardFlag,
     /// Enable verbose output
     // Accepted, hidden and ignored, with a run-log line, until the served
     // installer stops passing it (ops decision 1, difference 1).
@@ -124,29 +127,37 @@ pub struct Plan {
     pub found: Found,
     /// The branch setup clones, initialises or resets to.
     pub branch: String,
-    /// repo's branch notices for the choice, shown under the root step.
+    /// repo's branch notices for the choice, then the local changes
+    /// decision's, shown under the root step.
     pub notices: Vec<String>,
+    /// Whether a checkout is fetched and reset; false when its local
+    /// changes question was declined (decision 42), which leaves it as
+    /// it is.
+    pub reset: bool,
 }
 
 /// The plan for `found` (the guard's) at `root`, `-b`'s `wanted` branch
 /// ([`DEFAULT_BRANCH`] when empty): over a directory, `<root>/.git`
 /// decides whether it is a checkout (sb-go's `os.Stat`). On a checkout,
 /// the branch question ([`branch::resolve`]: `answer`, the flags', or
-/// else `ask`). Elsewhere the plan is `wanted`, which the clone or the
-/// init checks.
+/// else `ask`), then its local changes for that branch (decision 42:
+/// `discard_local`, else `ask`; declined, the checkout isn't reset).
+/// Elsewhere the plan is `wanted`, which the clone or the init checks.
+/// `ask` gets the context, the question and the flag that answers it.
 ///
 /// # Errors
 ///
 /// `inspect existing Saltbox Git repository: <cause>` when `.git` can't
-/// be inspected; the checkout's branch unreadable; the question
-/// unanswered (no terminal: term-ui's error naming [`BRANCH_FLAGS`]); a
-/// refused branch name.
+/// be inspected; the checkout's branch unreadable; a question unanswered
+/// (no terminal: term-ui's error naming [`BRANCH_FLAGS`], or the refusal
+/// naming the local changes and [`DISCARD_FLAG`]); a refused branch name.
 pub async fn plan(
     root: &Path,
     found: Found,
     wanted: &str,
     answer: Option<Answer>,
-    ask: impl FnOnce(&str, &str) -> Result<bool, PromptError>,
+    discard_local: bool,
+    mut ask: impl FnMut(&str, &str, &'static str) -> Result<bool, PromptError>,
     shutdown: &Shutdown,
 ) -> anyhow::Result<Plan> {
     let wanted = if wanted.is_empty() {
@@ -171,16 +182,52 @@ pub async fn plan(
             found,
             branch: wanted.to_owned(),
             notices: Vec::new(),
+            reset: true,
         });
     }
     let repo = Repo::open(crate::Checkout::Saltbox.name(), root)?;
     let current = repo.current_branch(&shutdown.token()).await?;
-    let branch::Resolved { branch, notices } =
-        branch::resolve(&repo, &current, wanted, answer, ask, shutdown).await?;
+    let branch::Resolved {
+        branch,
+        mut notices,
+    } = branch::resolve(
+        &repo,
+        &current,
+        wanted,
+        answer,
+        |shown: &str, question: &str| ask(shown, question, BRANCH_FLAGS),
+        shutdown,
+    )
+    .await?;
+    let doing = format!("updating to '{branch}'");
+    let purpose = Purpose {
+        doing: &doing,
+        then: "update",
+        declined: "the rest of setup goes on",
+        work: "setup",
+        flags: DISCARD_FLAG,
+    };
+    let decision = discard::decide(
+        &repo,
+        &current,
+        &branch,
+        discard_local,
+        purpose,
+        ask,
+        shutdown,
+    )
+    .await?;
+    // Left as it is, the branch's notice would say what didn't happen:
+    // the answer alone is noted.
+    if !decision.update {
+        notices.clear();
+    }
+    notices.extend(decision.notice);
     Ok(Plan {
         found,
         branch,
         notices,
+        reset: decision.update,
     })
 }
 
@@ -324,9 +371,14 @@ async fn saltbox_repo(step: &mut Step, setup: &Setup<'_>, plan: &Plan) -> anyhow
                 .init_from_remote(setup.url, &plan.branch, step)
                 .await?;
         }
-        Found::Checkout => {
+        Found::Checkout if plan.reset => {
             let repo = Repo::open(crate::Checkout::Saltbox.name(), setup.root)?;
             branch::update(step, &repo, &plan.branch, "root").await?;
+        }
+        // Its local changes question declined (decision 42): left as it
+        // is, the rest of the phase runs.
+        Found::Checkout => {
+            tracing::info!(repo = "Saltbox", reason = "declined", "git skipped");
         }
     }
     let fact = Labels::new("Checking saltbox.fact", "saltbox.fact is ready")

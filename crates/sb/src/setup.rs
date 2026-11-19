@@ -74,12 +74,28 @@ pub fn setup(args: &SetupArgs, shutdown: &Shutdown, log: Option<&RunLog>) -> any
         },
     };
     super::block_on(async {
-        let ask = |shown: &str, question: &str| ask_branch(shown, question, shutdown);
+        // The branch question on the normal screen as before; the local
+        // changes question on the alternate screen, as update's (ops
+        // decision 42; term-ui's `confirm_over`).
+        let ask = |shown: &str, question: &str, flag: &'static str| {
+            if flag == BRANCH_FLAGS {
+                ask_branch(shown, question, shutdown)
+            } else {
+                sb_term_ui::confirm_over(
+                    question,
+                    &super::update::escaped_lines(shown),
+                    None,
+                    flag,
+                    shutdown,
+                )
+            }
+        };
         let plan = sb_ops::setup::plan(
             &root,
             found,
             &args.branch,
             args.branch_flags.answer(),
+            args.discard.discard_local,
             ask,
             shutdown,
         )

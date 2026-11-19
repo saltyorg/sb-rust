@@ -41,6 +41,17 @@ pub(crate) struct Moved {
     /// The tags the pull added and removed, when the old cache entry was
     /// valid for `old` and the rebuild finished; else `None`.
     pub tags: Option<TagDiff>,
+    /// Left as it is (`--skip-git`, or its local changes question
+    /// declined; ops decisions 40 and 41): no pull, `old` its HEAD.
+    pub left: Option<Left>,
+}
+
+/// A checkout left as it is: its branch (`HEAD` when detached) and its
+/// working tree's changes counted (repo's `local_changes`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Left {
+    pub branch: String,
+    pub changes: usize,
 }
 
 /// The tags a pull added and removed, as the user types them.
@@ -93,6 +104,22 @@ pub(crate) fn render(moved: &[Moved], finished: bool, theme: &Theme) -> String {
     for one in moved {
         let name = one.checkout.name();
         let (old, new) = (short(&one.old), short(&one.new));
+        if let Some(left) = &one.left {
+            let branch = if left.branch == "HEAD" {
+                "detached HEAD".to_owned()
+            } else {
+                escaped(&left.branch)
+            };
+            let changes = match left.changes {
+                0 => "no local changes".to_owned(),
+                n => sb_repo::counted(n, "local change"),
+            };
+            let _ = writeln!(
+                out,
+                "{name:<NAME$}left as is ({muted}{old}{muted:#}, {branch}, {changes})"
+            );
+            continue;
+        }
         if one.old == one.new {
             let _ = writeln!(
                 out,
@@ -234,7 +261,52 @@ mod tests {
             old: old.repeat(40),
             new: new.repeat(40),
             tags,
+            left: None,
         }
+    }
+
+    /// A checkout left as it is (ops decisions 40 and 41): its HEAD,
+    /// branch and changes, and no hint, whether or not the other moved.
+    #[test]
+    fn a_checkout_left_as_is_names_its_head_branch_and_changes() {
+        let plain = Theme::plain();
+        let left = |checkout, branch: &str, changes| Moved {
+            left: Some(Left {
+                branch: branch.to_owned(),
+                changes,
+            }),
+            ..moved(checkout, "e", "e", None)
+        };
+        assert_eq!(
+            render(
+                &[
+                    left(Checkout::Saltbox, "dev-x", 3),
+                    left(Checkout::Sandbox, "master", 1)
+                ],
+                true,
+                &plain
+            ),
+            "\nSaltbox  left as is (eeeeeee, dev-x, 3 local changes)\n\
+             Sandbox  left as is (eeeeeee, master, 1 local change)\n"
+        );
+        let block = render(
+            &[
+                left(Checkout::Saltbox, "HEAD", 0),
+                moved(Checkout::Sandbox, "0", "c", None),
+            ],
+            true,
+            &plain,
+        );
+        assert!(
+            block.starts_with(
+                "\nSaltbox  left as is (eeeeeee, detached HEAD, no local changes)\n\
+                 Sandbox  0000000 → ccccccc\n"
+            ),
+            "{block}"
+        );
+        // Only Sandbox moved: Sandbox's hint, never Saltbox's.
+        assert!(block.contains("Sandbox's files are updated"), "{block}");
+        assert!(!block.contains("Saltbox's files"), "{block}");
     }
 
     fn diff(added: &[&str], removed: &[&str]) -> TagDiff {

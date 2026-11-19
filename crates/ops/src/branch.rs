@@ -6,6 +6,7 @@
 //! flags, the branch question and the update step `setup` and `update`
 //! share.
 
+use std::io::Write;
 use std::path::Path;
 
 use anyhow::Context as _;
@@ -18,6 +19,11 @@ use sb_repo::{Answer, Choice, Repo, branch_choice, branch_notices};
 use sb_term_ui::{Labels, Options, PromptError, Runner, Step};
 
 use crate::Checkout;
+use crate::discard::{self, Purpose};
+
+/// The flag that answers the branch commands' local changes question
+/// (ops decision 42).
+pub const DISCARD_FLAG: &str = "--discard-local";
 
 /// The flags that answer the branch question, as its error names them
 /// (ops decision 29).
@@ -136,32 +142,109 @@ pub struct Tools<'a> {
     pub ansible: &'a Ansible,
 }
 
+/// How a branch command is run: `--discard-local`, the question's
+/// prompt, the run log, and where a warning line goes.
+pub struct Asked<'a, F> {
+    /// `--discard-local` given.
+    pub discard_local: bool,
+    /// The local changes question (term-ui's `confirm_over` in sb):
+    /// context, question, flag.
+    pub ask: F,
+    /// The run log for the runner's records.
+    pub log: Option<&'a RunLog>,
+    /// sb's lines (anstream's stderr in sb): a declined switch's warning.
+    pub lines: &'a mut dyn Write,
+}
+
+impl<F> std::fmt::Debug for Asked<'_, F> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Asked")
+            .field("discard_local", &self.discard_local)
+            .finish_non_exhaustive()
+    }
+}
+
 /// The branch command for `checkout`, under the Saltbox directory `root`:
 /// the checkout opened, `name` checked (repo's `check_branch_name`), the
-/// Saltbox user read (config's `saltbox_user`), all before anything
-/// changes and failing as sb's error block; then [`switch`] in a runner.
-/// No prompt: the argument is the answer (spec, decision 20).
+/// Saltbox user read (config's `saltbox_user`), then the local changes
+/// the switch would discard (decision 42: `--discard-local`, else
+/// `asked.ask`; no terminal, a refusal naming them and
+/// [`DISCARD_FLAG`]), all before anything changes and failing as sb's
+/// error block; then [`switch`] in a runner, the decision a notice under
+/// its step. Declined, nothing runs: the warning `<Repo> left as is: not
+/// switched to '<name>' (your answer)`, and sb ends well. No branch
+/// prompt: the argument is the answer (spec, decision 20).
 ///
 /// # Errors
 ///
 /// The checkout missing or not a directory, a refused branch name, a
-/// missing Saltbox user, or the switch's failed step (cli-core's quiet
-/// `Exit`, its block shown by the runner).
+/// missing Saltbox user, the checkout unreadable, the question
+/// unanswered, or the switch's failed step (cli-core's quiet `Exit`, its
+/// block shown by the runner).
 pub async fn run(
     checkout: Checkout,
     root: &Path,
     name: &str,
     tools: Tools<'_>,
     shutdown: &Shutdown,
-    log: Option<&RunLog>,
+    asked: Asked<'_, impl FnOnce(&str, &str, &'static str) -> Result<bool, PromptError>>,
 ) -> anyhow::Result<()> {
     let repo = Repo::open(checkout.name(), checkout.path(root))?;
     repo.check_branch_name(name, &shutdown.token()).await?;
     let owner = sb_config::user::saltbox_user(root)?;
-    let mut runner = Runner::start(checkout.command(), shutdown, log, Options::default());
-    let result = switch(&mut runner, checkout, &repo, name, &owner, root, tools).await;
+    let current = repo.current_branch(&shutdown.token()).await?;
+    let (doing, then) = (
+        format!("switching to '{name}'"),
+        format!("switch to '{name}'"),
+    );
+    let purpose = Purpose {
+        doing: &doing,
+        then: &then,
+        declined: "nothing is switched",
+        work: "switch",
+        flags: DISCARD_FLAG,
+    };
+    let decision = discard::decide(
+        &repo,
+        &current,
+        name,
+        asked.discard_local,
+        purpose,
+        asked.ask,
+        shutdown,
+    )
+    .await?;
+    if !decision.update {
+        return discard::warn(
+            asked.lines,
+            &format!(
+                "{} left as is: not switched to '{name}' (your answer)",
+                repo.name()
+            ),
+        );
+    }
+    let mut runner = Runner::start(checkout.command(), shutdown, asked.log, Options::default());
+    let switching = Switching {
+        checkout,
+        repo: &repo,
+        branch: name,
+        owner: &owner,
+        notice: decision.notice.as_deref(),
+    };
+    let result = switch(&mut runner, &switching, root, tools).await;
     runner.finish();
     Ok(result?)
+}
+
+/// The switch [`switch`] makes: the checkout, to which branch, its owner
+/// after it, and the local changes notice.
+#[derive(Debug, Clone, Copy)]
+struct Switching<'a> {
+    checkout: Checkout,
+    repo: &'a Repo,
+    branch: &'a str,
+    owner: &'a str,
+    notice: Option<&'a str>,
 }
 
 /// The switch under sb-go's labels (spec, steps 3 to 5): "Switching
@@ -176,13 +259,17 @@ pub async fn run(
 /// The failed step's quiet `Exit`.
 async fn switch(
     runner: &mut Runner,
-    checkout: Checkout,
-    repo: &Repo,
-    branch: &str,
-    owner: &str,
+    switching: &Switching<'_>,
     root: &Path,
     tools: Tools<'_>,
 ) -> Result<(), Exit> {
+    let Switching {
+        checkout,
+        repo,
+        branch,
+        owner,
+        notice,
+    } = *switching;
     let repo_name = repo.name();
     let labels = Labels::new(
         format!("Switching {repo_name} repository to {branch}"),
@@ -191,6 +278,9 @@ async fn switch(
     .failure(format!("{repo_name} branch switch"));
     runner
         .step(labels, async |step| {
+            if let Some(notice) = notice {
+                step.info(notice);
+            }
             update(step, repo, branch, owner).await?;
             if checkout == Checkout::Saltbox {
                 reconcile_runtime(step, tools.python, Some(owner)).await?;

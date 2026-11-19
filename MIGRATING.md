@@ -24,6 +24,8 @@ completion files call a command sb doesn't have.
 - **Prompts read the terminal, not stdin.** Piping `y` into sb no longer
   answers anything. Each question has a flag instead:
   - `update --reset-branch` or `--keep-branch`, and `--migrations run|skip`;
+  - `update --discard-local`, and the same flag on `branch`,
+    `branch-sandbox` and `setup`, when a checkout has local changes;
   - `setup --keep-branch` or `--reset-branch`;
   - `restore --user` and `--password-file`;
   - `self-update --yes`;
@@ -43,7 +45,13 @@ completion files call a command sb doesn't have.
   Saltbox's services and Docker containers in one picker (`Tab` twice
   shows the containers alone). The error names it too.
 - **`sb announcements`' `-b`, `-a` and `-r` are gone** (exit 2).
-- **`sb branch` switches without asking.**
+- **`sb branch` switches without asking** about the branch.
+- **Local changes in a checkout are no longer discarded silently.**
+  sb-go's `update`, `branch` and `branch-sandbox` reset the Saltbox and
+  Sandbox checkouts, dropping local commits, tracked edits and untracked
+  files without a word. sb asks first on a terminal, and without one
+  stops before changing anything, naming what it would discard, unless
+  `--discard-local` is given. A clean checkout runs as before.
 - **`sb edit` exits 1** when the file you edited has issues.
 - **Host-changing commands run one at a time:** `install`, `update`,
   `setup`, `gha`, `branch`, `branch-sandbox`, `self-update`,

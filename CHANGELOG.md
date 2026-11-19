@@ -39,8 +39,13 @@ you could trip over.
   tags its pull added or removed, and how to apply the update (`sb
   install saltbox`, or `core` plus your apps). The run log keeps the
   commits and the tag changes.
+- **`sb update` asks before discarding local work** in the Saltbox and
+  Sandbox checkouts: local commits, tracked changes and untracked files.
+  Declining leaves that checkout as it is; without a terminal sb stops
+  and names `--discard-local`. `sb branch`, `sb branch-sandbox` and `sb
+  setup --force` do the same.
 - **Flags for every question,** so commands run unattended:
-  `update --migrations`, `setup --keep-branch` and `--reset-branch`,
+  `update --migrations` and `--discard-local`, `setup --keep-branch` and `--reset-branch`,
   `restore --user` and `--password-file`, `edit --no-edit-again`.
 - **Host-changing commands run one at a time.** A second one waits for the
   first, and says so.
@@ -92,7 +97,8 @@ you could trip over.
 - **Self-update is stricter.** Downloads come only from the release's own
   URL, and the new binary must report the release's version and channel
   before it replaces sb. There is no total timeout for slow links.
-- **`sb branch` switches without asking.**
+- **`sb branch` switches without asking** about the branch; it asks
+  before discarding local changes.
 - **Redirects are not followed** by motd's providers, the credential
   checks, the Docker controller or restore.
 - **Restore decrypts in memory** and writes atomically, so a wrong password

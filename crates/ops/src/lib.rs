@@ -9,7 +9,8 @@
 //! 7); `sb update` ([`update`], slice 11), on one [`Checkout`] type for
 //! the two checkouts; `sb restore` ([`restore`], slices 1 and 2); and
 //! `sb bench` ([`bench`], slices 3 and 4). update and setup end with
-//! completion's refresh ([`completions`], slice 13).
+//! completion's refresh ([`completions`], slice 13). Before a checkout is
+//! reset, its local changes are asked about ([`discard`], decision 40).
 
 // sb's lines go through `Write` and cli-core's output errors;
 // `print!`/`eprint!` panic on a closed pipe.
@@ -21,6 +22,7 @@ pub mod branch;
 mod checkout;
 pub mod completions;
 pub mod configs;
+pub mod discard;
 pub mod gha;
 pub mod hooks;
 pub mod locale;

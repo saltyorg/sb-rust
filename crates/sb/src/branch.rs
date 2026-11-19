@@ -7,7 +7,7 @@ use sb_cli_core::cancel::Shutdown;
 use sb_cli_core::config;
 use sb_cli_core::log::RunLog;
 use sb_ops::Checkout;
-use sb_ops::branch::Tools;
+use sb_ops::branch::{Asked, Tools};
 
 /// `checkout` switched to the branch `name` (sb-ops' `branch::run`).
 ///
@@ -19,6 +19,7 @@ use sb_ops::branch::Tools;
 pub fn branch(
     checkout: Checkout,
     name: &str,
+    discard_local: bool,
     shutdown: &Shutdown,
     log: Option<&RunLog>,
 ) -> anyhow::Result<()> {
@@ -29,8 +30,26 @@ pub fn branch(
             python,
             ansible: &ansible,
         };
+        // The local changes question on the alternate screen, with what
+        // the switch would discard (ops decision 42; term-ui's
+        // `confirm_over`).
+        let ask = |shown: &str, question: &str, flag: &'static str| {
+            sb_term_ui::confirm_over(
+                question,
+                &super::update::escaped_lines(shown),
+                None,
+                flag,
+                shutdown,
+            )
+        };
+        let asked = Asked {
+            discard_local,
+            ask,
+            log,
+            lines: &mut anstream::stderr(),
+        };
         super::block_on(sb_ops::branch::run(
-            checkout, &root, name, tools, shutdown, log,
+            checkout, &root, name, tools, shutdown, asked,
         ))?
     })
 }

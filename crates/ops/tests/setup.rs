@@ -159,17 +159,44 @@ async fn plan_for(
     answer: Option<Answer>,
     reply: Option<bool>,
 ) -> (anyhow::Result<Plan>, Option<(String, String)>) {
+    let (plan, asked) = plan_asking(root, wanted, answer, false, &[reply]).await;
+    (plan, asked.into_iter().next())
+}
+
+/// [`plan_for`] with `--discard-local` as `discard_local` says, each
+/// question answered by the next of `replies` (none left, or `None`: as
+/// with no terminal); every context and question asked, in order.
+async fn plan_asking(
+    root: &Path,
+    wanted: &str,
+    answer: Option<Answer>,
+    discard_local: bool,
+    replies: &[Option<bool>],
+) -> (anyhow::Result<Plan>, Vec<(String, String)>) {
     let found = setup::guard(root, true).expect("guard");
-    let mut asked = None;
-    let ask = |shown: &str, question: &str| {
-        asked = Some((shown.to_owned(), question.to_owned()));
-        reply.ok_or_else(|| PromptError::NoTerminal {
-            question: question.to_owned(),
-            reason: "no terminal".to_owned(),
-            flag: setup::BRANCH_FLAGS,
-        })
+    let mut asked = Vec::new();
+    let mut replies = replies.iter().copied();
+    let ask = |shown: &str, question: &str, flag: &'static str| {
+        asked.push((shown.to_owned(), question.to_owned()));
+        replies
+            .next()
+            .flatten()
+            .ok_or_else(|| PromptError::NoTerminal {
+                question: question.to_owned(),
+                reason: "no terminal".to_owned(),
+                flag,
+            })
     };
-    let plan = setup::plan(root, found, wanted, answer, ask, &Shutdown::new()).await;
+    let plan = setup::plan(
+        root,
+        found,
+        wanted,
+        answer,
+        discard_local,
+        ask,
+        &Shutdown::new(),
+    )
+    .await;
     (plan, asked)
 }
 
@@ -268,7 +295,8 @@ async fn without_a_checkout_the_plan_is_the_wanted_branch() {
         Plan {
             found: Found::Nothing,
             branch: "develop".to_owned(),
-            notices: Vec::new()
+            notices: Vec::new(),
+            reset: true
         }
     );
     assert_eq!(asked, None);
@@ -373,7 +401,8 @@ async fn a_branch_git_refuses_fails_the_plan() {
         Found::Directory,
         "master",
         None,
-        |_, _| Ok(true),
+        false,
+        |_, _, _| Ok(true),
         &Shutdown::new(),
     )
     .await
@@ -395,6 +424,7 @@ async fn a_fresh_install_runs_every_phase_in_sb_gos_order() {
         found: Found::Nothing,
         branch: "develop".to_owned(),
         notices: Vec::new(),
+        reset: true,
     };
     let (ok, screen) = world.run(&plan, supported).await;
     assert!(ok, "{screen}");
@@ -468,6 +498,7 @@ async fn a_failed_completion_refresh_only_warns() {
         found: Found::Nothing,
         branch: "master".to_owned(),
         notices: Vec::new(),
+        reset: true,
     };
     let (ok, screen) = world.run_refreshing(&plan, supported, "missing").await;
     assert!(ok, "{screen}");
@@ -497,6 +528,7 @@ async fn a_forced_run_over_a_directory_makes_it_a_checkout() {
         found: Found::Directory,
         branch: "master".to_owned(),
         notices: vec!["a notice".to_owned()],
+        reset: true,
     };
     let (ok, screen) = world.run(&plan, supported).await;
     assert!(ok, "{screen}");
@@ -523,6 +555,7 @@ async fn a_failing_phase_ends_setup_with_its_words() {
         found: Found::Nothing,
         branch: "master".to_owned(),
         notices: Vec::new(),
+        reset: true,
     };
     // An unsupported release: the first check, nothing run.
     let world = World::new();
@@ -649,5 +682,104 @@ fn the_branch_flags_answer_the_question() {
     assert_eq!(
         (args.branch.as_str(), args.force, args.verbose),
         ("develop", true, true)
+    );
+}
+
+/// Over a checkout with local changes (ops decision 42): asked after the
+/// branch, as update asks; a no leaves the checkout as it is and the rest
+/// of setup runs; a yes, or `--discard-local`, resets it, noted; without
+/// a terminal, refused naming the counts and `--discard-local`.
+#[tokio::test]
+async fn local_changes_over_a_checkout_are_asked_about() {
+    let _spawns = SPAWNS.lock().await;
+    let world = World::new();
+    world.checkout("master");
+    let root = world.root();
+    std::fs::write(root.join("branch.txt"), "edited\n").expect("edit");
+    std::fs::write(root.join("notes.txt"), "mine\n").expect("untracked");
+    let summary = "1 tracked change and 1 untracked file";
+
+    let (plan, asked) = plan_asking(root, "master", None, false, &[Some(false)]).await;
+    let plan = plan.expect("declined");
+    assert_eq!(
+        asked,
+        [(
+            format!(
+                "Saltbox: updating to 'master' would discard {summary}:\n  branch.txt\n  \
+                 notes.txt\nDeclining leaves Saltbox as it is; the rest of setup goes on."
+            ),
+            "Saltbox: Discard these local changes and update?".to_owned()
+        )]
+    );
+    assert!(!plan.reset);
+    assert_eq!(
+        plan.notices,
+        [format!(
+            "Saltbox: Left as is, keeping {summary} (your answer)"
+        )]
+    );
+    std::fs::write(
+        root.join("accounts.yml"),
+        format!("user:\n  name: {USER}\n"),
+    )
+    .expect("accounts");
+    let (ok, screen) = world.run(&plan, supported).await;
+    assert!(ok, "{screen}");
+    assert!(!screen.contains("Updating Saltbox repository"), "{screen}");
+    in_order(
+        &screen,
+        &[
+            "Left as is, keeping",
+            "Preparing Saltbox repository",
+            "saltbox.fact is ready",
+        ],
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("branch.txt")).expect("kept"),
+        "edited\n"
+    );
+    assert!(root.join("notes.txt").exists());
+
+    let (plan, _) = plan_asking(root, "master", None, false, &[None]).await;
+    let err = format!("{:#}", plan.expect_err("no terminal"));
+    assert_eq!(
+        err,
+        format!(
+            "can't ask before discarding local changes: no terminal; answer with \
+             --discard-local (Saltbox has {summary} that the setup would discard)"
+        )
+    );
+
+    let (plan, asked) = plan_asking(root, "master", None, true, &[]).await;
+    let plan = plan.expect("discard");
+    assert!(asked.is_empty(), "{asked:?}");
+    assert!(plan.reset);
+    assert_eq!(
+        plan.notices,
+        [format!("Saltbox: Discarding {summary} (--discard-local)")]
+    );
+    let (ok, screen) = world.run(&plan, supported).await;
+    assert!(ok, "{screen}");
+    assert!(!root.join("notes.txt").exists(), "{screen}");
+    assert_eq!(world.branch(), ("master".to_owned(), "master".to_owned()));
+}
+
+/// Declined after the branch question's reset, the checkout stays on its
+/// branch: only the answer is noted, not the reset it didn't get.
+#[tokio::test]
+async fn a_declined_checkout_isnt_noted_as_reset() {
+    let _spawns = SPAWNS.lock().await;
+    let world = World::new();
+    world.checkout("develop");
+    let root = world.root();
+    std::fs::write(root.join("notes.txt"), "mine\n").expect("untracked");
+    let (plan, asked) =
+        plan_asking(root, "master", Some(Answer::Reset), false, &[Some(false)]).await;
+    let plan = plan.expect("declined");
+    assert_eq!(asked.len(), 1, "{asked:?}");
+    assert!(!plan.reset);
+    assert_eq!(
+        plan.notices,
+        ["Saltbox: Left as is, keeping 1 untracked file (your answer)"]
     );
 }

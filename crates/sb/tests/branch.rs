@@ -7,6 +7,7 @@
 //! checkout.
 
 mod common;
+mod raw_pty;
 mod root_gate;
 
 use std::os::unix::fs::MetadataExt;
@@ -264,4 +265,106 @@ fn a_branch_missing_on_the_remote_fails_and_changes_nothing() {
             "branch 'no-such-branch' doesn't exist on Saltbox's remote",
         ));
     assert_eq!(git(&root, &["rev-parse", "HEAD"]), before);
+}
+
+/// `cmd` (sb, with its tools' environment) in a session of its own
+/// (util-linux's `setsid`): no terminal, whatever the test runner has;
+/// sb's test environment applied, then `cmd`'s on top.
+fn without_terminal(cmd: &Command) -> Command {
+    let mut detached = Command::new("/usr/bin/setsid");
+    detached
+        .arg("-w")
+        .arg(cmd.get_program())
+        .args(cmd.get_args());
+    common::apply_sb_env(&mut detached);
+    for (name, value) in cmd.get_envs() {
+        let _ = match value {
+            Some(value) => detached.env(name, value),
+            None => detached.env_remove(name),
+        };
+    }
+    detached
+}
+
+/// A tracked edit and an untracked file in the checkout: what a switch
+/// would discard (ops decision 42).
+fn dirty(root: &Path) {
+    std::fs::write(root.join("saltbox.yml"), "edited\n").expect("edit");
+    std::fs::write(root.join("notes.txt"), "mine\n").expect("untracked");
+}
+
+/// Local changes, no terminal: refused before anything changes, naming
+/// them and `--discard-local`; with it, discarded and switched, noted.
+#[test]
+fn local_changes_need_discard_local_without_a_terminal() {
+    if !root_gate::requested() {
+        return;
+    }
+    let dir = tempfile::tempdir().expect("tempdir");
+    let tools = Tools::new(dir.path());
+    let (root, develop) = saltbox(dir.path(), "nobody");
+    dirty(&root);
+    let head = git(&root, &["rev-parse", "HEAD"]);
+    let mut cmd = tools.sb();
+    cmd.args(["branch", "develop", "--color=never"])
+        .env("SB_SALTBOX_DIR", &root);
+    without_terminal(&cmd)
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "answer with --discard-local (Saltbox has 1 tracked change and 1 untracked file \
+             that the switch would discard)",
+        ));
+    assert_eq!(git(&root, &["rev-parse", "HEAD"]), head);
+    assert_eq!(
+        std::fs::read_to_string(root.join("saltbox.yml")).expect("kept"),
+        "edited\n"
+    );
+    assert!(root.join("notes.txt").exists());
+
+    cmd.arg("--discard-local");
+    without_terminal(&cmd)
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "Saltbox: Discarding 1 tracked change and 1 untracked file (--discard-local)",
+        ));
+    assert_eq!(git(&root, &["rev-parse", "HEAD"]), develop);
+    assert!(!root.join("notes.txt").exists());
+}
+
+/// On a terminal the question on the alternate screen; `n` switches
+/// nothing, sb ends well after its warning, the checkout as it was.
+#[test]
+fn on_a_terminal_a_no_switches_nothing() {
+    if !root_gate::requested() {
+        return;
+    }
+    let dir = tempfile::tempdir().expect("tempdir");
+    let tools = Tools::new(dir.path());
+    let (root, _) = saltbox(dir.path(), "nobody");
+    dirty(&root);
+    let head = git(&root, &["rev-parse", "HEAD"]);
+    let mut cmd = tools.sb();
+    cmd.args(["branch", "develop", "--color=never"])
+        .env("SB_SALTBOX_DIR", &root);
+    let mut pty = raw_pty::Pty::spawn(&cmd);
+    let question = "Saltbox: Discard these local changes and switch to 'develop'?";
+    assert!(pty.showing(question), "{}", pty.text());
+    pty.send(b"n\r");
+    let status = pty.exit();
+    let text = pty.text();
+    assert!(status.success(), "{text}");
+    for line in [
+        "Saltbox: switching to 'develop' would discard 1 tracked change and 1 untracked file:",
+        "  saltbox.yml",
+        "  notes.txt",
+        "Declining leaves Saltbox as it is; nothing is switched.",
+        "warning: Saltbox left as is: not switched to 'develop' (your answer)",
+    ] {
+        assert!(text.contains(line), "{line}: {text}");
+    }
+    assert!(!text.contains("Switching Saltbox repository"), "{text}");
+    assert_eq!(git(&root, &["rev-parse", "HEAD"]), head);
+    assert!(root.join("notes.txt").exists());
 }

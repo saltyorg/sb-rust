@@ -92,6 +92,13 @@ so.
 Questions are asked on the terminal. Each one has a flag that answers it,
 so `sb update --keep-branch --migrations run` runs without a terminal.
 
+`sb update`, `sb branch` and `sb branch-sandbox` never discard local
+work in a checkout without asking: local commits, tracked changes and
+untracked files (not ignored files such as your configs). On a terminal
+sb lists them and asks; declining leaves that checkout as it is. Without
+a terminal sb stops and names `--discard-local`, which discards them and
+goes on.
+
 `sb update` ends with what moved and what to do next:
 
 ```

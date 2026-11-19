@@ -36,8 +36,10 @@ const SB_GO_TREE: &str = include_str!("../tests/fixtures/sb-go-command-tree.tsv"
 /// cli-core spec's extensions), `sb announcements`' hidden `preview`
 /// and `check` with their flags (ops decisions 34 and 35, differences 60
 /// and 61), `sb self-update --channel` (release spec, "Release
-/// channels", difference 12), and `sb edit motd` and `sb edit providers`
-/// (tui spec, Difference 38).
+/// channels", difference 12), `sb edit motd` and `sb edit providers`
+/// (tui spec, Difference 38), and `--discard-local` on `update`, `setup`
+/// and the branch commands with `update`'s hidden `--skip-git` (ops
+/// decisions 40 to 42, differences 65 and 66).
 const EXTENSIONS: &[&str] = &[
     "flag\tsb\tglobal\tcolor",
     "flag\tsb docker ps\tlocal\tjson",
@@ -59,6 +61,11 @@ const EXTENSIONS: &[&str] = &[
     "flag\tsb self-update\tlocal\tchannel",
     "command\tsb edit motd",
     "command\tsb edit providers",
+    "flag\tsb branch\tglobal\tdiscard-local",
+    "flag\tsb branch-sandbox\tglobal\tdiscard-local",
+    "flag\tsb setup\tglobal\tdiscard-local",
+    "flag\tsb update\tglobal\tdiscard-local",
+    "flag\tsb update\tglobal\tskip-git",
 ];
 
 /// sb-go's lines sb words differently on purpose, with sb's line for each:

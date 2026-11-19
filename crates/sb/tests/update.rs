@@ -851,3 +851,279 @@ fn what_moved_and_the_hint_end_the_run_and_reach_the_run_log() {
         "{log}"
     );
 }
+
+/// sb's own files in the Saltbox checkout, which a run writes (ignored,
+/// as Saltbox's .gitignore has them): the tags cache and the fact.
+const OURS: [&str; 2] = ["cache.json", "ansible_facts.d"];
+
+/// A path in a checkout and a file's bytes (none for a directory).
+type Entry = (PathBuf, Option<Vec<u8>>);
+
+/// A checkout as it stands, byte for byte, sb's own files ([`OURS`])
+/// aside: every entry outside `.git` with each file's bytes (std's
+/// `read_dir`, sorted), `git status` with ignored files, HEAD and the
+/// local branches, the fetch refspec.
+fn snapshot(checkout: &Path) -> (Vec<Entry>, String) {
+    fn walk(dir: &Path, top: &Path, out: &mut Vec<Entry>) {
+        let mut entries: Vec<_> = std::fs::read_dir(dir)
+            .expect("read dir")
+            .map(|entry| entry.expect("entry").path())
+            .collect();
+        entries.sort();
+        for path in entries {
+            let rel = path.strip_prefix(top).expect("inside").to_path_buf();
+            if rel == Path::new(".git") || OURS.iter().any(|ours| rel.starts_with(ours)) {
+                continue;
+            }
+            if path.is_dir() {
+                out.push((rel, None));
+                walk(&path, top, out);
+            } else {
+                out.push((rel, Some(std::fs::read(&path).expect("read"))));
+            }
+        }
+    }
+    let mut entries = Vec::new();
+    walk(checkout, checkout, &mut entries);
+    let git = |args: &[&str]| sb_ops::testing::git(checkout, args);
+    let status: Vec<String> = git(&[
+        "status",
+        "--porcelain=v1",
+        "--untracked-files=all",
+        "--ignored",
+    ])
+    .lines()
+    .filter(|line| {
+        !OURS
+            .iter()
+            .any(|ours| line.starts_with(&format!("!! {ours}")))
+    })
+    .map(str::to_owned)
+    .collect();
+    let state = [
+        status.join("\n"),
+        git(&["rev-parse", "--abbrev-ref", "HEAD"]),
+        git(&["rev-parse", "HEAD"]),
+        git(&[
+            "for-each-ref",
+            "--format=%(refname) %(objectname)",
+            "refs/heads",
+        ]),
+        git(&["config", "--get-all", "remote.origin.fetch"]),
+    ]
+    .join("\n");
+    (entries, state)
+}
+
+/// A local commit, a tracked edit and two untracked entries in
+/// `checkout`, beside its ignored configs (ops decision 40).
+fn dirty(checkout: &Path) {
+    let git = |args: &[&str]| {
+        let _ = sb_ops::testing::git(checkout, args);
+    };
+    std::fs::write(checkout.join("local.txt"), "mine\n").expect("write");
+    git(&["add", "local.txt"]);
+    git(&["commit", "--quiet", "-m", "local"]);
+    std::fs::write(checkout.join("branch.txt"), "edited\n").expect("write");
+    std::fs::write(checkout.join("notes.txt"), "mine\n").expect("write");
+    std::fs::create_dir(checkout.join("drafts")).expect("mkdir");
+    std::fs::write(checkout.join("drafts/role.yml"), "draft\n").expect("write");
+}
+
+/// What `dirty` leaves, as repo's summary words it.
+const DIRTY: &str = "1 local commit on 'master', 1 tracked change and 2 untracked files";
+
+/// A new commit on master in each remote, which an update would pull.
+fn upstream(world: &World) {
+    for remote in [&world.sb.saltbox_remote, &world.sb.sandbox_remote] {
+        let _ = sb_ops::testing::git(&remote.work(), &["checkout", "--quiet", "master"]);
+        remote.commit("upstream.txt", "new\n");
+    }
+}
+
+/// `--discard-local` in help; `--skip-git` hidden from help and from
+/// completion, and refused with the flags it makes meaningless (clap's
+/// conflict, exit 2), before anything runs (ops decisions 40 and 41).
+#[test]
+fn discard_local_is_shown_and_skip_git_is_hidden() {
+    common::sb()
+        .args(["update", "--help", "--color=never"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains(
+                "--discard-local     Discard local commits, changes and untracked files",
+            )
+            .and(predicate::str::contains("--skip-git").not()),
+        );
+    for other in ["--keep-branch", "--reset-branch", "--discard-local"] {
+        common::sb()
+            .args(["update", "--skip-git", other])
+            .assert()
+            .code(2)
+            .stderr(predicate::str::contains("--skip-git"));
+    }
+    // clap's dynamic completion, as the installed scripts call it.
+    let completed = |word: &str| {
+        let out = common::sb()
+            .env("SB_COMPLETE", "fish")
+            .args(["--", "sb", "update", word])
+            .output()
+            .expect("complete");
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    assert!(
+        !completed("--s").contains("--skip-git"),
+        "{}",
+        completed("--s")
+    );
+    assert!(
+        completed("--d").contains("--discard-local"),
+        "{}",
+        completed("--d")
+    );
+    for command in ["branch", "branch-sandbox"] {
+        common::sb()
+            .args([command, "--help", "--color=never"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("--discard-local"));
+    }
+}
+
+/// Piped with local changes in Saltbox's checkout: refused before any
+/// step, naming the checkout, its counts and both flags, exit 1, nothing
+/// run or changed; `--discard-local` discards them and goes on.
+#[test]
+fn without_a_terminal_local_changes_are_refused_first() {
+    if !root_gate::requested() {
+        return;
+    }
+    let world = World::new("master", "master");
+    dirty(&world.saltbox());
+    let before = snapshot(&world.saltbox());
+    let out = world.update(&["--migrations", "skip"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "{stderr}");
+    assert!(
+        stderr.contains(&format!(
+            "--discard-local or --skip-git (Saltbox has {DIRTY} that the update would discard)"
+        )),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("Updating"), "{stderr}");
+    assert!(world.host.calls().is_empty(), "{:?}", world.host.calls());
+    assert_eq!(snapshot(&world.saltbox()), before);
+
+    let out = world.update(&["--migrations", "skip", "--discard-local"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stderr}");
+    assert!(
+        stderr.contains(&format!("Saltbox: Discarding {DIRTY} (--discard-local)")),
+        "{stderr}"
+    );
+    assert!(!world.saltbox().join("notes.txt").exists());
+    assert!(world.saltbox().join("accounts.yml").exists());
+}
+
+/// On a terminal: the local changes question on the alternate screen
+/// with what would go, after the tree is paused; `n` leaves the checkout
+/// byte for byte as it was, the answer a notice in the one tree printed
+/// at the end, and `left as is` in what moved (ops decision 40).
+#[test]
+fn on_a_terminal_a_no_leaves_the_checkout_as_it_was() {
+    if !root_gate::requested() {
+        return;
+    }
+    let world = World::new("master", "master");
+    dirty(&world.saltbox());
+    upstream(&world);
+    let before = snapshot(&world.saltbox());
+    let sb = test_build();
+    let cmd = world.namespaced(
+        Path::new(&sb),
+        &["update", "--color=never", "--migrations", "skip"],
+        &[],
+    );
+    let mut pty = Pty::spawn(&cmd);
+    let question = "Saltbox: Discard these local changes and update?";
+    assert!(pty.showing(question), "{}", pty.text());
+    assert!(world.host.calls().is_empty(), "{:?}", world.host.calls());
+    pty.send(b"n\r");
+    let status = pty.exit();
+    let text = pty.text();
+    assert!(status.success(), "{text}");
+    let (enter, leave) = ("\u{1b}[?1049h", "\u{1b}[?1049l");
+    in_order(
+        &text,
+        &[
+            enter,
+            &format!("Saltbox: updating to 'master' would discard {DIRTY}:"),
+            "  branch.txt",
+            "  drafts/",
+            "  notes.txt",
+            "Declining leaves Saltbox as it is; the rest of the update goes on.",
+            question,
+            leave,
+            "Updating apt package cache",
+            // The tree cuts the notice to the PTY's 100 columns.
+            "Saltbox: Left as is, keeping 1 local commit on 'master'",
+            "Sandbox repository updated (master)",
+            "Saltbox  left as is (",
+        ],
+    );
+    assert_eq!(text.matches(enter).count(), 1, "{text}");
+    assert_eq!(snapshot(&world.saltbox()), before);
+    assert!(world.sandbox().join("upstream.txt").exists());
+}
+
+/// `--skip-git` piped, with both checkouts dirty and behind their
+/// remotes and one off master, without a branch flag or `--migrations`:
+/// both left byte for byte as they were, the rest of update run, both
+/// tags caches rebuilt, `left as is` for each and no hint, the run log
+/// saying git was skipped (ops decision 41).
+#[test]
+fn skip_git_leaves_both_checkouts_byte_for_byte() {
+    if !root_gate::requested() {
+        return;
+    }
+    let world = World::new("develop", "master");
+    dirty(&world.sandbox());
+    upstream(&world);
+    let before = (snapshot(&world.saltbox()), snapshot(&world.sandbox()));
+    let out = world.update(&["--skip-git"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stderr}");
+    assert_eq!(snapshot(&world.saltbox()), before.0);
+    assert_eq!(snapshot(&world.sandbox()), before.1);
+    in_order(
+        &stderr,
+        &[
+            "Updating apt package cache",
+            "Ansible virtual environment ready",
+            "Updating Saltbox tags cache",
+            "Updating Sandbox tags cache",
+            // Piped, a step's notice comes before its ending.
+            "Checking for new announcements",
+            "To see them: sb announcements preview --since <ref>",
+            "Announcements not compared (--skip-git)",
+            "Saltbox configuration validated",
+            "Shell completions checked",
+            "Saltbox  left as is (",
+            ", develop, no local changes)",
+            "Sandbox  left as is (",
+            ", master, 3 local changes)",
+        ],
+    );
+    assert!(!stderr.contains("Fetching repository changes"), "{stderr}");
+    assert!(!stderr.contains("To apply it"), "{stderr}");
+    let log = run_log(&world);
+    for repo in ["Saltbox", "Sandbox"] {
+        assert!(
+            log.lines().any(|line| line.contains("git skipped")
+                && line.contains(repo)
+                && line.contains("--skip-git")),
+            "{repo}: {log}"
+        );
+    }
+}

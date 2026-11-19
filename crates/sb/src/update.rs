@@ -88,15 +88,10 @@ pub fn update(args: &UpdateArgs, shutdown: &Shutdown, log: Option<&RunLog>) -> a
             },
         };
         // The questions on the alternate screen, with what they are about,
-        // over the paused tree (ops decision 39; term-ui's `confirm_over`).
-        let ask = |shown: &str, question: &str| {
-            sb_term_ui::confirm_over(
-                question,
-                &exit::escaped(shown),
-                None,
-                sb_ops::update::BRANCH_FLAGS,
-                shutdown,
-            )
+        // over the paused tree (ops decisions 39 and 40; term-ui's
+        // `confirm_over`), `flag` the one that answers each.
+        let ask = |shown: &str, question: &str, flag: &'static str| {
+            sb_term_ui::confirm_over(question, &escaped_lines(shown), None, flag, shutdown)
         };
         // The migrations' question, `--migrations` its flag; the table it
         // is about as its context.
@@ -114,4 +109,25 @@ pub fn update(args: &UpdateArgs, shutdown: &Shutdown, log: Option<&RunLog>) -> a
             &mut anstream::stderr(),
         ))?
     })
+}
+
+/// `shown` with each line escaped as every line sb prints from git
+/// (cli-core's `escaped`), its line breaks kept: a question's context.
+pub(crate) fn escaped_lines(shown: &str) -> String {
+    shown
+        .lines()
+        .map(exit::escaped)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn each_line_is_escaped_and_the_breaks_kept() {
+        assert_eq!(
+            super::escaped_lines("Saltbox: \u{1b}[31mx\n  a\tb"),
+            "Saltbox: \\u{1b}[31mx\n  a\\tb"
+        );
+    }
 }

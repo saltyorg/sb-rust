@@ -28,7 +28,8 @@ use crate::announcements::{self, Announcement, Pending};
 use crate::branch::{self, Resolved};
 pub use crate::branch::{BRANCH_FLAGS, BranchFlags};
 use crate::completions::{self, Refresh};
-use crate::moved::{self, Moved, TagDiff};
+use crate::discard::{self, Decision, DiscardFlag, Purpose};
+use crate::moved::{self, Left, Moved, TagDiff};
 use crate::{Checkout, configs};
 
 /// The branch `update` resets to, unless the user keeps another (sb-go's
@@ -41,6 +42,27 @@ pub const RERUN: &str = "Re-run the update command to update Saltbox";
 /// The question before the migrations run, all or none (sb-go's).
 pub const MIGRATIONS_QUESTION: &str = "Run all migration tags?";
 
+/// The flags that answer the local changes question (ops decision 40).
+pub const DISCARD_FLAGS: &str = "--discard-local or --skip-git";
+
+/// The announcements step's ending under `--skip-git` (ops decision 41).
+pub const NOT_COMPARED: &str = "Announcements not compared (--skip-git)";
+
+/// Its one notice: where to see them.
+pub const SEE_THEM: &str = "To see them: sb announcements preview --since <ref>";
+
+/// The local changes question's words in update, for the update to
+/// `doing` (`updating to 'master'`).
+fn purpose(doing: &str) -> Purpose<'_> {
+    Purpose {
+        doing,
+        then: "update",
+        declined: "the rest of the update goes on",
+        work: "update",
+        flags: DISCARD_FLAGS,
+    }
+}
+
 /// `sb update`'s flags: sb-go's but `-v` (ops decision 18), persistent as
 /// there (`global`), and `--migrations` (decision 19).
 #[derive(clap::Args, Debug, Clone)]
@@ -50,6 +72,20 @@ pub struct UpdateArgs {
     /// Skip CLI self-update check
     #[arg(long, global = true)]
     pub skip_self_update: bool,
+    #[command(flatten)]
+    pub discard: DiscardFlag,
+    /// Leave both checkouts as they are and update everything else
+    // Hidden, for developers (ops decision 41): no fetch, reset, clean,
+    // checkout, submodule update or branch question. With a branch flag
+    // or `--discard-local`, clap's parse error, exit 2:
+    // <https://docs.rs/clap/4.6.7/clap/struct.Arg.html#method.conflicts_with_all>.
+    #[arg(
+        long,
+        global = true,
+        hide = true,
+        conflicts_with_all = ["keep_branch", "reset_branch", "discard_local"]
+    )]
+    pub skip_git: bool,
     /// Run or skip the migrations new announcements name, without asking
     // Required without a terminal: its question comes after the checkouts
     // have moved, and the next run can't ask it again (ops decision 19).
@@ -70,7 +106,9 @@ pub enum Migrations {
 /// on a terminal (`no_terminal` is `None`) nothing is needed. Without one
 /// (`no_terminal` says why, term-ui's `can_ask`'s reason), a branch flag
 /// when a checkout is off master (`off_master`: each checkout's name and
-/// branch) and `--migrations` always.
+/// branch), `--migrations` always, and [`DISCARD_FLAGS`] when a checkout
+/// has local changes its update would discard (`dirty`: each checkout's
+/// name and repo's summary of them; decision 40).
 ///
 /// # Errors
 ///
@@ -81,6 +119,7 @@ pub fn missing_answers(
     off_master: &[(&str, &str)],
     branch: Option<Answer>,
     migrations: Option<Migrations>,
+    dirty: &[(&str, String)],
 ) -> Result<(), String> {
     let Some(reason) = no_terminal else {
         return Ok(());
@@ -101,6 +140,9 @@ pub fn missing_answers(
              have moved, and the next run can't ask it again)"
                 .to_owned(),
         );
+    }
+    if !dirty.is_empty() {
+        missing.push(discard::dirty_flags(dirty, "update", DISCARD_FLAGS));
     }
     if missing.is_empty() {
         return Ok(());
@@ -163,7 +205,9 @@ struct Opened {
 ///    exit 0 and release's [`RERUN`] warning;
 /// 4. the branch questions, Saltbox's then Sandbox's ([`branch::resolve`]:
 ///    `ask`, on the alternate screen in sb, the tree paused over it),
-///    each answer a notice under its checkout's step;
+///    each answer a notice under its checkout's step, each followed by
+///    its local changes question ([`discard::decide`], decision 40);
+///    under `--skip-git` none, both checkouts left as they are;
 /// 5. "Updating apt package cache"; each checkout's announcements read;
 ///    "Updating Saltbox" (the fetch and reset, the runtime, the tags when
 ///    the commit moved or none are cached); "Securing Saltbox
@@ -192,7 +236,7 @@ struct Opened {
 pub async fn run(
     update: &Update<'_>,
     terminal: Result<(), String>,
-    mut ask: impl FnMut(&str, &str) -> Result<bool, PromptError>,
+    mut ask: impl FnMut(&str, &str, &'static str) -> Result<bool, PromptError>,
     confirm: impl FnOnce(&str, &str) -> Result<bool, PromptError>,
     runner: impl FnOnce() -> Runner,
     shutdown: &Shutdown,
@@ -206,21 +250,12 @@ pub async fn run(
     };
     let saltbox = open(Checkout::Saltbox, &Checkout::Saltbox.path(update.root)).await;
     let sandbox = open(Checkout::Sandbox, &Checkout::Sandbox.path(update.root)).await;
-    // Off master is what repo's `branch_choice` would ask about.
-    let off_master: Vec<(&str, &str)> = [&saltbox, &sandbox]
-        .into_iter()
-        .filter_map(|opened| opened.as_ref().ok())
-        .filter(|opened| branch_choice(&opened.current, DEFAULT_BRANCH, None) == Choice::Ask)
-        .map(|opened| (opened.repo.name(), opened.current.as_str()))
-        .collect();
     let answer = update.args.branch_flags.answer();
-    missing_answers(
-        terminal.err().as_deref(),
-        &off_master,
-        answer,
-        update.args.migrations,
-    )
-    .map_err(anyhow::Error::msg)?;
+    let (skip_git, discard_local) = (update.args.skip_git, update.args.discard.discard_local);
+    // Under `--skip-git` nothing is asked (decision 41).
+    if !skip_git {
+        up_front(update, terminal.err(), [&saltbox, &sandbox], shutdown).await?;
+    }
     update.disk.check_disk_space(update.disk_paths)?;
     // One tree for the run (decision 39), started by its first step:
     // self-update's, or apt's, so a run refused at a branch question with
@@ -242,23 +277,29 @@ pub async fn run(
     }
     // A question on the alternate screen, the tree (when self-update
     // started it) paused over it (decision 39).
-    let mut asked = |tree: &mut LazyCell<Runner, _>, shown: &str, question: &str| {
-        if let Some(steps) = LazyCell::get_mut(tree) {
-            steps.pause_over();
-        }
-        ask(shown, question)
+    let mut asked =
+        |tree: &mut LazyCell<Runner, _>, shown: &str, question: &str, flag: &'static str| {
+            if let Some(steps) = LazyCell::get_mut(tree) {
+                steps.pause_over();
+            }
+            ask(shown, question, flag)
+        };
+    let answers = Answers {
+        branch: answer,
+        discard_local,
+        skip_git,
     };
     let saltbox = plan(
         saltbox,
-        answer,
-        |shown: &str, question: &str| asked(&mut tree, shown, question),
+        answers,
+        |shown: &str, question: &str, flag: &'static str| asked(&mut tree, shown, question, flag),
         shutdown,
     )
     .await?;
     let sandbox = plan(
         sandbox,
-        answer,
-        |shown: &str, question: &str| asked(&mut tree, shown, question),
+        answers,
+        |shown: &str, question: &str, flag: &'static str| asked(&mut tree, shown, question, flag),
         shutdown,
     )
     .await?;
@@ -291,6 +332,64 @@ pub async fn run(
     result.and(written)
 }
 
+/// The up-front check before any step ([`missing_answers`]), for the
+/// checkouts that could be read: each off master, and, without a
+/// terminal (`no_terminal`, why not) and `--discard-local`, each whose
+/// branch is decided and whose update would discard local changes
+/// (decision 40).
+///
+/// # Errors
+///
+/// [`missing_answers`]' refusal.
+async fn up_front(
+    update: &Update<'_>,
+    no_terminal: Option<String>,
+    checkouts: [&anyhow::Result<Opened>; 2],
+    shutdown: &Shutdown,
+) -> anyhow::Result<()> {
+    let answer = update.args.branch_flags.answer();
+    let opened: Vec<&Opened> = checkouts
+        .into_iter()
+        .filter_map(|opened| opened.as_ref().ok())
+        .collect();
+    // Off master is what repo's `branch_choice` would ask about.
+    let off_master: Vec<(&str, &str)> = opened
+        .iter()
+        .filter(|opened| branch_choice(&opened.current, DEFAULT_BRANCH, None) == Choice::Ask)
+        .map(|opened| (opened.repo.name(), opened.current.as_str()))
+        .collect();
+    let dirty = if no_terminal.is_some() && !update.args.discard.discard_local {
+        let decided: Vec<(&Repo, &str, String)> = opened
+            .iter()
+            .filter_map(
+                |opened| match branch_choice(&opened.current, DEFAULT_BRANCH, answer) {
+                    Choice::Use(branch) | Choice::Keep(branch) => {
+                        Some((&opened.repo, opened.current.as_str(), branch))
+                    }
+                    Choice::Ask => None,
+                },
+            )
+            .collect();
+        discard::dirty(
+            decided
+                .iter()
+                .map(|(repo, current, branch)| (*repo, *current, branch.as_str())),
+            shutdown,
+        )
+        .await
+    } else {
+        Vec::new()
+    };
+    missing_answers(
+        no_terminal.as_deref(),
+        &off_master,
+        answer,
+        update.args.migrations,
+        &dirty,
+    )
+    .map_err(anyhow::Error::msg)
+}
+
 /// update's steps once the questions are answered (`run`'s 5 to 7), each
 /// checkout whose pull finished recorded in `pulled`.
 ///
@@ -299,21 +398,28 @@ pub async fn run(
 /// As `run`'s, from its step 5 on.
 async fn checkouts_onward(
     update: &Update<'_>,
-    [saltbox, sandbox]: [anyhow::Result<(Repo, Resolved)>; 2],
+    [saltbox, sandbox]: [anyhow::Result<(Repo, Planned)>; 2],
     confirm: impl FnOnce(&str, &str) -> Result<bool, PromptError>,
     steps: &mut Runner,
     shutdown: &Shutdown,
     lines: &mut impl Write,
     pulled: &mut Vec<Moved>,
 ) -> anyhow::Result<()> {
+    let skip_git = update.args.skip_git;
     let found = async {
         apt_cache(steps, update.apt).await?;
         // Each checkout's announcements before its pull (sb-go reads both
-        // here, after apt).
-        let before: Vec<_> = [Checkout::Saltbox, Checkout::Sandbox]
-            .into_iter()
-            .map(|checkout| announcements::load(&announcements::own_file(checkout, update.root)))
-            .collect();
+        // here, after apt); none under `--skip-git`, which compares none.
+        let before: Vec<_> = if skip_git {
+            Vec::new()
+        } else {
+            [Checkout::Saltbox, Checkout::Sandbox]
+                .into_iter()
+                .map(|checkout| {
+                    announcements::load(&announcements::own_file(checkout, update.root))
+                })
+                .collect()
+        };
         let mut tags = TagCache::load(update.root);
         let mut cache = Cache {
             tags: &mut tags,
@@ -322,6 +428,23 @@ async fn checkouts_onward(
         checkout_step(steps, Checkout::Saltbox, saltbox, update, &mut cache).await?;
         secure_step(steps, update.root).await?;
         checkout_step(steps, Checkout::Sandbox, sandbox, update, &mut cache).await?;
+        if skip_git {
+            // The step says so, its one notice where to see them
+            // (decision 41): nothing is compared, so nothing is shown or
+            // offered.
+            let labels = Labels::new("Checking for new announcements", NOT_COMPARED);
+            steps
+                .step(labels, async |step| {
+                    tracing::info!(reason = "--skip-git", "announcements not compared");
+                    step.info(SEE_THEM);
+                    Ok(())
+                })
+                .await?;
+            return Ok(announcements::Found {
+                shown: Vec::new(),
+                listed: Vec::new(),
+            });
+        }
         let before = [Checkout::Saltbox, Checkout::Sandbox]
             .into_iter()
             .zip(before)
@@ -622,36 +745,111 @@ pub(crate) fn by_hand(left: &[Pending]) -> String {
     lines.join(", ")
 }
 
-/// The branch question for an opened checkout ([`branch::resolve`]): the
-/// outer error ends the run before any step (an unanswered question); the
-/// inner one is the checkout's that couldn't be opened, kept for its own
-/// step.
+/// The flags that answer update's questions.
+#[derive(Debug, Clone, Copy)]
+struct Answers {
+    branch: Option<Answer>,
+    discard_local: bool,
+    skip_git: bool,
+}
+
+/// What a checkout's step does with its git, decided before any step.
+#[derive(Debug)]
+struct Planned {
+    /// The notices for its step: the branch's, then the local changes';
+    /// for a checkout left as it is, only the latter.
+    notices: Vec<String>,
+    /// Its git steps.
+    git: Git,
+}
+
+/// A checkout's git steps.
+#[derive(Debug)]
+enum Git {
+    /// Fetched and reset to this branch.
+    Update(String),
+    /// Left as it is, and why, for the run log (`--skip-git`,
+    /// `declined`).
+    Left(&'static str),
+}
+
+/// The questions for an opened checkout: its branch ([`branch::resolve`])
+/// and then its local changes ([`discard::decide`], decision 40), both
+/// through `ask`; under `--skip-git` neither, the checkout left as it
+/// is. The outer error ends the run before any step (an unanswered
+/// question); the inner one is the checkout's that couldn't be opened or
+/// read, kept for its own step.
 ///
 /// # Errors
 ///
-/// The question unanswered, or a refused branch name (`error updating
+/// A question unanswered, or a refused branch name (`error updating
 /// <Repo>: ...`).
 async fn plan(
     opened: anyhow::Result<Opened>,
-    answer: Option<Answer>,
-    ask: impl FnOnce(&str, &str) -> Result<bool, PromptError>,
+    answers: Answers,
+    mut ask: impl FnMut(&str, &str, &'static str) -> Result<bool, PromptError>,
     shutdown: &Shutdown,
-) -> anyhow::Result<anyhow::Result<(Repo, Resolved)>> {
+) -> anyhow::Result<anyhow::Result<(Repo, Planned)>> {
     let opened = match opened {
         Ok(opened) => opened,
         Err(err) => return Ok(Err(err)),
     };
-    let resolved = branch::resolve(
+    if answers.skip_git {
+        let planned = Planned {
+            notices: Vec::new(),
+            git: Git::Left("--skip-git"),
+        };
+        return Ok(Ok((opened.repo, planned)));
+    }
+    let name = opened.repo.name().to_owned();
+    let context = || format!("error updating {name}");
+    let Resolved {
+        branch,
+        mut notices,
+    } = branch::resolve(
         &opened.repo,
         &opened.current,
         DEFAULT_BRANCH,
-        answer,
-        ask,
+        answers.branch,
+        |shown: &str, question: &str| ask(shown, question, BRANCH_FLAGS),
         shutdown,
     )
     .await
-    .with_context(|| format!("error updating {}", opened.repo.name()))?;
-    Ok(Ok((opened.repo, resolved)))
+    .with_context(context)?;
+    let doing = format!("updating to '{branch}'");
+    let decided = discard::decide(
+        &opened.repo,
+        &opened.current,
+        &branch,
+        answers.discard_local,
+        purpose(&doing),
+        ask,
+        shutdown,
+    )
+    .await;
+    let Decision { update, notice } = match decided {
+        Ok(decision) => decision,
+        // git couldn't read the checkout: its own step fails on it.
+        Err(err) if err.downcast_ref::<sb_repo::RepoError>().is_some() => {
+            return Ok(Err(err));
+        }
+        Err(err) => return Err(err.context(context())),
+    };
+    // Left as it is, the branch's notice (a reset, the current branch
+    // updated) would say what didn't happen: the answer alone is noted.
+    let planned = if update {
+        notices.extend(notice);
+        Planned {
+            notices,
+            git: Git::Update(branch),
+        }
+    } else {
+        Planned {
+            notices: notice.into_iter().collect(),
+            git: Git::Left("declined"),
+        }
+    };
+    Ok(Ok((opened.repo, planned)))
 }
 
 /// "Updating apt package cache", its sub-step "Refreshing apt package
@@ -693,7 +891,7 @@ struct Cache<'a> {
 async fn checkout_step(
     runner: &mut Runner,
     checkout: Checkout,
-    plan: anyhow::Result<(Repo, Resolved)>,
+    plan: anyhow::Result<(Repo, Planned)>,
     update: &Update<'_>,
     cache: &mut Cache<'_>,
 ) -> Result<(), Exit> {
@@ -702,8 +900,8 @@ async fn checkout_step(
         .failure(format!("{name} update"));
     runner
         .step(labels, async |step: &mut Step| {
-            let (repo, resolved) = plan.with_context(|| format!("error updating {name}"))?;
-            for notice in &resolved.notices {
+            let (repo, planned) = plan.with_context(|| format!("error updating {name}"))?;
+            for notice in &planned.notices {
                 step.info(notice);
             }
             let token = step.token();
@@ -713,21 +911,39 @@ async fn checkout_step(
                 .head(&token)
                 .await
                 .context("error getting old commit hash")?;
-            branch::update(step, &repo, &resolved.branch, &user).await?;
-            // Read before the runtime: HEAD doesn't move there, and what
-            // moved is then known if the runtime fails (decision 38).
-            let new = repo
-                .head(&token)
-                .await
-                .context("error getting new commit hash")?;
-            tracing::info!(repo = name, old = %old, new = %new, "checkout pulled");
             let at = cache.pulled.len();
-            cache.pulled.push(Moved {
-                checkout,
-                old: old.clone(),
-                new: new.clone(),
-                tags: None,
-            });
+            let new = match &planned.git {
+                Git::Update(branch) => {
+                    branch::update(step, &repo, branch, &user).await?;
+                    // Read before the runtime: HEAD doesn't move there, and
+                    // what moved is then known if the runtime fails
+                    // (decision 38).
+                    let new = repo
+                        .head(&token)
+                        .await
+                        .context("error getting new commit hash")?;
+                    tracing::info!(repo = name, old = %old, new = %new, "checkout pulled");
+                    cache.pulled.push(Moved {
+                        checkout,
+                        old: old.clone(),
+                        new: new.clone(),
+                        tags: None,
+                        left: None,
+                    });
+                    new
+                }
+                Git::Left(reason) => {
+                    let left = left_as_is(&repo, reason, &old, step).await?;
+                    cache.pulled.push(Moved {
+                        checkout,
+                        old: old.clone(),
+                        new: old.clone(),
+                        tags: None,
+                        left: Some(left),
+                    });
+                    old.clone()
+                }
+            };
             if checkout == Checkout::Saltbox {
                 reconcile_runtime(step, update.python, Some(&user)).await?;
             }
@@ -735,12 +951,17 @@ async fn checkout_step(
             // sb-go's rule for update (ops spec, step 7): rebuilt when the
             // commit moved or no tags are cached. Why not `TagCache::tags`,
             // which also rebuilds an entry cached at another commit: that
-            // isn't sb-go's update rule.
+            // isn't sb-go's update rule. A checkout left as it is is
+            // rebuilt always (decision 41): its HEAD can't move, and its
+            // roles may have changed by hand; no tags are compared then.
             let cached = cache
                 .tags
                 .entry(&playbooks)
                 .is_some_and(|entry| !entry.tags.is_empty());
-            if old != new || !cached {
+            if matches!(planned.git, Git::Left(_)) {
+                let _tags =
+                    branch::tags(step, cache.tags, update.ansible, &playbooks, &repo).await?;
+            } else if old != new || !cached {
                 // The old entry only when valid for the commit before the
                 // pull (decision 37), read before the rebuild writes over it.
                 let before = cache.tags.fresh(&playbooks, &old);
@@ -766,6 +987,36 @@ async fn checkout_step(
             Ok(())
         })
         .await
+}
+
+/// A checkout left as it is, for what moved (decisions 40 and 41): its
+/// branch and working-tree changes, read under `step`, and the run log's
+/// `git skipped` with `reason` and its HEAD, `old`.
+///
+/// # Errors
+///
+/// git's reads, as `error reading <Repo>'s branch` or `... local
+/// changes`.
+async fn left_as_is(repo: &Repo, reason: &str, old: &str, step: &Step) -> anyhow::Result<Left> {
+    let (name, token) = (repo.name(), &step.token());
+    let branch = repo
+        .current_branch(token)
+        .await
+        .with_context(|| format!("error reading {name}'s branch"))?;
+    let changes = repo
+        .local_changes(token)
+        .await
+        .with_context(|| format!("error reading {name}'s local changes"))?
+        .count();
+    tracing::info!(
+        repo = name,
+        reason,
+        head = %old,
+        branch = %branch,
+        changes,
+        "git skipped"
+    );
+    Ok(Left { branch, changes })
 }
 
 /// "Securing Saltbox configuration permissions" (success "Saltbox

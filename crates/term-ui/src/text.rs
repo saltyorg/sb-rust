@@ -565,8 +565,28 @@ fn trim_end(piece: &mut String) {
     }
 }
 
+/// `text` cut to `width` columns, `…` in the last one when it is cut
+/// (console's `truncate_str`,
+/// <https://docs.rs/console/0.16.6/console/fn.truncate_str.html>); as
+/// it is when it fits. For one line in a list that must stay on one
+/// line (`sb update`'s local changes question names a few files).
+#[must_use]
+pub fn fit(text: &str, width: usize) -> String {
+    console::truncate_str(text, width, "…").into_owned()
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn fit_cuts_at_the_width_with_an_ellipsis() {
+        assert_eq!(super::fit("roles/a.yml", 20), "roles/a.yml");
+        assert_eq!(super::fit("roles/abcdef.yml", 8), "roles/a…");
+        assert_eq!(
+            console::measure_text_width(&super::fit("日本語のファイル", 7)),
+            7
+        );
+    }
+
     use super::{DisplayText, wrap_line};
 
     /// The fast path takes exactly the text the parser leaves as it is:

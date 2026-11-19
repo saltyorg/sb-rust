@@ -78,12 +78,17 @@ enum Command {
     Branch {
         /// The branch to switch to
         name: String,
+        // New (ops decision 42): the switch's local changes question.
+        #[command(flatten)]
+        discard: sb_ops::discard::DiscardFlag,
     },
     /// Change the branch used by Sandbox
     #[command(long_about = "Change the branch used by Sandbox")]
     BranchSandbox {
         /// The branch to switch to
         name: String,
+        #[command(flatten)]
+        discard: sb_ops::discard::DiscardFlag,
     },
     /// Update Saltbox & Sandbox
     // sb-go's flags, `-v` only hidden with a notice (ops decision 18,
@@ -1142,9 +1147,21 @@ fn notice(message: impl std::fmt::Display) {
 fn run(command: &Command, shutdown: &Shutdown, log: Option<&RunLog>) -> anyhow::Result<()> {
     match *command {
         Command::ValidateConfig { json } => validate_config(json, shutdown, log)?,
-        Command::Branch { ref name } => branch::branch(Checkout::Saltbox, name, shutdown, log)?,
-        Command::BranchSandbox { ref name } => {
-            branch::branch(Checkout::Sandbox, name, shutdown, log)?;
+        Command::Branch { ref name, discard } => branch::branch(
+            Checkout::Saltbox,
+            name,
+            discard.discard_local,
+            shutdown,
+            log,
+        )?,
+        Command::BranchSandbox { ref name, discard } => {
+            branch::branch(
+                Checkout::Sandbox,
+                name,
+                discard.discard_local,
+                shutdown,
+                log,
+            )?;
         }
         Command::Edit {
             command,

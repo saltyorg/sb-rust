@@ -373,8 +373,9 @@ pub fn git(dir: &Path, args: &[&str]) -> String {
 /// the working copy it is pushed from: `master` and `develop`, each
 /// holding the given files, `branch.txt` naming the branch, a default for
 /// accounts.yml (naming the Saltbox user) and settings.yml, and
-/// Saltbox's hooks script; Saltbox's configs, the fact and the
-/// inventory's `localhost.yml` ignored, as Saltbox's .gitignore has them. The working
+/// Saltbox's hooks script; Saltbox's configs, the fact, the inventory's
+/// `localhost.yml` and sb's tags cache ignored, as Saltbox's .gitignore
+/// has them. The working
 /// copy is left on `develop`.
 #[derive(Debug)]
 pub struct Remote {
@@ -408,6 +409,9 @@ impl Remote {
                     "accounts.yml\nadv_settings.yml\nbackup_config.yml\nhetzner_vlan.yml\n",
                     "motd.yml\nproviders.yml\nsettings.yml\nansible_facts.d/\n",
                     "inventories/host_vars/localhost.yml\n",
+                    // sb's tags cache, ignored as in Saltbox's own
+                    // .gitignore: a run leaves no local change.
+                    "cache.json\n",
                 ),
             ),
             ("defaults/accounts.yml.default", accounts.as_str()),
