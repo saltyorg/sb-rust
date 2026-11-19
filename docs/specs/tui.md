@@ -198,6 +198,9 @@ fallback); the viewer itself has no save or print (decision 24).
   - Built (2026-11-18): Home/`g` go to the first line of the whole log
     and End/`G` to the newest, following, for every kind of source
     ("Home and End: the log's ends" below).
+  - Built (2026-11-19, the key map): PgUp/`b`, PgDn/Space; `u` and `d`
+    no longer page; ← → and `h` `l` sideways; `F` follows as End does;
+    the keys in a footer row ("Keys: one map for every screen").
   - Scrolling up pauses following; End, `G` or `f` resumes it, and so
     does reaching the bottom.
   - `w` toggles wrap, on by default. With wrap off, ←/→, Shift+wheel and
@@ -2725,8 +2728,9 @@ fails without clearing when no answer comes.
     the search starts again at the newest match.
   - The header shows `/query 3/17`, `/query no matches`, or `/query
     -/17` once the current match has been dropped with its entry (the
-    buffer's caps). The hints become `n/N next · Esc clear · ...` while a
-    search is in effect; at 80 columns the hint row is cut at its end.
+    buffer's caps). The hints become `n/N match · Esc clear · ...` while a
+    search is in effect (in the footer since the key map, 2026-11-19,
+    fitted to the width).
   - With wrap off, ←/→, Shift+wheel and a horizontal wheel step 8
     columns, with no right-hand stop (proto-logs); the header shows
     `wrap off · col N`; `w` resets the column. A jump to a match off to
