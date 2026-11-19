@@ -37,6 +37,8 @@ sb-cli-core.workspace = true
 indicatif.workspace = true
 tokio = { workspace = true, features = ["macros", "sync"] }
 tempfile.workspace = true
+# The tests' snapshot of a checkout's tree, as sb-host's tests walk theirs.
+walkdir.workspace = true
 
 [lints]
 workspace = true

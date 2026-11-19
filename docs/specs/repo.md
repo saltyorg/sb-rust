@@ -90,7 +90,8 @@ not a directory` (cmd/update.go:391-400).
      succeed, else `<Repo>: branch '<b>' has no upstream to update from`,
      before anything in the worktree changes. A branch only on the remote
      needs no check: the reset's `checkout <branch> --` creates it
-     tracking `origin/<branch>`.
+     tracking `origin/<branch>` (git's checkout guess; Known limits for
+     what can defeat it).
   4. "Resetting repository to <branch>": `git clean --quiet -df`,
      `git reset --quiet --hard` (HEAD, decision 7), `git checkout --quiet
      <branch> --`, `git clean --quiet -df`, `git reset --quiet --hard
@@ -109,7 +110,8 @@ not a directory` (cmd/update.go:391-400).
   HEAD and the local branches as they were, byte for byte; only the
   fetch's remote-tracking refs and the widened refspec (decision 6) have
   changed. What can only fail later (the reset itself, the submodules,
-  the ownership) fails after the reset, as before. `--keep-branch`,
+  the ownership, and git's checkout guess for a branch only on the
+  remote, Known limits) fails after the reset, as before. `--keep-branch`,
   `--reset-branch` and the default path all reach `fetch_and_reset`, so
   the order holds for each: `--keep-branch` on a branch without an
   upstream, or a reset to a local branch whose upstream was removed, is
@@ -399,6 +401,13 @@ No test touches a Saltbox checkout or the network.
   ownership" error (assumption 2).
 - A user's credential helper that prompts some other way than the
   terminal or ssh isn't covered (none is configured by Saltbox).
+- A branch only on the remote is checked out by git's guess, which root's
+  git config or the checkout can defeat: with `branch.autoSetupMerge`
+  off the new branch has no upstream, with `checkout.guess` off or a
+  second remote with the same branch the checkout fails. Each fails
+  after the reset step's clean and reset to `HEAD`, which the user's
+  reset would have done anyway; Saltbox sets none of them (decision 12,
+  2026-11-19, weighed after review).
 - A failed `init_from_remote` leaves the `.git` it made (and the remote,
   and whatever was fetched). sb removes nothing: a rerun of `sb setup
   --force` finds a checkout and fetches and resets it. sb-go is the same.

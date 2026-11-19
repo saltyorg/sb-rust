@@ -533,47 +533,59 @@ async fn a_branch_without_an_upstream_is_refused() {
     );
 }
 
-/// The worktree as it stands: every file's path and bytes outside `.git`,
-/// with `git status` and HEAD's branch and commit, to compare a refused
-/// run's checkout with the one before it.
-fn snapshot(checkout: &Path) -> (Vec<(PathBuf, Vec<u8>)>, String, String) {
-    fn walk(dir: &Path, root: &Path, out: &mut Vec<(PathBuf, Vec<u8>)>) {
-        for entry in std::fs::read_dir(dir).expect("read dir") {
-            let path = entry.expect("entry").path();
-            if path.file_name().is_some_and(|name| name == ".git") {
-                continue;
-            }
-            if path.is_dir() {
-                walk(&path, root, out);
-            } else {
-                let bytes = std::fs::read(&path).expect("read");
-                out.push((
-                    path.strip_prefix(root).expect("inside").to_path_buf(),
-                    bytes,
-                ));
-            }
-        }
-    }
-    let mut files = Vec::new();
-    walk(checkout, checkout, &mut files);
-    files.sort();
+/// The worktree as it stands: every entry outside `.git` (walkdir,
+/// directories too, so an empty one counts) with each file's bytes, the
+/// index's and the worktree's state (`git status`), HEAD and the local
+/// branches, to compare a refused run's checkout with the one before it.
+/// [`snapshot`]'s: each entry and a file's bytes, `git status`, and HEAD
+/// with the local branches.
+type Snapshot = (Vec<(PathBuf, Option<Vec<u8>>)>, String, String);
+
+fn snapshot(checkout: &Path) -> Snapshot {
+    let entries = walkdir::WalkDir::new(checkout)
+        .sort_by_file_name()
+        .into_iter()
+        .filter_entry(|entry| entry.file_name() != ".git")
+        .map(|entry| {
+            let entry = entry.expect("entry");
+            let bytes = entry
+                .file_type()
+                .is_file()
+                .then(|| std::fs::read(entry.path()).expect("read"));
+            let path = entry.path().strip_prefix(checkout).expect("inside");
+            (path.to_path_buf(), bytes)
+        })
+        .collect();
     let status = git(
         checkout,
         &["status", "--porcelain=v1", "--untracked-files=all"],
     );
-    let head = git(checkout, &["rev-parse", "--abbrev-ref", "HEAD"])
+    let refs = git(checkout, &["rev-parse", "--abbrev-ref", "HEAD"])
         + " "
-        + &git(checkout, &["rev-parse", "HEAD"]);
-    (files, status, head)
+        + &git(checkout, &["rev-parse", "HEAD"])
+        + "\n"
+        + &git(
+            checkout,
+            &[
+                "for-each-ref",
+                "--format=%(refname) %(objectname) %(upstream)",
+                "refs/heads",
+            ],
+        );
+    (entries, status, refs)
 }
 
-/// A tracked edit, an untracked file and an untracked directory: what a
-/// refused run must leave as it found them.
+/// A tracked edit, a staged edit, an untracked file, an untracked
+/// directory with a file and an empty one: what a refused run must leave
+/// as it found them.
 fn local_changes(checkout: &Path) {
+    std::fs::write(checkout.join(".gitignore"), "accounts.yml\nstaged\n").expect("write");
+    git(checkout, &["add", ".gitignore"]);
     std::fs::write(checkout.join("tracked.txt"), "edited\n").expect("write");
     std::fs::write(checkout.join("notes.txt"), "mine\n").expect("write");
     std::fs::create_dir(checkout.join("drafts")).expect("mkdir");
     std::fs::write(checkout.join("drafts/role.yml"), "draft\n").expect("write");
+    std::fs::create_dir(checkout.join("empty")).expect("mkdir");
 }
 
 /// `--keep-branch` on a branch with no upstream (the test agent's d2):
@@ -645,6 +657,35 @@ async fn a_remote_branch_not_yet_local_is_still_checked_out() {
             &["rev-parse", "--abbrev-ref", "develop@{u}"]
         ),
         "origin/develop"
+    );
+}
+
+/// A branch only on the remote, checked out where git sets no upstream
+/// (root's `branch.autoSetupMerge=false`): the up-front check can't see
+/// it, so the check before the last reset refuses it, after the reset
+/// (repo spec, Known limits).
+#[tokio::test]
+async fn a_checkout_git_leaves_without_an_upstream_is_refused_after_the_reset() {
+    let fixture = Fixture::new();
+    git(
+        &fixture.checkout,
+        &["remote", "set-branches", "--add", "origin", "develop"],
+    );
+    git(
+        &fixture.checkout,
+        &["config", "branch.autoSetupMerge", "false"],
+    );
+    let ran = update(&fixture.repo(), "develop").await;
+    assert!(
+        ran.screen.contains("Resetting repository to develop"),
+        "{}",
+        ran.screen
+    );
+    assert!(
+        ran.screen
+            .contains("Sandbox: branch 'develop' has no upstream to update from"),
+        "{}",
+        ran.screen
     );
 }
 

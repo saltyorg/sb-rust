@@ -13,6 +13,12 @@ use tokio_util::sync::CancellationToken;
 use crate::{Repo, RepoError};
 use sb_host::child_failure as failure;
 
+/// `git rev-parse --verify --quiet`'s exits for an upstream that names
+/// nothing: 1 when `@{u}` resolves to no commit (its remote branch gone),
+/// 128 when it can't be resolved at all (no upstream configured, no such
+/// branch).
+const UNRESOLVED: &[i32] = &[1, 128];
+
 /// The refspec that fetches every branch.
 const ALL_BRANCHES: &str = "+refs/heads/*:refs/remotes/origin/*";
 
@@ -414,10 +420,18 @@ impl Repo {
         current: bool,
         token: &CancellationToken,
     ) -> Result<(), RepoError> {
-        if !current && !self.resolves(format!("refs/heads/{branch}"), token).await? {
+        // A ref that isn't there exits 1; 128 is git failing, an error.
+        if !current
+            && !self
+                .resolves(format!("refs/heads/{branch}"), &[1], token)
+                .await?
+        {
             return Ok(());
         }
-        if self.resolves(format!("{branch}@{{u}}"), token).await? {
+        if self
+            .resolves(format!("{branch}@{{u}}"), UNRESOLVED, token)
+            .await?
+        {
             Ok(())
         } else {
             Err(RepoError::NoUpstream {
@@ -428,9 +442,14 @@ impl Repo {
     }
 
     /// Whether `rev` names a commit: `git rev-parse --verify --quiet
-    /// <rev>`, which exits 1 when it names nothing and 128 when it can't
-    /// be resolved at all (no such branch, no upstream configured).
-    async fn resolves(&self, rev: String, token: &CancellationToken) -> Result<bool, RepoError> {
+    /// <rev>` exits 0, or one of the codes in `missing`, which mean it
+    /// doesn't; any other ending is git's error.
+    async fn resolves(
+        &self,
+        rev: String,
+        missing: &[i32],
+        token: &CancellationToken,
+    ) -> Result<bool, RepoError> {
         let cmd = self
             .git()
             .arg("rev-parse")
@@ -440,8 +459,9 @@ impl Repo {
         let ran = self.read(cmd, token).await?;
         match ran.outcome.ending {
             Ending::Exited(0) => Ok(true),
-            Ending::Exited(1 | 128) => Ok(false),
-            // Interrupted, timed out or killed: exec's own text.
+            Ending::Exited(code) if missing.contains(&code) => Ok(false),
+            // Interrupted, timed out, killed or another exit: exec's own
+            // text.
             _ => Err(RepoError::Git(
                 ran.check().err().map_or_default(|f| failure(&f)),
             )),
@@ -464,32 +484,18 @@ impl Repo {
         self.change(step, checkout).await?;
         self.change(step, clean()).await?;
         // Checked before anything changed too ([`Repo::require_upstream`]);
-        // here again for the branch now checked out, in case the checkout
-        // changed between.
-        let upstream = self
-            .git()
-            .arg("rev-parse")
-            .arg("--verify")
-            .arg("--quiet")
-            .arg("@{u}");
-        let ran = self.read(upstream, &step.token()).await?;
-        match ran.outcome.ending {
-            Ending::Exited(0) => {}
-            // `--verify --quiet` exits 1 when `@{u}` names nothing, 128
-            // when it can't be resolved at all (no upstream configured).
-            Ending::Exited(1 | 128) => {
-                return Err(RepoError::NoUpstream {
-                    repo: self.name.clone(),
-                    branch: branch.to_string(),
-                }
-                .into());
+        // here again for the branch now checked out, which git's checkout
+        // guess may have left without one (root's `branch.autoSetupMerge`
+        // off; repo spec, Known limits).
+        if !self
+            .resolves("@{u}".to_owned(), UNRESOLVED, &step.token())
+            .await?
+        {
+            return Err(RepoError::NoUpstream {
+                repo: self.name.clone(),
+                branch: branch.to_string(),
             }
-            // Interrupted, timed out or killed: exec's own text.
-            _ => {
-                return Err(
-                    RepoError::Git(ran.check().err().map_or_default(|f| failure(&f))).into(),
-                );
-            }
+            .into());
         }
         let reset = self
             .git()

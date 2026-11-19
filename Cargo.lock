@@ -3803,6 +3803,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "walkdir",
 ]
 
 [[package]]
