@@ -137,7 +137,11 @@ build it on a temporary root (sb-go's `releaseLayout` injection).
    `Ansible virtual environment recreation requested`, `Python and Ansible
    virtual environment recreation requested`.
 6. **Healthy and `force` is `None`:** rewrite the wrappers, clean old
-   generations, fix ownership, return.
+   generations, fix ownership, return. These stay inside the "Checking
+   Ansible virtual environment for updates" step's parent, with no step
+   of their own (decision 23): nothing is usually left to remove, and the
+   ownership walk only looks (about half a second over a Saltbox tree in
+   the 2026-11-19 measurement).
 7. **Python.** Reuse the manifest's Python when `force` isn't `Python`, its
    version matches and it passes the Python check. Otherwise step
    **"Installing Python <v>"**: `uv python install --managed-python --no-bin
@@ -184,10 +188,25 @@ build it on a temporary root (sb-go's `releaseLayout` injection).
     `/srv/ansible/previous` symlink goes; only the active generation and
     its Python release are kept; a path that isn't a direct child of
     `releases/` is an error. Nothing outside `/srv/python/releases/` is
-    touched (Saltbox's `python` role installs there too).
+    touched (Saltbox's `python` role installs there too). After a
+    rebuild it is the step **"Cleaning up old environments"** (done
+    "Old environments cleaned up"; decision 23): its error, `clean old
+    Ansible generations: <cause>`, shows in that step.
 16. **Ownership** (venv.go:486-496): `host::ensure_owner(user, ["/srv/git"])`,
     then `host::ensure_owner_recursive(user, [checkout, "/srv/ansible",
-    "/srv/python"])`. Skipped when the user is `None` (gha).
+    "/srv/python"])`. Skipped when the user is `None` (gha). After a
+    rebuild, with a user, it is the step **"Setting ownership"** (done
+    "Ownership set"; decision 23), after the cleanup's: host's texts
+    (`set recursive ownership of <root>: <cause>`, and `set ownership:
+    <cause>` when the walk's thread fails) show in that step. The
+    recursive walk already skips an entry whose uid and gid are the
+    user's (host's `ensure_owner_recursive`), so only the new
+    generation, and after `reinstall-python` the new Python, are
+    changed. The checkout stays in the walk: no step that always runs
+    before the reinstall commands, `update-venv`, `setup` or `gha` sets
+    its ownership (only `update`'s and `branch`'s repository update
+    does), the fact sb installs into it stays root-owned until this walk
+    (Known limits), and it is about 1,000 of some 42,000 entries.
 17. **Failure or cancel** (venv.go:163-171, 259-264): the new generation
     directory is removed, and the new Python release unless an active
     manifest names it. The active link is never changed before step 13.
@@ -460,6 +479,9 @@ moved), so `ops` callers and the tests can read them.
     help column leaves 90. The command's own help (`sb reinstall-python
     --help`) keeps sb-go's sentence as its about, which fits there. The
     contract test's `REWORDED` list pairs the two lines.
+16. **After a rebuild, "Cleaning up old environments" and
+    "Setting ownership" are steps** (decision 23). sb-go ran both inside
+    its parent step, with nothing drawn.
 
 ### Scope
 
@@ -609,7 +631,10 @@ developer's host. Every path is a `Layout` field on a `tempfile` root.
   body, an x86_64 fact served to an arm64 `Env`, a non-github URL refused.
 - **Activation on a temp tree:** legacy adoption and its rollback when the
   rename fails (an injected rename), cleanup refusing a path outside
-  `releases/`, ownership through host's injected `lchown`.
+  `releases/`, ownership through host's injected `lchown`; after a
+  rebuild, the cleanup's and the ownership's steps in order after the
+  sync, no ownership step without a user, and a failed cleanup failing
+  its own step (decision 23).
 - **Compatibility, both directions:** a tree laid out by sb-go's own test
   fixtures is read as healthy (stand-ins answering), and a tree sb-rust
   writes is read by sb-go's `inspectActive` in the live test.
@@ -739,7 +764,8 @@ developer's host. Every path is a `Layout` field on a `tempfile` root.
     259-264). Research D13; cli-core's cancellation token.
 19. **Each command's step sequence stays sb-go's**; the healing lives
     inside `reconcile_venv` and `install_fact`, not in new steps. Research
-    D14, with decision 3.
+    D14, with decision 3. *Amended 2026-11-19 by decision 23: the
+    cleanup and the ownership pass are steps after a rebuild.*
 20. **The staged fact's `--version` must equal the tag** before activation,
     as decided for the staged sb binary (decided.md D-Q5): side-effect free
     (sb-go e82c34d), code the digest vouches for, and it catches a binary
@@ -754,6 +780,21 @@ developer's host. Every path is a `Layout` field on a `tempfile` root.
     12). Reason: the hardening rules for destructive operations; a removal
     that can't be undone has no reason to stay that way. Decided
     from recorded rules, 2026-11-13.
+
+23. **The cleanup and the ownership pass are steps after a rebuild**
+    (steps 15 and 16), drawn, timed and logged as the build's steps are,
+    and not started after Ctrl-C (one already running ends its blocking
+    work first, as repo's "Setting repository ownership" does; the next
+    run's cleanup and walk finish the job). They ran inside the parent
+    with no step of their own, and the run paused after its last step
+    showed as done (the maintainer, 2026-11-19). Measured in a throwaway `ubuntu:22.04` container on a
+    Saltbox-like tree (a `--depth 1` Saltbox checkout of about 1,000
+    entries, a venv synced from Saltbox's requirements of about 36,000,
+    a uv Python release of about 5,000), each run's run log read: the
+    cleanup took 1.4 to 2.1 s, the ownership walk 1.1 to 1.5 s, in
+    `reinstall-venv` and `reinstall-python` alike; neither dominates, so
+    the walk is unchanged. The healthy path keeps them without steps
+    (step 6). Amends decision 19 for these two steps only.
 
 ## Known limits
 
@@ -772,6 +813,11 @@ developer's host. Every path is a `Layout` field on a `tempfile` root.
   runs as root anyway. A local writer can also keep a fact that reports
   a newer version (decision 2 keeps a newer one). Added with module
   build M19, from its security review.
+- **The staged check (step 11) has no step of its own:** after the
+  sync's step ends, its probes (`ansible --version` the longest) ran 1.8
+  to 2.6 s with nothing new drawn in the 2026-11-19 measurement (decision
+  23), and the active venv's inspection (step 4) runs the same probes
+  before "Checking Ansible virtual environment for updates" starts.
 - **No lock between concurrent sb runs** (sb-go has none).
 - **A broken published fact release** is installed and kept; the fix is a
   new release.

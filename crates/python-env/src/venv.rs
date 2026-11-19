@@ -336,8 +336,9 @@ pub(crate) fn status_label(healthy: bool, force: Force) -> &'static str {
 /// staging ([`build`]; a failed build on the normal path is retried
 /// once as a `Python` force, a fresh Python and no uv cache), its
 /// wrappers written, activated (a legacy directory adopted), the
-/// previous generation's stale wrappers removed,
-/// old generations cleaned and ownership given. A failure or Ctrl-C
+/// previous generation's stale wrappers removed, then the steps
+/// "Cleaning up old environments" (old generations cleaned) and,
+/// with a user, "Setting ownership". A failure or Ctrl-C
 /// before activation removes the build and leaves the active venv as it
 /// was (spec, step 17).
 ///
@@ -403,9 +404,38 @@ pub async fn reconcile_venv(
         &current.exported_commands,
     )
     .map_err(VenvError::StaleWrappers)?;
-    cleanup(env.layout).await?;
-    ensure_ownership(env.layout, user).await?;
+    finish_steps(step, env.layout, user).await?;
     Ok(outcome)
+}
+
+/// After a rebuild, the generation cleanup and the ownership pass as
+/// sub-steps of their own (spec, steps 15 and 16): both block for a
+/// while (a whole venv removed, every entry of the managed trees looked
+/// at), and as steps they are drawn, timed and logged as the build's
+/// are. Without a user (gha), no ownership step.
+async fn finish_steps(
+    step: &mut Step,
+    layout: &Layout,
+    user: Option<&str>,
+) -> Result<(), VenvError> {
+    let removing = Labels::new(
+        "Cleaning up old environments",
+        "Old environments cleaned up",
+    );
+    step.step(removing, async |_| {
+        cleanup(layout).await.map_err(anyhow::Error::from)
+    })
+    .await?;
+    if let Some(user) = user {
+        let owning = Labels::new("Setting ownership", "Ownership set");
+        step.step(owning, async |_| {
+            ensure_ownership(layout, Some(user))
+                .await
+                .map_err(anyhow::Error::from)
+        })
+        .await?;
+    }
+    Ok(())
 }
 
 /// Whether a failed build is retried (spec, "Self-healing on the normal

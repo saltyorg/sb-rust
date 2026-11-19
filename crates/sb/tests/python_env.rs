@@ -195,7 +195,7 @@ fn active_generation(tree: &Tree) -> std::path::PathBuf {
 }
 
 /// `sb reinstall-venv` rebuilds a healthy venv on its Python, with
-/// sb-go's labels.
+/// sb-go's labels, and shows the cleanup and the ownership pass as steps.
 #[test]
 fn reinstall_venv_rebuilds_the_venv() {
     if !root_gate::requested() {
@@ -204,9 +204,12 @@ fn reinstall_venv_rebuilds_the_venv() {
     let tree = tree("nobody");
     let active = tree.healthy();
     run(&tree, "reinstall-venv").success().stderr(
-        predicate::str::contains("Ansible virtual environment recreation requested").and(
-            predicate::str::contains("Ansible virtual environment reinstalled"),
-        ),
+        predicate::str::contains("Ansible virtual environment recreation requested")
+            .and(predicate::str::contains("Old environments cleaned up"))
+            .and(predicate::str::contains("Ownership set"))
+            .and(predicate::str::contains(
+                "Ansible virtual environment reinstalled",
+            )),
     );
     assert_ne!(active_generation(&tree), active.dir);
     assert!(!active.dir.exists());
@@ -214,7 +217,7 @@ fn reinstall_venv_rebuilds_the_venv() {
 }
 
 /// `sb reinstall-python` rebuilds the Python and the venv, in sb-go's two
-/// steps.
+/// steps, the cleanup and the ownership pass shown under them.
 #[test]
 fn reinstall_python_rebuilds_python_and_the_venv() {
     if !root_gate::requested() {
@@ -225,6 +228,8 @@ fn reinstall_python_rebuilds_python_and_the_venv() {
     run(&tree, "reinstall-python").success().stderr(
         predicate::str::contains("Python and Ansible virtual environment recreation requested")
             .and(predicate::str::contains("Installing Python 3.12.7"))
+            .and(predicate::str::contains("Old environments cleaned up"))
+            .and(predicate::str::contains("Ownership set"))
             .and(predicate::str::contains(
                 "Ansible virtual environment recreated",
             ))

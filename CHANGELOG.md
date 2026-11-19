@@ -72,6 +72,11 @@ you could trip over.
   time in one column: `sb update` and `sb self-update` no longer draw a
   tree per phase. Their questions open on the alternate screen, and
   each answer is noted in the tree.
+- **A rebuilt Ansible virtual environment shows its last two jobs:**
+  cleaning up old environments and setting ownership are steps of their
+  own in `sb reinstall-venv` and `sb reinstall-python`, and in `sb
+  update`, `sb update-venv` and `sb setup` when they build one, so the
+  run no longer sits silent after its last step.
 - **New layouts** for `sb list`, `sb docker ps`, `sb motd`'s Docker and
   queue lines, `sb bench` and `sb fact`.
 - **`sb motd`'s default colours** are the GitHub Dark Colorblind palette

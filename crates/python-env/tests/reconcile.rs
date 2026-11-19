@@ -89,6 +89,8 @@ async fn a_healthy_tree_is_kept_with_sb_gos_steps() {
     ] {
         assert!(ran.screen.contains(line), "{line}:\n{}", ran.screen);
     }
+    // The healthy path cleans without a step of its own (spec, step 6).
+    assert!(!ran.screen.contains("old environments"), "{}", ran.screen);
     // The active generation and its Python stay; the old ones and the
     // obsolete link go.
     assert!(active.venv.join("bin/python3").exists());
@@ -158,6 +160,8 @@ async fn the_tree_is_given_to_the_saltbox_user() {
     })
     .await;
     assert_eq!(ran.error, None, "{}", ran.screen);
+    // The healthy path gives ownership without a step (spec, step 6).
+    assert!(!ran.screen.contains("Setting ownership"), "{}", ran.screen);
     let uid = |path: &Path| std::fs::symlink_metadata(path).expect("stat").uid();
     // nobody's uid on Ubuntu (base-passwd).
     for path in [
@@ -547,6 +551,93 @@ async fn a_rebuilt_tree_is_given_to_the_saltbox_user() {
     // nobody's uid on Ubuntu (base-passwd).
     assert_eq!(uid, 65534);
 }
+
+/// After a rebuild, the old generation's removal and the ownership pass
+/// are sub-steps of their own, after the build's (spec, steps 15 and 16):
+/// the run shows what it is doing until its end. Ownership runs for a
+/// user given, and is skipped for an unknown one, as here.
+#[tokio::test]
+async fn a_rebuild_shows_the_removal_and_the_ownership_as_steps() {
+    let _spawns = SPAWNS.lock().await;
+    for force in [Force::Venv, Force::Python] {
+        let tree = Tree::new();
+        let _ = tree.healthy();
+        let env = tree.env();
+        let ran = in_step(async |step| {
+            reconcile_venv(step, &env, Some(UNKNOWN), force).await?;
+            Ok(())
+        })
+        .await;
+        assert_eq!(ran.error, None, "{force:?}:\n{}", ran.screen);
+        let at = |line: &str| {
+            ran.screen
+                .find(line)
+                .unwrap_or_else(|| panic!("{force:?}: {line}:\n{}", ran.screen))
+        };
+        let synced = at("Syncing hashed Saltbox requirements");
+        let removed = at("Old environments cleaned up");
+        let owned = at("Ownership set");
+        assert!(synced < removed && removed < owned, "{}", ran.screen);
+    }
+}
+
+/// A failed cleanup fails its own step with sb-go's words, and no
+/// ownership step follows.
+#[tokio::test]
+async fn a_failed_cleanup_fails_its_step() {
+    let _spawns = SPAWNS.lock().await;
+    let tree = Tree::new();
+    let active = tree.healthy();
+    // Not the obsolete link: the cleanup refuses it.
+    std::fs::create_dir(tree.layout.ansible.join("previous")).expect("previous");
+    let env = tree.env();
+    let ran = in_step(async |step| {
+        reconcile_venv(step, &env, Some(UNKNOWN), Force::Venv).await?;
+        Ok(())
+    })
+    .await;
+    assert!(ran.error.is_some(), "{}", ran.screen);
+    assert!(
+        ran.screen.contains("✗ Cleaning up old environments"),
+        "{}",
+        ran.screen
+    );
+    assert!(
+        ran.screen.contains("clean old Ansible generations: "),
+        "{}",
+        ran.screen
+    );
+    assert!(!ran.screen.contains("ownership"), "{}", ran.screen);
+    // The new generation is active all the same: the run failed, the
+    // venv works.
+    assert_ne!(active_generation(&tree), active.dir);
+}
+
+/// Without a user (gha) there is no ownership step.
+#[tokio::test]
+async fn without_a_user_a_rebuild_has_no_ownership_step() {
+    let _spawns = SPAWNS.lock().await;
+    let tree = Tree::new();
+    let _ = tree.healthy();
+    let env = tree.env();
+    let ran = in_step(async |step| {
+        reconcile_venv(step, &env, None, Force::Venv).await?;
+        Ok(())
+    })
+    .await;
+    assert_eq!(ran.error, None, "{}", ran.screen);
+    assert!(
+        ran.screen.contains("Old environments cleaned up"),
+        "{}",
+        ran.screen
+    );
+    for label in ["Setting ownership", "Ownership set"] {
+        assert!(!ran.screen.contains(label), "{label}:\n{}", ran.screen);
+    }
+}
+
+/// A user no host has: the ownership pass runs and skips.
+const UNKNOWN: &str = "sb-rust-user-that-does-not-exist-7fcd24d1";
 
 /// The active venv as found: a dangling link and an incomplete manifest
 /// are unhealthy; a file there, or a generation without its manifest,
