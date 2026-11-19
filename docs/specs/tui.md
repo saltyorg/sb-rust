@@ -2313,7 +2313,12 @@ its tail says `q quit`.
   and two fit, the groups go in two columns; otherwise one column,
   wrapped, scrolled with tui-scrollview when it is taller than the
   screen, with `↑↓ scroll` on its bottom border (`any key closes` when it
-  fits). The fact editor's fits in two columns at 80×24.
+  fits). The fact editor's fits in two columns at 80×24. *Amended
+  2026-11-19:* in one column a long description wraps at words to the
+  box (display widths, as the footer measures them), each continuation
+  under the description column, and the mouse's line under its text
+  after `Mouse: `; a description column narrower than 8 is left to the
+  paragraph's own wrap.
 - **Closing:** any key that doesn't scroll it closes it and does nothing
   else (drawn whole, the scroll keys close it too); a paste under it does
   nothing, so `q` closes it (less's help habit) without quitting. Ctrl-C
