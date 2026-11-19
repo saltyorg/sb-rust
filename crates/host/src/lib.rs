@@ -111,15 +111,18 @@ pub fn setup_check(id: &str, version: Option<&str>) -> Result<(), SetupUnsupport
     })
 }
 
-/// A failed child's text for an error (sb-host's captures, and sb-repo's):
-/// exec's message (the command and how it ended) and stderr's last line,
-/// on one line with controls escaped
-/// (std's `str::escape_debug`,
-/// <https://doc.rust-lang.org/std/primitive.str.html#method.escape_debug>).
+/// A failed child's text for an error (sb-host's captures, and sb-repo's
+/// and sb-python-env's): exec's message (the command and how it ended)
+/// and stderr's last line, on one line with controls escaped by
+/// cli-core's rule ([`sb_cli_core::exit::escaped`]): quotes, apostrophes
+/// and backslashes pass as they are, so a Python `SyntaxError: '(' was
+/// never closed` reads as written, and the error block's or the step
+/// tree's own escaping changes nothing more. Why not std's
+/// `str::escape_debug`: it escapes those three too (`\'(\'`).
 #[must_use]
 pub fn child_failure(failed: &sb_exec::Failed) -> String {
     match failed.last_lines().last() {
-        Some(line) => format!("{failed}: {}", line.escape_debug()),
+        Some(line) => format!("{failed}: {}", sb_cli_core::exit::escaped(line)),
         None => failed.to_string(),
     }
 }
@@ -267,6 +270,19 @@ mod tests {
         );
         let bare = sb_exec::Failed::new("x timed out", "timed out", Vec::new());
         assert_eq!(child_failure(&bare), "x timed out");
+    }
+
+    /// Quotes, apostrophes and backslashes pass as they are (cli-core's
+    /// rule): Python's `'(' was never closed` reads as Python wrote it,
+    /// not `\'(\'`, and a text escaped already doesn't change again.
+    #[test]
+    fn a_child_failure_keeps_quotes_and_backslashes() {
+        let line = r#"SyntaxError: '(' was never closed, "x" \n"#;
+        let failed = sb_exec::Failed::new("python exited with code 1", "exit 1", vec![line.into()]);
+        assert_eq!(
+            child_failure(&failed),
+            format!("python exited with code 1: {line}")
+        );
     }
 
     /// The runtime list is sb-go's `SupportedUbuntuRuntimeReleases`.

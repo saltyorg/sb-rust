@@ -389,7 +389,10 @@ their own order, as sb-go does. `branch` calls `reconcile_runtime`, as
   staged check), the partial generation and Python release are removed and
   the build runs once more as `Python` force (a fresh Python release, both
   uv calls with `--no-cache`). The info line before it reads `Retrying
-  with a fresh Python and no uv cache after: <cause>`. A cancel, a
+  with a fresh Python and no uv cache after: <cause>`, the cause
+  on one line with its controls escaped and its quotes, apostrophes and
+  backslashes as the child wrote them (host's `child_failure`, by
+  cli-core's escaping rule; amended 2026-11-19, it read `\'(\'`). A cancel, a
   toolchain or uv-minimum error, a uv install or apt failure, and a
   failure in activation or later steps are not retried. A second failure
   fails the step with the second cause; the run log keeps both.
