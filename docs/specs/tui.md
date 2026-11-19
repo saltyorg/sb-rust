@@ -1925,8 +1925,8 @@ and the hint strings):
    and no masked box. Masking stays where text leaves the screen: the run
    log, and output meant for sharing (Secrets, below).
 5. **Esc goes back one step:** it closes the open thing (the overlay, a
-   menu, a dialog, a text line), clears a search or filter, or stops a
-   running save. With nothing to close, it leaves the screen: the viewer
+   menu, a dialog, a text line), or clears a search or filter. With
+   nothing to close, it leaves the screen: the viewer
    to its picker, any other screen as `q` does.
 6. **`q` leaves the screen.** Its hint says what follows: `q quit` when
    sb ends, `q close` when the command goes on (`sb update` after the
@@ -1964,11 +1964,10 @@ and the hint strings):
 
 | Key | Meaning | Screens | Change |
 |---|---|---|---|
-| `s`, Ctrl+S | save | viewer: the log to a file; fact editor: the staged changes (the save question) | fact editor: was `v`, and `s` showed a secret; `s` and Ctrl+S are sb-go's. Ctrl+S is new in the viewer (k9s's save key) and no longer reveals in the fact editor's boxes |
+| `s`, Ctrl+S | save | fact editor: the staged changes (the save question) | was `v`, and `s` showed a secret; `s` and Ctrl+S are sb-go's; Ctrl+S no longer reveals in the boxes. The log viewer has no save since 2026-11-19 (the maintainer: save and print go), so `s` saves on one screen only |
 | `c` | copy the selected value (OSC 52) | fact editor | — |
 | `e` `a` `d` `u` | edit, add, delete or keep, undo | fact editor | — (decision 1) |
 | `m`, Menu | the row's menu | fact editor | — |
-| `p` | print the log and quit | viewer | — |
 | `f`, `F` | follow on, off | viewer | `F` is new: less's follow key, which `journalctl`'s pager users know |
 | `w` | wrap on, off | viewer | — |
 | `t` | time and origin on, off | viewer | — |
@@ -1981,9 +1980,9 @@ key, and `r` means nothing else now that no key reveals) and `Cancel
 as today. The fact editor's edit box reads `Enter keep · Alt+Enter new
 line · Esc cancel`, so "save" means the file only.
 
-**The whole-log keys** fit as they are: Esc stops a running save before
-it goes back (rule 5), and another key ends `n`'s wait for a match, as
-that section says.
+**The whole-log keys** fit as they are: another key ends `n`'s wait for
+a match, as that section says. The log viewer's save (`s`, Ctrl+S) and
+print (`p`) are gone (the maintainer, 2026-11-19).
 
 ### Hints
 
@@ -2005,8 +2004,7 @@ that section says.
   the tail already points at the overlay.
 - **Trouble and notices** keep their places: the picker's trouble text
   leads the footer and is never dropped (cut with `…` only when it alone
-  is wider than the room the tail leaves); the viewer's save notice is its
-  own row above the footer, as today. A text line (filter, search)
+  is wider than the room the tail leaves). A text line (filter, search)
   takes the footer's place while it's open, with its own hints, as
   today.
 - **The fact editor's buttons** are its footer: `Show/Hide` goes,
@@ -2021,14 +2019,14 @@ that section says.
 
 ```text
 Log viewer
-120 |Esc back · / search · s save · p print · f follow · w wrap · t time                                      ? keys · q quit|
- 80 |Esc back · / search · s save · p print · f follow · w wrap       ? keys · q quit|
- 50 |Esc back · / search · s save       ? keys · q quit|
+120 |Esc back · / search · f follow · w wrap · t time                                                         ? keys · q quit|
+ 80 |Esc back · / search · f follow · w wrap · t time                 ? keys · q quit|
+ 50 |Esc back · / search · f follow     ? keys · q quit|
 
 Log viewer, a search in effect
-120 |n/N match · Esc clear · s save · p print · f follow · w wrap · t time                                    ? keys · q quit|
- 80 |n/N match · Esc clear · s save · p print · f follow · w wrap     ? keys · q quit|
- 50 |n/N match · Esc clear · s save     ? keys · q quit|
+120 |n/N match · Esc clear · f follow · w wrap · t time                                                       ? keys · q quit|
+ 80 |n/N match · Esc clear · f follow · w wrap · t time               ? keys · q quit|
+ 50 |n/N match · Esc clear · f follow   ? keys · q quit|
 
 Log picker
 120 |Enter open · / filter · Tab kind · ↑↓ move                                                               ? keys · q quit|
@@ -2107,20 +2105,20 @@ app  service  following
  │  PgUp PgDn     a page                   w          wrap on, off            │
  │  b Space       a page up, down          t          time, origin on, off    │
  │  Home End g G  log's start; end follows                                    │
- │  ← →  h l      sideways (wrap off)     Save                                │
- │                                         s Ctrl+S   save to a file          │
- │ Find                                    p          print it and quit       │
- │  /             search the whole log                                        │
- │  n N           next, previous match    Leave                               │
- │  Esc           clear the search         Esc        back to the list        │
- │                                         q          quit                    │
- │                                         Ctrl+C     stop (exit 130)         │
+ │  ← →  h l      sideways (wrap off)     Leave                               │
+ │                                         Esc        back to the list        │
+ │ Find                                    q          quit                    │
+ │  /             search the whole log     Ctrl+C     stop (exit 130)         │
+ │  n N           next, previous match                                        │
+ │  Esc           clear the search                                            │
  │                                                                            │
  │ Mouse: the wheel scrolls; Shift+wheel goes sideways                        │
  ╰ any key closes ────────────────────────────────────────────────────────────╯
 
 
-Esc back · / search · s save · p print · f follow · w wrap       ? keys · q quit
+
+
+Esc back · / search · f follow · w wrap · t time                 ? keys · q quit
 ```
 
 The same at 50×19, one column, scrolled (the scrollbar on the right
@@ -2146,7 +2144,7 @@ app  service  following
  │  w             wrap on, off                  │
  │  t             time, origin on, off          │
  ╰ ↑↓ scroll · other keys close ────────────────╯
-Esc back · / search · s save       ? keys · q quit
+Esc back · / search · f follow     ? keys · q quit
 ```
 
 The other overlays, by group: the log picker (Move; Find: `/`, Esc;
@@ -2165,7 +2163,7 @@ review (Move; Tab parts; Enter, Esc; Leave).
   the ends, `F` follow, `/` and `n` `N` search, `s` saves piped input to
   a file, `-S` chops long lines
   ([less(1)](https://man7.org/linux/man-pages/man1/less.1.html),
-  COMMANDS). sb takes its Space, `b`, `g`, `G`, `F`, `/`, `n`, `N`, `s`.
+  COMMANDS). sb takes its Space, `b`, `g`, `G`, `F`, `/`, `n`, `N`.
   Not `?`, which in less searches backwards: every other tool below
   uses `?` for help, and sb's search has `N`.
 - **k9s:** `?` shows the keys, Esc backs out of a view or filter, `/`
@@ -2174,9 +2172,9 @@ review (Move; Tab parts; Enter, Esc; Leave).
   wrap, `t` timestamps, Ctrl+S save, `c` copy, `s` autoscroll, `q` and
   Esc back
   ([internal/view/log.go](https://github.com/derailed/k9s/blob/master/internal/view/log.go),
-  `bindKeys`). sb matches `w`, `t`, Ctrl+S, `c`, `?`, Esc. Its `s` is
-  sb's `f`; sb keeps `s` for save (less's and sb-go's) and `q` for quit
-  (sb-go's).
+  `bindKeys`). sb matches `w`, `t`, `c`, `?`, Esc. Its `s` is sb's
+  `f`; sb keeps `s` for the fact editor's save (sb-go's) and `q` for
+  quit (sb-go's); the log viewer has no save (2026-11-19).
 - **lazygit:** `?` opens the keybindings menu, Esc cancels, `q` and
   Ctrl-C quit, `/` searches the view, `<` `>` or Home End go to the ends,
   PgUp PgDn scroll
@@ -2246,7 +2244,7 @@ which only the maintainer's checks have used; sb-go is what users know.
 | Screen | From sb-go | From today's main |
 |---|---|---|
 | Log picker | `?`, `/` filter (new in sb already), Shift-Tab; `u` `d` `f` `h` `l` no longer page | `g` `G` `b` Space, Shift-Tab, `?` added |
-| Log viewer | `u` `d` no longer page (PgUp PgDn, `b` Space do); keys in a footer | `b` Space `h` `l`, Ctrl+S, `F`, `?` added; `u` `d` gone; keys in a footer, one log row fewer |
+| Log viewer | `u` `d` no longer page (PgUp PgDn, `b` Space do); keys in a footer | `b` Space `h` `l`, `F`, `?` added; `u` `d` gone; save (`s`) and print (`p`) gone (2026-11-19); keys in a footer, one log row fewer |
 | Edit picker | `/` and `?` as before; `v` no longer leaves | page keys, Home End `g` `G`, `/`, `?` added |
 | Fact editor | `s` and Ctrl+S save again; every value shows, as in sb-go; Esc clears a search before it quits, as sb-go; `x`, `c` collapse, `[` `]` gone | `h` `l` fold, `g` `G` `b` Space, `?` added; **save is `s`, not `v`; nothing is masked, and Show/Hide and the boxes' Ctrl+S are gone**; Esc clears a search first; dialogs cancel with Esc, not `c` |
 | Announcements | ← → `h` `l` move again; ↑↓ choose the entry | ← → `h` `l` added; `?` |
@@ -2294,7 +2292,7 @@ nothing.
 2. No screen masks a value, and no key reveals one; the run log holds
    none.
 3. At 50 columns every screen shows `? keys` and how to leave; at 80
-   the viewer shows `s save` and `p print`.
+   the viewer shows its search, follow, wrap and time keys.
 4. `?` (F1 from a text box) lists every key of the screen, and only
    those.
 5. sb-go's keys work where this section says they're kept.
