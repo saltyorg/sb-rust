@@ -3693,6 +3693,7 @@ dependencies = [
  "icu_properties",
  "insta",
  "jiff",
+ "memchr",
  "procfs",
  "quick-xml",
  "regex",

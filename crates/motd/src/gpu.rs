@@ -27,6 +27,7 @@
 //!   `next_event`; <https://docs.rs/crate/pciid-parser/0.8.1/source/src/lib.rs>,
 //!   `mod parser`).
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
@@ -90,8 +91,8 @@ struct Adapter {
 /// many lines it had that pciutils' format doesn't allow.
 #[derive(Debug, Default, PartialEq, Eq)]
 struct Names<'a> {
-    vendors: HashMap<u16, &'a str>,
-    devices: HashMap<(u16, u16), &'a str>,
+    vendors: HashMap<u16, Cow<'a, str>>,
+    devices: HashMap<(u16, u16), Cow<'a, str>>,
     malformed: usize,
 }
 
@@ -233,9 +234,10 @@ fn address_key(address: &str) -> Option<(u32, u8, u8, u8)> {
     ))
 }
 
-/// pci.ids whole, invalid UTF-8 replaced; an error when it can't be
+/// pci.ids whole, as bytes (the parser reads it as UTF-8 with invalid
+/// bytes replaced, only where it keeps a name); an error when it can't be
 /// read or is over `cap` bytes.
-fn read_ids(path: &Path, cap: u64) -> std::io::Result<String> {
+fn read_ids(path: &Path, cap: u64) -> std::io::Result<Vec<u8>> {
     let mut bytes = Vec::new();
     std::fs::File::open(path)?
         .take(cap.saturating_add(1))
@@ -243,9 +245,7 @@ fn read_ids(path: &Path, cap: u64) -> std::io::Result<String> {
     if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > cap {
         return Err(std::io::Error::other(format!("over {cap} bytes")));
     }
-    // Valid UTF-8, as Ubuntu's file is, is kept without a copy.
-    Ok(String::from_utf8(bytes)
-        .unwrap_or_else(|err| String::from_utf8_lossy(err.as_bytes()).into_owned()))
+    Ok(bytes)
 }
 
 /// Where the parse stands: before any vendor, under a vendor line that
@@ -262,57 +262,118 @@ enum Under {
 /// blank lines and subsystem lines (two tabs) are skipped, and so is
 /// everything from the class section (the first `C ` line) on. Any other
 /// line is malformed: skipped and counted. A repeated ID keeps its first
-/// name.
-fn parse<'a>(text: &'a str, wanted: &[u16]) -> Names<'a> {
+/// name. The text is read as UTF-8 with invalid bytes replaced (Unicode
+/// whitespace trimmed, as `str::trim`), the same as reading the whole
+/// file so: every byte the format's structure is made of is ASCII, which
+/// a replacement never touches.
+///
+/// Why bytes, line ends found with memchr
+/// (<https://docs.rs/memchr/2.8.3/memchr/struct.Memchr.html>): of the
+/// file's 35,000 lines only the wanted vendors' few hundred are kept, so
+/// the rest are only told apart by their first bytes (well-formed or
+/// not), without checking the 1.3 MB as UTF-8 or trimming each line.
+fn parse<'a>(text: &'a [u8], wanted: &[u16]) -> Names<'a> {
     let mut names = Names::default();
     let mut under = Under::Start;
-    for line in text.split('\n') {
-        let line = line.strip_suffix('\r').unwrap_or(line);
-        if line.starts_with("C ") {
+    let mut start = 0;
+    let ends = memchr::memchr_iter(b'\n', text).chain(std::iter::once(text.len()));
+    for end in ends {
+        let line = &text[start..end];
+        start = end + 1;
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+        if line.starts_with(b"C ") {
             break;
         }
-        let rest = line.trim_start_matches('\t');
-        if rest.trim().is_empty() || rest.starts_with('#') {
+        let tabs = line.iter().take_while(|&&b| b == b'\t').count();
+        let rest = &line[tabs..];
+        if tabs > 1 || rest.first() == Some(&b'#') {
             continue;
         }
-        match (line.len() - rest.len(), id_and_name(rest)) {
-            (0, Some((vendor, name))) => {
+        let parsed = match id_line(rest) {
+            Line::Blank => continue,
+            Line::Malformed => None,
+            Line::Id(id, tail) => Some((id, tail)),
+        };
+        match (tabs, parsed) {
+            (0, Some((vendor, tail))) => {
                 under = Under::Vendor(vendor);
                 if wanted.contains(&vendor) {
-                    names.vendors.entry(vendor).or_insert(name);
+                    names.vendors.entry(vendor).or_insert_with(|| trimmed(tail));
                 }
             }
             (0, None) => {
                 under = Under::Malformed;
                 names.malformed += 1;
             }
-            (1, parsed) => match (under, parsed) {
-                (Under::Vendor(vendor), Some((device, name))) => {
+            (_, parsed) => match (under, parsed) {
+                (Under::Vendor(vendor), Some((device, tail))) => {
                     if wanted.contains(&vendor) {
-                        names.devices.entry((vendor, device)).or_insert(name);
+                        names
+                            .devices
+                            .entry((vendor, device))
+                            .or_insert_with(|| trimmed(tail));
                     }
                 }
                 (Under::Malformed, _) => {}
                 _ => names.malformed += 1,
             },
-            _ => {}
         }
     }
     names
 }
 
-/// `hhhh` then a space or tab, then a name that isn't empty (pciutils'
-/// `id_hex` and `id_white_p`).
-fn id_and_name(rest: &str) -> Option<(u16, &str)> {
-    let (id, tail) = rest.split_at_checked(4)?;
-    if !id.bytes().all(|b| b.is_ascii_hexdigit()) || !tail.starts_with([' ', '\t']) {
-        return None;
+/// A vendor or device line past its tab: an ID and the rest of the line,
+/// blank (only whitespace), or anything else.
+enum Line<'a> {
+    Id(u16, &'a [u8]),
+    Blank,
+    Malformed,
+}
+
+/// `rest` as pciutils reads an ID line (`id_hex` and `id_white_p`), from
+/// its bytes: four hex digits, a space or tab, then a name that isn't
+/// only whitespace. The name's
+/// first byte decides in nearly every line; a line whose first byte past
+/// the spaces isn't ASCII is read as text to decide.
+fn id_line(rest: &[u8]) -> Line<'_> {
+    let id = rest
+        .get(..5)
+        .filter(|head| {
+            head[..4].iter().all(u8::is_ascii_hexdigit) && matches!(head[4], b' ' | b'\t')
+        })
+        .and_then(|head| std::str::from_utf8(&head[..4]).ok())
+        .and_then(|digits| u16::from_str_radix(digits, 16).ok());
+    if let Some(id) = id {
+        let tail = &rest[4..];
+        let named = match tail.iter().find(|&&b| !is_space(b)) {
+            Some(b) if b.is_ascii() => true,
+            Some(_) => !trimmed(tail).is_empty(),
+            None => false,
+        };
+        if named {
+            return Line::Id(id, tail);
+        }
     }
-    let name = tail.trim();
-    if name.is_empty() {
-        return None;
+    if rest.iter().all(|&b| is_space(b)) || (!rest.is_ascii() && trimmed(rest).is_empty()) {
+        Line::Blank
+    } else {
+        Line::Malformed
     }
-    Some((u16::from_str_radix(id, 16).ok()?, name))
+}
+
+/// The ASCII characters `char::is_whitespace` takes (vertical tab too,
+/// which `u8::is_ascii_whitespace` doesn't).
+fn is_space(b: u8) -> bool {
+    matches!(b, b'\t' | b'\n' | 0x0b | 0x0c | b'\r' | b' ')
+}
+
+/// `bytes` as UTF-8 with invalid bytes replaced, trimmed as `str::trim`
+/// trims; borrowed when valid, as Ubuntu's file is.
+fn trimmed(bytes: &[u8]) -> Cow<'_, str> {
+    match String::from_utf8_lossy(bytes) {
+        Cow::Borrowed(text) => Cow::Borrowed(text.trim()),
+        Cow::Owned(text) => Cow::Owned(text.trim().to_string()),
+    }
 }
 
 /// lspci's name for `adapter`: `<vendor> <device>`, or pciutils' forms for
@@ -562,14 +623,62 @@ mod tests {
 
     #[test]
     fn crlf_lines_and_tabs_after_an_id_are_read() {
-        let names = parse("0001\tA\r\n\t0002  B \r\n", &[1]);
+        let names = parse(b"0001\tA\r\n\t0002  B \r\n", &[1]);
         assert_eq!(names.vendors[&1], "A");
         assert_eq!(names.devices[&(1, 2)], "B");
         assert_eq!(names.malformed, 0);
     }
 
+    /// `id_line`'s answer for `rest`, as text: the ID and trimmed name,
+    /// `blank` or `malformed`.
+    fn read(rest: &[u8]) -> String {
+        match id_line(rest) {
+            Line::Id(id, tail) => format!("{id:04x} {}", trimmed(tail)),
+            Line::Blank => "blank".into(),
+            Line::Malformed => "malformed".into(),
+        }
+    }
+
     #[test]
     fn id_lines_need_four_hex_digits_whitespace_and_a_name() {
+        assert_eq!(read(b"10de  NVIDIA"), "10de NVIDIA");
+        assert_eq!(read(b"10DE NVIDIA"), "10de NVIDIA");
+        assert_eq!(read(b"10de\tNVIDIA \t"), "10de NVIDIA");
+        assert_eq!(read(b"10de"), "malformed");
+        assert_eq!(read(b"10de  "), "malformed");
+        assert_eq!(read(b"10de \x0b"), "malformed");
+        assert_eq!(read(b"10deX name"), "malformed");
+        assert_eq!(read(b"+1de name"), "malformed");
+        assert_eq!(read("10dé name".as_bytes()), "malformed");
+        assert_eq!(read(b"10d"), "malformed");
+        // Unicode whitespace is trimmed as `str::trim` trims it; an
+        // invalid byte is a name.
+        assert_eq!(read("10de \u{a0}".as_bytes()), "malformed");
+        assert_eq!(read("10de \u{3000}Name\u{a0}".as_bytes()), "10de Name");
+        assert_eq!(read(b"10de \xff"), "10de \u{fffd}");
+        assert_eq!(read(b""), "blank");
+        assert_eq!(read(b" \t\x0b"), "blank");
+        assert_eq!(read("\u{a0} ".as_bytes()), "blank");
+        assert_eq!(read(b"\xff"), "malformed");
+    }
+
+    /// pciutils' reading of an ID line, on text: the parser before it
+    /// read bytes, kept as the reference the byte parser must match.
+    fn id_and_name(rest: &str) -> Option<(u16, &str)> {
+        let (id, tail) = rest.split_at_checked(4)?;
+        if !id.bytes().all(|b| b.is_ascii_hexdigit()) || !tail.starts_with([' ', '\t']) {
+            return None;
+        }
+        let name = tail.trim();
+        if name.is_empty() {
+            return None;
+        }
+        Some((u16::from_str_radix(id, 16).ok()?, name))
+    }
+
+    /// The reference's ID lines: four hex digits, whitespace and a name.
+    #[test]
+    fn the_references_id_lines_need_four_hex_digits_whitespace_and_a_name() {
         assert_eq!(id_and_name("10de  NVIDIA"), Some((0x10de, "NVIDIA")));
         assert_eq!(id_and_name("10DE NVIDIA"), Some((0x10de, "NVIDIA")));
         assert_eq!(id_and_name("10de"), None);
@@ -578,6 +687,99 @@ mod tests {
         assert_eq!(id_and_name("+1de name"), None);
         assert_eq!(id_and_name("10dé name"), None);
         assert_eq!(id_and_name("10d"), None);
+    }
+
+    /// The reference parse, on the whole file read as UTF-8 with invalid
+    /// bytes replaced (the parser before it read bytes).
+    fn reference(bytes: &[u8], wanted: &[u16]) -> Names<'static> {
+        let text = String::from_utf8_lossy(bytes);
+        let mut names = Names::default();
+        let mut under = Under::Start;
+        for line in text.split('\n') {
+            let line = line.strip_suffix('\r').unwrap_or(line);
+            if line.starts_with("C ") {
+                break;
+            }
+            let rest = line.trim_start_matches('\t');
+            if rest.trim().is_empty() || rest.starts_with('#') {
+                continue;
+            }
+            let owned = |name: &str| Cow::Owned(name.to_string());
+            match (line.len() - rest.len(), id_and_name(rest)) {
+                (0, Some((vendor, name))) => {
+                    under = Under::Vendor(vendor);
+                    if wanted.contains(&vendor) {
+                        names.vendors.entry(vendor).or_insert_with(|| owned(name));
+                    }
+                }
+                (0, None) => {
+                    under = Under::Malformed;
+                    names.malformed += 1;
+                }
+                (1, parsed) => match (under, parsed) {
+                    (Under::Vendor(vendor), Some((device, name))) => {
+                        if wanted.contains(&vendor) {
+                            names
+                                .devices
+                                .entry((vendor, device))
+                                .or_insert_with(|| owned(name));
+                        }
+                    }
+                    (Under::Malformed, _) => {}
+                    _ => names.malformed += 1,
+                },
+                _ => {}
+            }
+        }
+        names
+    }
+
+    /// The byte parser gives the reference's names and count on the
+    /// fixture, on lines made of the format's edge cases in every order
+    /// of a few, and on the host's own pci.ids where it has one (read
+    /// only).
+    #[test]
+    fn the_byte_parser_matches_the_text_parser() {
+        let wanted = [0x10de, 0x8086, 0x1234, 0xeeee, 0xabcd, 0x1002, 0x0001];
+        let fixture = read_ids(&fixture(), IDS_CAP).unwrap();
+        assert_eq!(parse(&fixture, &wanted), reference(&fixture, &wanted));
+        let pieces: [&[u8]; 16] = [
+            b"0001  A\n",
+            b"\t0002  B\n",
+            b"\t\t0003 0004  C\n",
+            b"0001\n",
+            b"\tzz02 x\n",
+            b"# c\n",
+            b" \n",
+            "\u{a0}\n".as_bytes(),
+            b"\t\xff\n",
+            b"\t0002  \xe2\x82\n",
+            b"0001 \xff \r\n",
+            "\t0005 \u{3000}\n".as_bytes(),
+            b"\r\n",
+            b"\t#0002 x\n",
+            b"C 03  Display\n",
+            b"\t0006",
+        ];
+        for a in pieces {
+            for b in pieces {
+                for c in pieces {
+                    let text = [a, b, c, b"\t0007  D\n"].concat();
+                    assert_eq!(
+                        parse(&text, &wanted),
+                        reference(&text, &wanted),
+                        "{:?}",
+                        String::from_utf8_lossy(&text)
+                    );
+                }
+            }
+        }
+        if let Ok(host) = read_ids(Path::new("/usr/share/misc/pci.ids"), IDS_CAP) {
+            for wanted in [&[0x10de, 0x8086, 0x1002][..], &[0x1a03], &[0x15ad, 0x1234]] {
+                let names = parse(&host, wanted);
+                assert_eq!(names, reference(&host, wanted));
+            }
+        }
     }
 
     /// A name from the file is made safe to draw.
