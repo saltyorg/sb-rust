@@ -21,7 +21,7 @@ use sb_host::apt::Apt;
 use sb_host::disk::Disk;
 use sb_python_env::{Env, reconcile_runtime};
 use sb_release::{Outcome, Releases, SelfUpdate};
-use sb_repo::{Answer, Choice, Repo, branch_choice};
+use sb_repo::{Answer, Choice, Discards, Repo, branch_choice};
 use sb_term_ui::{Labels, PromptError, Runner, Step};
 
 use crate::announcements::{self, Announcement, Pending};
@@ -259,9 +259,11 @@ pub async fn run(
     let answer = update.args.branch_flags.answer();
     let (skip_git, discard_local) = (update.args.skip_git, update.args.discard.discard_local);
     // Under `--skip-git` nothing is asked (decision 41).
-    if !skip_git {
-        up_front(update, terminal.err(), [&saltbox, &sandbox], shutdown).await?;
-    }
+    let [saltbox_read, sandbox_read] = if skip_git {
+        [None, None]
+    } else {
+        up_front(update.args, terminal.err(), [&saltbox, &sandbox], shutdown).await?
+    };
     update.disk.check_disk_space(update.disk_paths)?;
     // One tree for the run (decision 39), started by its first step:
     // self-update's, or apt's, so a run refused at a branch question with
@@ -297,6 +299,7 @@ pub async fn run(
     };
     let saltbox = plan(
         saltbox,
+        saltbox_read,
         answers,
         |shown: &str, question: &str, flag: &'static str| asked(&mut tree, shown, question, flag),
         shutdown,
@@ -304,6 +307,7 @@ pub async fn run(
     .await?;
     let sandbox = plan(
         sandbox,
+        sandbox_read,
         answers,
         |shown: &str, question: &str, flag: &'static str| asked(&mut tree, shown, question, flag),
         shutdown,
@@ -342,18 +346,19 @@ pub async fn run(
 /// checkouts that could be read: each off master, and, without a
 /// terminal (`no_terminal`, why not) and `--discard-local`, each whose
 /// branch is decided and whose update would discard local changes
-/// (decision 40).
+/// (decision 40). What it read for each checkout, in `checkouts`' order,
+/// so its question in [`plan`] doesn't read it again.
 ///
 /// # Errors
 ///
 /// [`missing_answers`]' refusal.
 async fn up_front(
-    update: &Update<'_>,
+    args: &UpdateArgs,
     no_terminal: Option<String>,
     checkouts: [&anyhow::Result<Opened>; 2],
     shutdown: &Shutdown,
-) -> anyhow::Result<()> {
-    let answer = update.args.branch_flags.answer();
+) -> anyhow::Result<[Option<UpFront>; 2]> {
+    let answer = args.branch_flags.answer();
     let opened: Vec<&Opened> = checkouts
         .into_iter()
         .filter_map(|opened| opened.as_ref().ok())
@@ -364,36 +369,44 @@ async fn up_front(
         .filter(|opened| branch_choice(&opened.current, DEFAULT_BRANCH, None) == Choice::Ask)
         .map(|opened| (opened.repo.name(), opened.current.as_str()))
         .collect();
-    let dirty = if no_terminal.is_some() && !update.args.discard.discard_local {
-        let decided: Vec<(&Repo, &str, String)> = opened
-            .iter()
-            .filter_map(
-                |opened| match branch_choice(&opened.current, DEFAULT_BRANCH, answer) {
-                    Choice::Use(branch) | Choice::Keep(branch) => {
-                        Some((&opened.repo, opened.current.as_str(), branch))
-                    }
-                    Choice::Ask => None,
-                },
-            )
-            .collect();
-        discard::dirty(
-            decided
-                .iter()
-                .map(|(repo, current, branch)| (*repo, *current, branch.as_str())),
-            shutdown,
-        )
-        .await
-    } else {
-        Vec::new()
-    };
+    let mut read = [None, None];
+    if no_terminal.is_some() && !args.discard.discard_local {
+        for (slot, opened) in read.iter_mut().zip(checkouts) {
+            let Ok(opened) = opened else { continue };
+            let branch = match branch_choice(&opened.current, DEFAULT_BRANCH, answer) {
+                Choice::Use(branch) | Choice::Keep(branch) => branch,
+                Choice::Ask => continue,
+            };
+            *slot = discard::read(&opened.repo, &opened.current, &branch, shutdown)
+                .await
+                .map(|discards| UpFront { branch, discards });
+        }
+    }
+    // A read is there only for a checkout that opened: its name.
+    let dirty: Vec<(&str, String)> = read
+        .iter()
+        .zip(checkouts)
+        .filter_map(|(read, opened)| Some((read.as_ref()?, opened.as_ref().ok()?)))
+        .filter(|(read, _)| !read.discards.is_empty())
+        .map(|(read, opened)| (opened.repo.name(), read.discards.summary()))
+        .collect();
     missing_answers(
         no_terminal.as_deref(),
         &off_master,
         answer,
-        update.args.migrations,
+        args.migrations,
         &dirty,
     )
-    .map_err(anyhow::Error::msg)
+    .map_err(anyhow::Error::msg)?;
+    Ok(read)
+}
+
+/// What the up-front check read of a checkout: what an update to
+/// `branch` would discard.
+#[derive(Debug, PartialEq, Eq)]
+struct UpFront {
+    branch: String,
+    discards: Discards,
 }
 
 /// update's steps once the questions are answered (`run`'s 5 to 7), each
@@ -784,7 +797,8 @@ enum Git {
 /// through `ask`; under `--skip-git` neither, the checkout left as it
 /// is. The outer error ends the run before any step (an unanswered
 /// question); the inner one is the checkout's that couldn't be opened or
-/// read, kept for its own step.
+/// read, kept for its own step. What the up-front check read (`read`)
+/// is used for the branch it was read for, not read again.
 ///
 /// # Errors
 ///
@@ -792,6 +806,7 @@ enum Git {
 /// <Repo>: ...`).
 async fn plan(
     opened: anyhow::Result<Opened>,
+    read: Option<UpFront>,
     answers: Answers,
     mut ask: impl FnMut(&str, &str, &'static str) -> Result<bool, PromptError>,
     shutdown: &Shutdown,
@@ -823,16 +838,27 @@ async fn plan(
     .await
     .with_context(context)?;
     let doing = format!("updating to '{branch}'");
-    let decided = discard::decide(
-        &opened.repo,
-        &opened.current,
-        &branch,
-        answers.discard_local,
-        purpose(&doing),
-        ask,
-        shutdown,
-    )
-    .await;
+    let decided = match read {
+        Some(read) if read.branch == branch => discard::decide_on(
+            &opened.repo,
+            &read.discards,
+            answers.discard_local,
+            purpose(&doing),
+            ask,
+        ),
+        _ => {
+            discard::decide(
+                &opened.repo,
+                &opened.current,
+                &branch,
+                answers.discard_local,
+                purpose(&doing),
+                ask,
+                shutdown,
+            )
+            .await
+        }
+    };
     let Decision { update, notice } = match decided {
         Ok(decision) => decision,
         // git couldn't read the checkout: its own step fails on it.
@@ -1045,6 +1071,139 @@ async fn secure_step(runner: &mut Runner, root: &Path) -> Result<(), Exit> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// git in `dir` on no configuration but its own (as the `testing`
+    /// module's git), its stdout trimmed.
+    fn git(dir: &Path, args: &[&str]) -> String {
+        let out = std::process::Command::new("git")
+            .current_dir(dir)
+            .args(["-c", "user.name=sb", "-c", "user.email=sb"])
+            .args(["-c", "init.defaultBranch=master"])
+            .args(["-c", "safe.directory=*"])
+            .args(args)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .env("LC_ALL", "C")
+            .output()
+            .expect("git");
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+        String::from_utf8_lossy(&out.stdout).trim().to_owned()
+    }
+
+    /// A clean clone of a one-commit `master`, tracking its remote.
+    fn clean_checkout(dir: &Path) -> PathBuf {
+        git(dir, &["init", "--quiet", "--bare", "remote.git"]);
+        let remote = format!("file://{}", dir.join("remote.git").display());
+        git(dir, &["clone", "--quiet", &remote, "checkout"]);
+        let checkout = dir.join("checkout");
+        std::fs::write(checkout.join("file"), "x").expect("file");
+        git(&checkout, &["add", "."]);
+        git(&checkout, &["commit", "--quiet", "-m", "one"]);
+        git(&checkout, &["push", "--quiet", "origin", "master"]);
+        checkout
+    }
+
+    /// `plan` for the clean checkout at `path` on master, with
+    /// `--discard-local` and what the up-front check read (`read`): the
+    /// notices planned.
+    async fn planned(path: &Path, read: Option<UpFront>) -> Vec<String> {
+        let opened = Opened {
+            repo: Repo::open("Sandbox", path).expect("open"),
+            current: "master".to_owned(),
+        };
+        let answers = Answers {
+            branch: None,
+            discard_local: true,
+            skip_git: false,
+        };
+        let never =
+            |_: &str, _: &str, _: &'static str| -> Result<bool, PromptError> { panic!("asked") };
+        let (_, planned) = plan(Ok(opened), read, answers, never, &Shutdown::new())
+            .await
+            .expect("planned")
+            .expect("read");
+        planned.notices
+    }
+
+    /// What the up-front check would have read for `branch`: one
+    /// untracked file, which the clean checkout doesn't have.
+    fn one_untracked(branch: &str) -> UpFront {
+        UpFront {
+            branch: branch.to_owned(),
+            discards: Discards {
+                branch: branch.to_owned(),
+                changes: sb_repo::Changes {
+                    tracked: Vec::new(),
+                    untracked: vec!["notes.txt".to_owned()],
+                },
+                ..Discards::default()
+            },
+        }
+    }
+
+    /// update's flags from `args`, as clap parses them.
+    fn flags(args: &[&str]) -> UpdateArgs {
+        use clap::Parser as _;
+        #[derive(clap::Parser)]
+        struct Cli {
+            #[command(flatten)]
+            args: UpdateArgs,
+        }
+        Cli::try_parse_from([&["sb", "--migrations", "skip"], args].concat())
+            .expect("parses")
+            .args
+    }
+
+    #[tokio::test]
+    async fn without_a_terminal_the_up_front_check_hands_on_what_it_read() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let checkout = clean_checkout(dir.path());
+        let opened = || -> anyhow::Result<Opened> {
+            Ok(Opened {
+                repo: Repo::open("Saltbox", &checkout)?,
+                current: "master".to_owned(),
+            })
+        };
+        let (saltbox, missing) = (opened(), Err(anyhow::anyhow!("not opened")));
+        let shutdown = Shutdown::new();
+        let clean = UpFront {
+            branch: "master".to_owned(),
+            discards: Discards {
+                branch: "master".to_owned(),
+                ..Discards::default()
+            },
+        };
+        let no_terminal = || Some("no terminal".to_owned());
+        let read = up_front(&flags(&[]), no_terminal(), [&saltbox, &missing], &shutdown)
+            .await
+            .expect("nothing to refuse");
+        assert_eq!(read, [Some(clean), None]);
+        // On a terminal, or with `--discard-local`, nothing is read.
+        for (args, terminal) in [(&[][..], None), (&["--discard-local"][..], no_terminal())] {
+            let read = up_front(&flags(args), terminal, [&saltbox, &missing], &shutdown)
+                .await
+                .expect("nothing to refuse");
+            assert_eq!(read, [None, None]);
+        }
+    }
+
+    #[tokio::test]
+    async fn the_up_front_read_is_used_for_its_branch_not_read_again() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let checkout = clean_checkout(dir.path());
+        // Used: its untracked file is the notice, though the checkout is
+        // clean.
+        assert_eq!(
+            planned(&checkout, Some(one_untracked("master"))).await,
+            ["Sandbox: Discarding 1 untracked file (--discard-local)"]
+        );
+        // Read for another branch, or not read: read again, clean.
+        assert_eq!(
+            planned(&checkout, Some(one_untracked("develop"))).await,
+            Vec::<String>::new()
+        );
+        assert_eq!(planned(&checkout, None).await, Vec::<String>::new());
+    }
 
     fn pending(repo: Checkout, tag: &str) -> Pending {
         Pending {

@@ -79,6 +79,22 @@ pub(crate) async fn decide(
     shutdown: &Shutdown,
 ) -> anyhow::Result<Decision> {
     let discards = repo.discards(current, branch, &shutdown.token()).await?;
+    decide_on(repo, &discards, discard_local, purpose, ask)
+}
+
+/// [`decide`] on `discards` already read for `repo` (update's up-front
+/// read, without a terminal).
+///
+/// # Errors
+///
+/// As [`decide`]'s, except git's reads, already done.
+pub(crate) fn decide_on(
+    repo: &Repo,
+    discards: &Discards,
+    discard_local: bool,
+    purpose: Purpose<'_>,
+    ask: impl FnOnce(&str, &str, &'static str) -> Result<bool, PromptError>,
+) -> anyhow::Result<Decision> {
     if discards.is_empty() {
         return Ok(Decision {
             update: true,
@@ -92,7 +108,7 @@ pub(crate) async fn decide(
         (true, "--discard-local", "--discard-local")
     } else {
         let question = format!("{name}: Discard these local changes and {}?", purpose.then);
-        match ask(&context(name, &discards, purpose), &question, purpose.flags) {
+        match ask(&context(name, discards, purpose), &question, purpose.flags) {
             Ok(answer) => (answer, "your answer", "answer"),
             Err(PromptError::NoTerminal { reason, .. }) => {
                 return Err(anyhow::Error::msg(refusal(
@@ -104,7 +120,7 @@ pub(crate) async fn decide(
             Err(err) => return Err(err.into()),
         }
     };
-    log(name, &discards, logged, update);
+    log(name, discards, logged, update);
     let notice = if update {
         format!("{name}: Discarding {summary} ({decided})")
     } else {
@@ -183,25 +199,22 @@ pub(crate) fn dirty_flags(dirty: &[(&str, String)], work: &str, flags: &str) -> 
     format!("{flags} ({})", why.join("; "))
 }
 
-/// Each checkout's summary, for those with anything to discard: the
-/// up-front check of a run without a terminal. A checkout git can't read
-/// is left out: its own step fails on it.
-pub(crate) async fn dirty<'a, 'b>(
-    checkouts: impl IntoIterator<Item = (&'a Repo, &'b str, &'b str)>,
+/// What updating `repo` from `current` to `branch` would discard, for
+/// the up-front check of a run without a terminal: `None` when git can't
+/// read the checkout, whose own step then fails on it.
+pub(crate) async fn read(
+    repo: &Repo,
+    current: &str,
+    branch: &str,
     shutdown: &Shutdown,
-) -> Vec<(&'a str, String)> {
-    let token = shutdown.token();
-    let mut dirty = Vec::new();
-    for (repo, current, branch) in checkouts {
-        match repo.discards(current, branch, &token).await {
-            Ok(discards) if !discards.is_empty() => {
-                dirty.push((repo.name(), discards.summary()));
-            }
-            Ok(_) => {}
-            Err(err) => log_unread(repo, &err),
+) -> Option<Discards> {
+    match repo.discards(current, branch, &shutdown.token()).await {
+        Ok(discards) => Some(discards),
+        Err(err) => {
+            log_unread(repo, &err);
+            None
         }
     }
-    dirty
 }
 
 fn log_unread(repo: &Repo, err: &RepoError) {
