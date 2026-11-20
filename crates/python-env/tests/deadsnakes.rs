@@ -461,6 +461,39 @@ async fn the_runtime_step_says_what_the_cleanup_removed() {
     }
 }
 
+/// The cleanup's moved sources refresh the lists once, and libpq-dev's
+/// install after it needs no second refresh (python-env difference 21).
+#[tokio::test]
+async fn the_cleanups_refresh_serves_the_libpq_install() {
+    let _spawns = SPAWNS.lock().await;
+    let tree = jammy_tree();
+    let _ = tree.healthy();
+    tree.libpq(false);
+    std::fs::write(tree.sources_d().join("ppa.list"), PPA).expect("write");
+    let env = env(&tree);
+    let ran = in_step(async |step| {
+        reconcile_runtime(step, &env, None).await?;
+        Ok(None)
+    })
+    .await;
+    assert_eq!(ran.error, None, "{}", ran.screen);
+    assert!(
+        ran.screen
+            .contains("Installing native Python build prerequisites"),
+        "{}",
+        ran.screen
+    );
+    let calls = apt_get(&tree);
+    let updates = calls.iter().filter(|call| *call == "update").count();
+    assert_eq!(updates, 1, "{calls:?}");
+    assert!(
+        calls
+            .last()
+            .is_some_and(|call| call.ends_with("install -y libpq-dev")),
+        "{calls:?}"
+    );
+}
+
 /// A cleanup failure stops the runtime's update under sb-go's text,
 /// before the venv step.
 #[tokio::test]

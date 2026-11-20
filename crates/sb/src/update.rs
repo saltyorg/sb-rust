@@ -46,7 +46,7 @@ pub fn update(args: &UpdateArgs, shutdown: &Shutdown, log: Option<&RunLog>) -> a
     };
     // sb-go's three (cmd/update.go): the root, the appdata path, /srv.
     let disk_paths = [PathBuf::from("/"), appdata, PathBuf::from("/srv")];
-    let (disk, apt) = (Disk::new(), Apt::new());
+    let disk = Disk::new();
     // The completion refresh's shells' directories (a test's root under
     // the `testing` feature) and sb's own executable (step 12, M87).
     let (completion_paths, executable) = (
@@ -57,6 +57,10 @@ pub fn update(args: &UpdateArgs, shutdown: &Shutdown, log: Option<&RunLog>) -> a
     // playbook, apt, git), as `sb install` registers it (exec decision 12).
     let _children = sb_exec::on_forced_exit(shutdown);
     super::python_env::with_env(log, args.verify_venv, |python, releases| {
+        // update's own apt and the runtime's share one record of
+        // refreshed lists: a first run's libpq-dev install doesn't
+        // refresh them again (performance round 3, ops finding 5).
+        let apt = Apt::new().sharing_lists_with(&python.apt);
         let self_update = target.as_deref().map(|target| SelfUpdate {
             repo: SB_REPO,
             build: &build,

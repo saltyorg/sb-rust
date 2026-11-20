@@ -240,6 +240,13 @@ re-checks with it after its cleanup and `update_lists` (a second
 the run's backup directory already existing).
 
 **`update_lists(step)`.** Runs `update` with retries.
+- *Added 2026-11-20 (performance round 3, ops finding 5):* each `Apt`
+  records whether its last `update_lists` succeeded, cleared when
+  `add_repositories` runs or `remove_sources_mentioning` moves a file;
+  `lists_refreshed()` reads it. Clones share the record, and
+  `sharing_lists_with(other)` joins another's, so `sb update`'s own
+  step and python-env's libpq-dev install see one record (python-env
+  difference 21). The record lives for the process only.
 - **Attempts:** up to 3, each with a 2 min timeout.
 - **Retry when** the attempt timed out, or its stderr (`Streamed`'s
   stderr tail, as sb-go matched `RunVerbose`'s stderr) names one of:

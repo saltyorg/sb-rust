@@ -215,6 +215,43 @@ async fn libpq_dev_is_installed_when_missing() {
     assert!(apt[1].ends_with("install -y libpq-dev"), "{apt:?}");
 }
 
+#[tokio::test]
+async fn libpq_dev_needs_no_second_refresh_of_the_lists_in_a_run() {
+    let _spawns = SPAWNS.lock().await;
+    let tree = Tree::new();
+    let _ = tree.healthy();
+    tree.libpq(false);
+    let env = tree.env();
+    // `sb update`'s own first step, on an apt sharing the record.
+    let before = in_step(async |step| env.apt.update_lists(step).await).await;
+    assert_eq!(before.error, None, "{}", before.screen);
+    let ran = in_step(async |step| {
+        reconcile_venv(step, &env, None, Force::None).await?;
+        Ok(())
+    })
+    .await;
+    assert_eq!(ran.error, None, "{}", ran.screen);
+    assert!(
+        ran.screen
+            .contains("Installing native Python build prerequisites"),
+        "{}",
+        ran.screen
+    );
+    assert!(
+        !ran.screen.contains("Updating apt package cache"),
+        "{}",
+        ran.screen
+    );
+    let apt: Vec<String> = tree
+        .calls_made()
+        .into_iter()
+        .filter(|call| call.contains("apt-get"))
+        .collect();
+    assert_eq!(apt.len(), 2, "{apt:?}");
+    assert!(apt[0].contains(" update"), "{apt:?}");
+    assert!(apt[1].ends_with("install -y libpq-dev"), "{apt:?}");
+}
+
 /// The generation the active link names.
 fn active_generation(tree: &Tree) -> std::path::PathBuf {
     let venv = std::fs::read_link(&tree.layout.active_venv).expect("link");

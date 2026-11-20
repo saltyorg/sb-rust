@@ -118,6 +118,11 @@ build it on a temporary root (sb-go's `releaseLayout` injection).
    prerequisites: <cause>`, `update apt cache for native Python build
    prerequisites: <cause>`, `install native Python build prerequisites:
    <cause>`.
+   *Amended 2026-11-20 (performance round 3, ops finding 5):* the first
+   step is left out when the lists were refreshed earlier in the process
+   with no source changed since (host's `Apt::lists_refreshed`): `sb
+   update`'s own first step, or the deadsnakes cleanup's refresh after it
+   moved sources (difference 21).
 4. **Inspect the active venv** (venv.go:281-317), in the step
    **"Inspecting the active Ansible virtual environment"** (done "Active
    Ansible virtual environment inspected"; decision 24), where its error,
@@ -603,6 +608,16 @@ moved), so `ops` callers and the tests can read them.
 20. **A linked `releases/` is refused** by the cleanup (step 15; from
     decision 25's security review): sb-go's `removeUnretainedDirectories`
     listed through the link and removed what it found there.
+21. **apt's package lists are refreshed once per run before libpq-dev's
+    install** (step 3, 2026-11-20): when libpq-dev is missing, its
+    install follows any successful refresh earlier in the process with
+    no source changed since: `sb update`'s own first step (about 1.5-1.8
+    s sooner on a first run), or, in any command that runs the deadsnakes
+    cleanup (`update`, `update-venv`, the branch commands), the cleanup's
+    refresh after it moved sources. sb-go ran `apt-get update` again
+    seconds later. Without such a refresh (`reinstall-venv`,
+    `reinstall-python`, or no sources moved) step 3 refreshes first, as
+    before.
 
 ### Scope
 

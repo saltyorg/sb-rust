@@ -5,6 +5,8 @@
 //! step.
 
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use anyhow::Context as _;
@@ -125,6 +127,10 @@ pub struct Apt {
     lsb_release: PathBuf,
     codename_timeout: Duration,
     sources: sources::Roots,
+    /// Whether the package lists were refreshed in this run with no
+    /// source changed since ([`Apt::lists_refreshed`]), shared by clones
+    /// and by [`Apt::sharing_lists_with`].
+    lists: Arc<AtomicBool>,
 }
 
 impl Default for Apt {
@@ -146,7 +152,27 @@ impl Apt {
             lsb_release: PathBuf::from("lsb_release"),
             codename_timeout: CODENAME_TIMEOUT,
             sources: sources::Roots::default(),
+            lists: Arc::default(),
         }
+    }
+
+    /// This `Apt` sharing `other`'s record of refreshed package lists
+    /// ([`Apt::lists_refreshed`]): two that run apt on the same host in
+    /// one run, as `sb update`'s own step and the Saltbox runtime's.
+    #[must_use]
+    pub fn sharing_lists_with(mut self, other: &Apt) -> Self {
+        self.lists = Arc::clone(&other.lists);
+        self
+    }
+
+    /// Whether [`Apt::update_lists`] succeeded in this run (on this
+    /// `Apt`, a clone of it, or one sharing its record) and no source
+    /// changed since through [`Apt::add_repositories`] or
+    /// [`Apt::remove_sources_mentioning`]: refreshing the lists again
+    /// would read the same sources.
+    #[must_use]
+    pub fn lists_refreshed(&self) -> bool {
+        self.lists.load(Ordering::Relaxed)
     }
 
     /// Run `program` as dpkg-query instead (tests).
@@ -251,7 +277,13 @@ impl Apt {
         backup: &'static str,
         run_id: &str,
     ) -> Result<Vec<PathBuf>, SourcesError> {
-        sources::remove_mentioning(&self.sources, needle, backup, run_id)
+        let moved = sources::remove_mentioning(&self.sources, needle, backup, run_id);
+        // A source moved (or may have, before an error): the lists no
+        // longer match the sources.
+        if !matches!(&moved, Ok(moved) if moved.is_empty()) {
+            self.lists.store(false, Ordering::Relaxed);
+        }
+        moved
     }
 
     /// The apt sources that still mention `needle`, read-only.
@@ -291,6 +323,8 @@ impl Apt {
         run_id: &str,
     ) -> Result<(), SourcesError> {
         let codename = self.codename(&step.token()).await?;
+        // The sources may change from here: the lists no longer match.
+        self.lists.store(false, Ordering::Relaxed);
         let mut report = sources::Report::default();
         let applied = sources::apply(&self.sources, &codename, run_id, &mut report);
         // Where the entries went, even when a later part failed.
@@ -389,9 +423,9 @@ impl Apt {
     /// interrupted` when the step is cancelled while waiting, under
     /// sb-go's `failed to update package lists`.
     pub async fn update_lists(&self, step: &mut Step) -> anyhow::Result<()> {
-        self.update_attempts(step)
-            .await
-            .context("failed to update package lists")
+        let updated = self.update_attempts(step).await;
+        self.lists.store(updated.is_ok(), Ordering::Relaxed);
+        updated.context("failed to update package lists")
     }
 
     /// Why not backon (<https://docs.rs/backon/1.6.0/backon/>): not in the
@@ -1034,8 +1068,11 @@ printf 'python3.12:\n  Installed: 3.12.1-1+jammy1\n *** 3.12.1-1+jammy1 100\n'"#
             &var_backups,
             rustix::process::geteuid().as_raw(),
         );
+        // Refreshed lists no longer match once the sources change.
+        apt.lists.store(true, Ordering::Relaxed);
         let ran = in_step(async |step, _| Ok(apt.add_repositories(step, "0a1b").await?)).await;
         assert_eq!(ran.error, None, "{}", ran.screen);
+        assert!(!apt.lists_refreshed());
         let line = format!(
             "Moved 1 entries from {} to {}",
             etc_apt.join("sources.list.d").display(),
@@ -1067,11 +1104,19 @@ printf 'python3.12:\n  Installed: 3.12.1-1+jammy1\n *** 3.12.1-1+jammy1 100\n'"#
             &var_backups,
             rustix::process::geteuid().as_raw(),
         );
+        // Refreshed lists still match while nothing moves, not after.
+        apt.lists.store(true, Ordering::Relaxed);
+        let none = apt
+            .remove_sources_mentioning("nowhere", "deadsnakes", "0a1a")
+            .expect("remove nothing");
+        assert_eq!(none, Vec::<PathBuf>::new());
+        assert!(apt.lists_refreshed());
         let moved = apt
             .remove_sources_mentioning("deadsnakes", "deadsnakes", "0a1b")
             .expect("remove");
         assert_eq!(moved, [var_backups.join("sb/deadsnakes/0a1b/ppa.list")]);
         assert!(sources_d.join("docker.list").exists());
+        assert!(!apt.lists_refreshed());
     }
 
     #[test]
@@ -1279,6 +1324,35 @@ printf 'python3.12:\n  Installed: 3.12.1-1+jammy1\n *** 3.12.1-1+jammy1 100\n'"#
         assert_eq!(ran.error, None, "{}", ran.screen);
         assert_eq!(lines(dir.path(), "calls.log"), [format!("{POLICY} update")]);
         assert_eq!(lines(dir.path(), "env.log"), ["noninteractive l"]);
+    }
+
+    #[tokio::test]
+    async fn a_refresh_is_recorded_for_the_apts_sharing_it_until_one_fails() {
+        let _spawns = SPAWNS.lock().await;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let program = apt_get(
+            dir.path(),
+            &format!(
+                "test -e '{}' && exit 100; exit 0",
+                dir.path().join("fail").display()
+            ),
+        );
+        // Every one runs the stand-in, never the host's apt-get.
+        let apt = quick(program.clone());
+        let (clone, shared, other) = (
+            apt.clone(),
+            quick(program.clone()).sharing_lists_with(&apt),
+            quick(program),
+        );
+        assert!(!apt.lists_refreshed());
+        let ran = in_step(async |step, _| apt.update_lists(step).await).await;
+        assert_eq!(ran.error, None, "{}", ran.screen);
+        assert!(apt.lists_refreshed() && clone.lists_refreshed() && shared.lists_refreshed());
+        assert!(!other.lists_refreshed());
+        std::fs::write(dir.path().join("fail"), "").expect("fail");
+        let ran = in_step(async |step, _| shared.update_lists(step).await).await;
+        assert!(ran.error.is_some(), "{}", ran.screen);
+        assert!(!apt.lists_refreshed() && !clone.lists_refreshed());
     }
 
     /// A script that fails its first `failures` runs with `stderr` (exit

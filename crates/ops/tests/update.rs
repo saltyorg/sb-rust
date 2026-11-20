@@ -140,10 +140,11 @@ impl World {
         disk: &Disk,
         migrate: Option<bool>,
     ) -> Ran {
-        let apt = self.host.apt();
         let root = self.saltbox();
         let paths = [self.sb.tree.root.path().to_path_buf()];
         let python = self.sb.tree.env();
+        // One record of refreshed lists for the run, as sb wires it.
+        let apt = self.host.apt().sharing_lists_with(&python.apt);
         let ansible = Ansible::with_program(self.host.stand_ins().join("ansible-playbook"));
         let settings = self.settings();
         let completion_paths = Paths::under(self.completion.path());
@@ -490,6 +491,51 @@ async fn piped_with_every_flag_every_step_runs_in_order() {
         .permissions()
         .mode();
     assert_eq!(mode & 0o777, 0o600);
+}
+
+/// A first run, libpq-dev missing: the lists update's first step
+/// refreshed aren't refreshed again before the install.
+#[tokio::test]
+async fn a_first_run_refreshes_the_apt_lists_once() {
+    let _spawns = SPAWNS.lock().await;
+    let world = World::new("master", "master");
+    world.sb.tree.libpq(false);
+    let ran = world
+        .run(
+            &args(&PIPED),
+            Err("no terminal".to_owned()),
+            &[],
+            None,
+            &roomy(),
+        )
+        .await;
+    assert_eq!(ran.error, None, "{}", ran.screen);
+    assert!(
+        ran.screen
+            .contains("Installing native Python build prerequisites"),
+        "{}",
+        ran.screen
+    );
+    assert_eq!(ran.screen.matches("Updating apt package cache").count(), 1);
+    let updates = |calls: Vec<String>| {
+        calls
+            .iter()
+            .filter(|call| call.starts_with("apt-get") && call.ends_with(" update"))
+            .count()
+    };
+    assert_eq!(updates(world.host.calls()), 1, "{:?}", world.host.calls());
+    let tree_apt: Vec<String> = world
+        .sb
+        .tree
+        .calls_made()
+        .into_iter()
+        .filter(|call| call.contains("apt-get"))
+        .collect();
+    assert_eq!(tree_apt.len(), 1, "{tree_apt:?}");
+    assert!(
+        tree_apt[0].ends_with("install -y libpq-dev"),
+        "{tree_apt:?}"
+    );
 }
 
 /// Nothing moved and both caches hold tags: no listing runs (sb-go's

@@ -793,7 +793,9 @@ async fn activate_staged(
 
 /// libpq-dev, which psycopg's build needs (spec, step 3; sb-go's
 /// `IsPackageInstalled`, `UpdatePackageLists`, `InstallPackage`): when
-/// dpkg hasn't it installed, "Updating apt package cache" and
+/// dpkg hasn't it installed, "Updating apt package cache", unless the
+/// lists were refreshed earlier in this run (sb host's
+/// `Apt::lists_refreshed`: `sb update`'s own first step), and
 /// "Installing native Python build prerequisites".
 async fn prerequisites(
     step: &mut Step,
@@ -808,14 +810,18 @@ async fn prerequisites(
     if installed {
         return Ok(());
     }
-    let updating = "Updating apt package cache";
-    step.step(Labels::new(updating, updating), async |step| {
-        env.apt
-            .update_lists(step)
-            .await
-            .context("update apt cache for native Python build prerequisites")
-    })
-    .await?;
+    if env.apt.lists_refreshed() {
+        tracing::info!("apt package lists already refreshed in this run");
+    } else {
+        let updating = "Updating apt package cache";
+        step.step(Labels::new(updating, updating), async |step| {
+            env.apt
+                .update_lists(step)
+                .await
+                .context("update apt cache for native Python build prerequisites")
+        })
+        .await?;
+    }
     let installing = "Installing native Python build prerequisites";
     step.step(Labels::new(installing, installing), async |step| {
         env.apt
