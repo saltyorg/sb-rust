@@ -247,7 +247,7 @@ mount points.
 | SABnzbd | `GET <url>/api?mode=queue&output=json&apikey=…` | same |
 | NZBGet | JSON-RPC `status` then `listgroups`, with Basic auth | same |
 | qBittorrent | `POST /api/v2/auth/login` (1 s), then `GET /api/v2/sync/maindata?rid=0` (20 s), counting every state | autobrr/go-qbittorrent |
-| rTorrent | XML-RPC on quick-xml: `system.hostname` (1 s), then one `d.multicall2` and the two global rates (20 s) | saltydk/go-rtorrent |
+| rTorrent | XML-RPC on quick-xml: `system.hostname` (1 s), then one `system.multicall` request with one `d.multicall2` and the two global rates (20 s) | saltydk/go-rtorrent |
 | Plex | `GET <url>/status/sessions`, `X-Plex-Token`, JSON | same |
 | Emby | `GET <url>/emby/Sessions`, `X-Emby-Token` | same |
 | Jellyfin | `GET <url>/Sessions`, `Authorization: MediaBrowser Token="…"` | sj14/jellyfin-go |
@@ -471,7 +471,13 @@ never reach stdout, stderr or the run log.
     group (moving and allocating as Downloading, checkingResumeData as
     Stopped, unknown as Error). sb-go counted them nowhere.
 13. **rTorrent makes one multicall.** `d.is_active` is already in it.
-    sb-go made N+1 calls. An unexpected XML-RPC type is an error line,
+    sb-go made N+1 calls. *Amended 2026-11-20:* the rows' multicall and
+    the two rates go as one `system.multicall` request after the
+    `system.hostname` check, one round trip where sb-go made three in a
+    row; each call's answer and error text are as when asked alone, and
+    a failed request reads as the rows' call's. The three share the
+    data's one limit (the instance's `timeout` or 20 s), where each had
+    its own. An unexpected XML-RPC type is an error line,
     where sb-go panicked and recovered. A status other than 200 is an
     error line too (go-rtorrent parsed whatever came), and a fault reads
     `fault <code>: <message>` (go-rtorrent: `Error: <nil>: <code>:
@@ -880,7 +886,7 @@ Nothing touches a real host's state, and every fixture is synthetic.
    equal lspci's from the same pci.ids.
 4. **Providers.** Every provider has `Fake` tests for its request shape,
    its counting and its errors. rTorrent makes exactly three calls after
-   the check. Every qBittorrent state is counted.
+   the check, in one `system.multicall` request. Every qBittorrent state is counted.
 5. **motd.yml.**
    - A valid file drives the sections and colours.
    - An invalid file (a pattern miss, a bare list, an unknown key) prints

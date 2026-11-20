@@ -1,7 +1,8 @@
 //! rTorrent's XML-RPC (<https://xmlrpc.com/spec.md>): a `methodCall` written
 //! and a `methodResponse` read with quick-xml (motd spec, Tech Stack;
-//! decision 10), in place of sb-go's go-rtorrent. Only what rTorrent's
-//! answers to motd's four calls hold is read: `int`, `i4`, `i8`,
+//! decision 10), in place of sb-go's go-rtorrent; motd's three data
+//! calls go as one `system.multicall`. Only what rTorrent's answers to
+//! motd's calls hold is read: `int`, `i4`, `i8`,
 //! `string` (and an untyped value, a string by the spec), `array`, and a
 //! `fault`'s `struct`; any other type is an error, where go-rtorrent's
 //! type assertions panicked (Difference 13).
@@ -109,6 +110,144 @@ pub fn method_call(method: &str, params: &[&str]) -> std::io::Result<Vec<u8>> {
             Ok(())
         })?;
     Ok(writer.into_inner())
+}
+
+/// A `system.multicall` of `calls`, each a method and its parameters
+/// (strings): one request whose answer holds each call's own, as
+/// [`multicall_results`] reads it. The multicall convention
+/// (<https://mirrors.talideon.com/articles/multicall.html>): one
+/// parameter, an array of structs with `methodName` and `params`;
+/// rTorrent serves it (xmlrpc-c's built-in method), and ruTorrent sends
+/// its calls so.
+///
+/// # Errors
+///
+/// Only an I/O error of the writer, which writes to memory.
+pub fn multicall(calls: &[(&str, &[&str])]) -> std::io::Result<Vec<u8>> {
+    let mut writer = Writer::new(Vec::new());
+    writer.write_event(Event::Decl(BytesDecl::new("1.0", None, None)))?;
+    writer
+        .create_element("methodCall")
+        .write_inner_content(|writer| {
+            writer
+                .create_element("methodName")
+                .write_text_content(BytesText::new("system.multicall"))?;
+            writer
+                .create_element("params")
+                .write_inner_content(|writer| {
+                    writer
+                        .create_element("param")
+                        .write_inner_content(|writer| {
+                            array(writer, |writer| {
+                                for (method, params) in calls {
+                                    writer.create_element("value").write_inner_content(
+                                        |writer| {
+                                            writer.create_element("struct").write_inner_content(
+                                                |writer| {
+                                                    member(writer, "methodName", |writer| {
+                                                        string(writer, method)
+                                                    })?;
+                                                    member(writer, "params", |writer| {
+                                                        array(writer, |writer| {
+                                                            for param in *params {
+                                                                string(writer, param)?;
+                                                            }
+                                                            Ok(())
+                                                        })
+                                                    })
+                                                },
+                                            )?;
+                                            Ok(())
+                                        },
+                                    )?;
+                                }
+                                Ok(())
+                            })
+                        })?;
+                    Ok(())
+                })?;
+            Ok(())
+        })?;
+    Ok(writer.into_inner())
+}
+
+/// The writer's result for one element's content.
+type Written = std::io::Result<()>;
+
+/// `<value><string>text</string></value>`.
+fn string(writer: &mut Writer<Vec<u8>>, text: &str) -> Written {
+    writer
+        .create_element("value")
+        .write_inner_content(|writer| {
+            writer
+                .create_element("string")
+                .write_text_content(BytesText::new(text))?;
+            Ok(())
+        })?;
+    Ok(())
+}
+
+/// `<value><array><data>…</data></array></value>`, `items` writing the
+/// values inside.
+fn array(
+    writer: &mut Writer<Vec<u8>>,
+    items: impl FnOnce(&mut Writer<Vec<u8>>) -> Written,
+) -> Written {
+    writer
+        .create_element("value")
+        .write_inner_content(|writer| {
+            writer
+                .create_element("array")
+                .write_inner_content(|writer| {
+                    writer.create_element("data").write_inner_content(items)?;
+                    Ok(())
+                })?;
+            Ok(())
+        })?;
+    Ok(())
+}
+
+/// A struct's `<member>`: its name, then `value` writing its value.
+fn member(
+    writer: &mut Writer<Vec<u8>>,
+    name: &str,
+    value: impl FnOnce(&mut Writer<Vec<u8>>) -> Written,
+) -> Written {
+    writer
+        .create_element("member")
+        .write_inner_content(|writer| {
+            writer
+                .create_element("name")
+                .write_text_content(BytesText::new(name))?;
+            value(writer)
+        })?;
+    Ok(())
+}
+
+/// Each call's answer in a `system.multicall`'s one value: an array with
+/// an entry per call, in the calls' order, each an array of its values,
+/// or that call's fault struct.
+///
+/// # Errors
+///
+/// [`Error::Unexpected`] when the value isn't such an array; an entry
+/// that is neither is that call's [`Error::Unexpected`].
+pub fn multicall_results(value: Value) -> Result<Vec<Result<Vec<Value>, Error>>, Error> {
+    let Value::Array(entries) = value else {
+        return Err(Error::Unexpected(
+            "a multicall answer that isn't an array".to_string(),
+        ));
+    };
+    Ok(entries
+        .into_iter()
+        .map(|entry| match entry {
+            Value::Array(values) => Ok(values),
+            fault @ Value::Struct(_) => Err(fault_of(&fault)),
+            _ => Err(Error::Unexpected(
+                "a multicall entry that isn't an array or a fault".to_string(),
+            )),
+        })
+        .collect())
 }
 
 /// A `methodResponse`'s parameters, or its fault.
@@ -390,6 +529,53 @@ mod tests {
             method_call("system.hostname", &[]).unwrap(),
             b"<?xml version=\"1.0\"?><methodCall><methodName>system.hostname</methodName><params></params></methodCall>"
         );
+    }
+
+    /// A `system.multicall` as the convention writes it: one array of
+    /// method structs, each with its parameters, text escaped.
+    #[test]
+    fn a_multicall_is_written_and_escaped() {
+        let body = multicall(&[("d.multicall2", &["", "a<&b"]), ("x.rate", &[])]).unwrap();
+        assert_eq!(
+            String::from_utf8(body).unwrap(),
+            concat!(
+                r#"<?xml version="1.0"?><methodCall><methodName>system.multicall</methodName>"#,
+                "<params><param><value><array><data>",
+                "<value><struct><member><name>methodName</name><value><string>d.multicall2</string></value></member>",
+                "<member><name>params</name><value><array><data><value><string></string></value>",
+                "<value><string>a&lt;&amp;b</string></value></data></array></value></member></struct></value>",
+                "<value><struct><member><name>methodName</name><value><string>x.rate</string></value></member>",
+                "<member><name>params</name><value><array><data></data></array></value></member></struct></value>",
+                "</data></array></value></param></params></methodCall>"
+            )
+        );
+    }
+
+    /// Each entry of a multicall's answer: its values, or its fault.
+    #[test]
+    fn multicall_results_are_each_calls_values_or_fault() {
+        let fault = Value::Struct(vec![
+            ("faultCode".into(), Value::Int(-506)),
+            ("faultString".into(), Value::Str("no".into())),
+        ]);
+        let results = multicall_results(Value::Array(vec![
+            Value::Array(vec![Value::Int(1)]),
+            fault,
+            Value::Int(2),
+            Value::Array(Vec::new()),
+        ]))
+        .unwrap();
+        assert_eq!(results[0], Ok(vec![Value::Int(1)]));
+        assert_eq!(
+            results[1],
+            Err(Error::Fault {
+                code: -506,
+                message: "no".into()
+            })
+        );
+        assert!(matches!(results[2], Err(Error::Unexpected(_))));
+        assert_eq!(results[3], Ok(Vec::new()));
+        assert!(multicall_results(Value::Int(0)).is_err());
     }
 
     /// int, i4, i8, string (typed, untyped, empty, escaped), and an array

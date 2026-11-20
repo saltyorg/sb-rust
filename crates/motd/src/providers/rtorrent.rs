@@ -4,7 +4,9 @@
 //! instance's `timeout`, or sb-go's 20 s): one `d.multicall2` over the
 //! main view with the three fields counted, and the two global rates.
 //! sb-go made a `d.is_active` call per torrent; the multicall has it
-//! (Difference 13), so the data is exactly three calls.
+//! (Difference 13), so the data is exactly three calls, sent as one
+//! `system.multicall` request, so one round trip where sb-go made three
+//! in a row (each call's answer and error as when asked alone).
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -21,6 +23,10 @@ pub const DATA_TIMEOUT: Duration = Duration::from_secs(20);
 /// many bytes (about 130,000 torrents: each row is about 120 bytes here),
 /// not sb-config's 1 MiB.
 pub const MAX_DATA: usize = 16 << 20;
+
+/// The two global rates' methods.
+const DOWN_RATE: &str = "throttle.global_down.rate";
+const UP_RATE: &str = "throttle.global_up.rate";
 
 /// Which limit a call has: the fixed 1 s check, or the data's (the
 /// instance's `timeout` or 20 s), each cut to what is left of the
@@ -92,10 +98,7 @@ impl Counts {
     }
 }
 
-/// One XML-RPC call's first parameter: its answer read within its cap
-/// and parsed on tokio's blocking pool through cli-core's `spawn::blocking`
-/// (the run's span carried), as a multicall can be large
-/// (<https://docs.rs/tokio/1.54.1/tokio/task/fn.spawn_blocking.html>).
+/// One XML-RPC call's first parameter.
 async fn call(
     shared: &Shared,
     instance: &Instance,
@@ -103,11 +106,51 @@ async fn call(
     params: &[&str],
     limit: Limit,
 ) -> Result<Value, String> {
+    let body = xmlrpc::method_call(method, params).map_err(|err| err.to_string())?;
+    first_param(post(shared, instance, body, limit).await?)
+}
+
+/// A call's first parameter, of those its answer holds.
+fn first_param(params: Vec<Value>) -> Result<Value, String> {
+    params
+        .into_iter()
+        .next()
+        .ok_or_else(|| "an answer without a value".to_string())
+}
+
+/// `calls` as one `system.multicall`: each call's first parameter or its
+/// error, in order, as [`call`] would give it alone (fewer when the
+/// answer has fewer entries). A failed request is the whole call's
+/// error.
+async fn multicall(
+    shared: &Shared,
+    instance: &Instance,
+    calls: &[(&str, &[&str])],
+    limit: Limit,
+) -> Result<Vec<Result<Value, String>>, String> {
+    let body = xmlrpc::multicall(calls).map_err(|err| err.to_string())?;
+    let answer = first_param(post(shared, instance, body, limit).await?)?;
+    Ok(xmlrpc::multicall_results(answer)
+        .map_err(|err| err.to_string())?
+        .into_iter()
+        .map(|result| result.map_err(|err| err.to_string()).and_then(first_param))
+        .collect())
+}
+
+/// One request's answer, read within its cap and parsed on tokio's
+/// blocking pool through cli-core's `spawn::blocking` (the run's span
+/// carried), as a multicall can be large
+/// (<https://docs.rs/tokio/1.54.1/tokio/task/fn.spawn_blocking.html>).
+async fn post(
+    shared: &Shared,
+    instance: &Instance,
+    body: Vec<u8>,
+    limit: Limit,
+) -> Result<Vec<Value>, String> {
     let (timeout, cap) = match limit {
         Limit::Check => (shared.within(DEFAULT_TIMEOUT), sb_config::http::MAX_BODY),
         Limit::Data => (shared.timeout(instance, DATA_TIMEOUT), MAX_DATA),
     };
-    let body = xmlrpc::method_call(method, params).map_err(|err| err.to_string())?;
     let client = shared.client().await?;
     let mut request = client
         .post(instance.url.as_str())
@@ -130,15 +173,11 @@ async fn call(
         return Err(format!("rTorrent returned status code {}", status.as_u16()));
     }
     let body = sb_config::http::body_within(response, cap).await?;
-    let params = sb_cli_core::spawn::blocking(move || {
+    sb_cli_core::spawn::blocking(move || {
         xmlrpc::response(&String::from_utf8_lossy(&body)).map_err(|err| err.to_string())
     })
     .await
-    .map_err(|err| err.to_string())??;
-    params
-        .into_iter()
-        .next()
-        .ok_or_else(|| "an answer without a value".to_string())
+    .map_err(|err| err.to_string())?
 }
 
 async fn fetch(shared: &Shared, instance: &Instance) -> Result<Counts, String> {
@@ -151,24 +190,33 @@ async fn fetch(shared: &Shared, instance: &Instance) -> Result<Counts, String> {
         return Err("could not connect to rtorrent: result isn't string".to_string());
     }
     let fields = ["", "main", "d.is_active=", "d.complete=", "d.message="];
-    let rows = call(shared, instance, "d.multicall2", &fields, Limit::Data)
+    let calls: [(&str, &[&str]); 3] = [("d.multicall2", &fields), (DOWN_RATE, &[]), (UP_RATE, &[])];
+    let rows_failed =
+        |err: String| format!("could not get torrents: d.multicall2 XMLRPC call failed: {err}");
+    let mut answers = multicall(shared, instance, &calls, Limit::Data)
         .await
-        .map_err(|err| format!("could not get torrents: d.multicall2 XMLRPC call failed: {err}"))?;
-    // Counted, and the rows let go, before the rates are asked for.
+        .map_err(rows_failed)?
+        .into_iter();
+    let mut next = || {
+        answers
+            .next()
+            .unwrap_or_else(|| Err("an answer without a value".to_string()))
+    };
+    // The calls' errors in the order sb-go met them: the rows, their
+    // count, then each rate.
+    let rows = next().map_err(rows_failed)?;
     let mut counts = count(&rows)?;
     drop(rows);
-    let rate = |method: &'static str, what: &'static str| async move {
-        let value = call(shared, instance, method, &[], Limit::Data)
-            .await
-            .map_err(|err| {
-                format!("could not get {what} rate: {method} XMLRPC call failed: {err}")
-            })?;
+    let rate = |answer: Result<Value, String>, method: &str, what: &str| {
+        let value = answer.map_err(|err| {
+            format!("could not get {what} rate: {method} XMLRPC call failed: {err}")
+        })?;
         first(&value)
             .int()
             .ok_or_else(|| format!("could not get {what} rate: result isn't int"))
     };
-    counts.down = rate("throttle.global_down.rate", "download").await?;
-    counts.up = rate("throttle.global_up.rate", "upload").await?;
+    counts.down = rate(next(), DOWN_RATE, "download")?;
+    counts.up = rate(next(), UP_RATE, "upload")?;
     Ok(counts)
 }
 
@@ -238,14 +286,37 @@ mod tests {
         )
     }
 
+    /// A `system.multicall` answer: each entry one call's values (an
+    /// array) or its fault (a struct), as written.
+    fn multi(entries: &[&str]) -> Reply {
+        let entries = entries.join("</value><value>");
+        answer(&format!(
+            "<array><data><value>{entries}</value></data></array>"
+        ))
+    }
+
+    /// One call's values in a multicall answer.
+    fn ok(value: &str) -> String {
+        format!("<array><data><value>{value}</value></data></array>")
+    }
+
+    /// One call's fault in a multicall answer.
+    fn fault(code: i64, message: &str) -> String {
+        format!(
+            "<struct><member><name>faultCode</name><value><i4>{code}</i4></value></member><member><name>faultString</name><value><string>{message}</string></value></member></struct>"
+        )
+    }
+
     fn script(fake: &Fake, rows: &str) {
         fake.script("/RPC2", answer("<string>seedbox</string>"));
         fake.script(
             "/RPC2",
-            answer(&format!("<array><data>{rows}</data></array>")),
+            multi(&[
+                &ok(&format!("<array><data>{rows}</data></array>")),
+                &ok("<i8>2097152</i8>"),
+                &ok("<i8>1536</i8>"),
+            ]),
         );
-        fake.script("/RPC2", answer("<i8>2097152</i8>"));
-        fake.script("/RPC2", answer("<i8>1536</i8>"));
     }
 
     /// `with_login`'s user and password as HTTP Basic sends them: the
@@ -260,8 +331,9 @@ mod tests {
         }
     }
 
-    /// The check, then exactly three calls: one multicall with the three
-    /// fields, the two rates; Basic auth; every state counted.
+    /// The check, then exactly three calls in one `system.multicall`
+    /// request: the rows' multicall with the three fields, the two rates;
+    /// Basic auth; every state counted.
     #[tokio::test]
     async fn rtorrent_makes_one_multicall_after_the_check() {
         let fake = Fake::start().unwrap();
@@ -296,21 +368,38 @@ mod tests {
                 body[start..start + body[start..].find('<').unwrap()].to_string()
             })
             .collect();
+        assert_eq!(methods, ["system.hostname", "system.multicall"]);
+        let calls: Vec<&str> = seen[1]
+            .body
+            .split("<name>methodName</name><value><string>")
+            .skip(1)
+            .map(|rest| &rest[..rest.find('<').unwrap()])
+            .collect();
         assert_eq!(
-            methods,
+            calls,
             [
-                "system.hostname",
                 "d.multicall2",
                 "throttle.global_down.rate",
                 "throttle.global_up.rate"
             ]
         );
         assert!(
-            seen[1].body.contains("<string>main</string><"),
+            seen[1].body.contains(
+                "<name>params</name><value><array><data><value><string></string></value><value><string>main</string></value>"
+            ),
             "{}",
             seen[1].body
         );
         assert!(seen[1].body.contains("<string>d.is_active=</string>"));
+        assert_eq!(
+            seen[1]
+                .body
+                .matches("<name>params</name><value><array><data></data></array></value>")
+                .count(),
+            2,
+            "{}",
+            seen[1].body
+        );
         for call in &seen {
             assert_eq!(call.method, "POST");
             assert_eq!(call.target, "/RPC2");
@@ -364,8 +453,14 @@ mod tests {
     async fn rtorrent_errors_are_lines() {
         let fake = Fake::start().unwrap();
         fake.script("/a", answer("<string>h</string>"));
-        fake.script("/a", answer("<array><data></data></array>"));
-        fake.script("/a", answer("<i4>0</i4>"));
+        fake.script(
+            "/a",
+            multi(&[
+                &ok("<array><data></data></array>"),
+                &ok("<i4>0</i4>"),
+                &ok("<i4>0</i4>"),
+            ]),
+        );
         let shared = shared(&["rt-pass-canary"]);
         let ask = |path: &str| {
             let url = format!("{}{path}", fake.url());
@@ -397,22 +492,6 @@ mod tests {
             ask("/c").await,
             "Error: could not connect to rtorrent: result isn't string"
         );
-        fake.script("/d", answer("<string>h</string>"));
-        fake.script(
-            "/d",
-            answer("<array><data><value><i8>1</i8></value></data></array>"),
-        );
-        assert_eq!(
-            ask("/d").await,
-            "Error: could not get torrents: unexpected answer from rTorrent"
-        );
-        fake.script("/e", answer("<string>h</string>"));
-        fake.script("/e", answer("<array><data></data></array>"));
-        fake.script("/e", answer("<string>fast</string>"));
-        assert_eq!(
-            ask("/e").await,
-            "Error: could not get download rate: result isn't int"
-        );
         fake.script("/f", Reply::new(401, "<html>no</html>"));
         assert_eq!(
             ask("/f").await,
@@ -420,19 +499,12 @@ mod tests {
         );
         fake.script("/g", Reply::new(200, "<html>not xml-rpc</html>"));
         assert!(ask("/g").await.starts_with("Error: could not connect to rtorrent: system.hostname XMLRPC call failed: unexpected answer"));
-        // Each later call's failure names its call.
+        // The data request's failure is the first call's, the rows'.
         fake.script("/h", answer("<string>h</string>"));
         fake.script("/h", Reply::new(500, "busy"));
         assert_eq!(
             ask("/h").await,
             "Error: could not get torrents: d.multicall2 XMLRPC call failed: rTorrent returned status code 500"
-        );
-        fake.script("/i", answer("<string>h</string>"));
-        fake.script("/i", answer("<array><data></data></array>"));
-        fake.script("/i", Reply::new(503, "busy"));
-        assert_eq!(
-            ask("/i").await,
-            "Error: could not get download rate: throttle.global_down.rate XMLRPC call failed: rTorrent returned status code 503"
         );
         // An answer that carries no value at all.
         fake.script(
@@ -452,6 +524,88 @@ mod tests {
             rtorrent(Some(&none), &shared, &Paint::plain()).await.text,
             ""
         );
+    }
+
+    /// Each data call's own failure inside the one request names that
+    /// call, in sb-go's order: the rows, then each rate; an answer
+    /// missing entries or of another shape too.
+    #[tokio::test]
+    async fn a_multicall_entrys_failure_names_its_call() {
+        let fake = Fake::start().unwrap();
+        let shared = shared(&[]);
+        let none = ok("<array><data></data></array>");
+        let zero = ok("<i4>0</i4>");
+        let rows = "could not get torrents: d.multicall2 XMLRPC call failed";
+        let down = "could not get download rate: throttle.global_down.rate XMLRPC call failed";
+        let up = "could not get upload rate: throttle.global_up.rate XMLRPC call failed";
+        let not_defined = fault(-506, "Method 'system.multicall' not defined");
+        let cases: Vec<(Reply, String)> = vec![
+            (
+                multi(&[
+                    &ok("<array><data><value><i8>1</i8></value></data></array>"),
+                    &zero,
+                ]),
+                "could not get torrents: unexpected answer from rTorrent".into(),
+            ),
+            (
+                multi(&[&none, &ok("<string>fast</string>"), &zero]),
+                "could not get download rate: result isn't int".into(),
+            ),
+            (
+                multi(&[&none, &zero, &ok("<string>x</string>")]),
+                "could not get upload rate: result isn't int".into(),
+            ),
+            (
+                multi(&[
+                    &fault(-506, "Method 'd.multicall2' not defined"),
+                    &zero,
+                    &zero,
+                ]),
+                format!("{rows}: fault -506: Method 'd.multicall2' not defined"),
+            ),
+            (
+                multi(&[&none, &zero, &fault(-501, "no")]),
+                format!("{up}: fault -501: no"),
+            ),
+            (
+                multi(&[&none]),
+                format!("{down}: an answer without a value"),
+            ),
+            (
+                multi(&["<array><data></data></array>", "<i4>0</i4>"]),
+                format!("{rows}: an answer without a value"),
+            ),
+            (
+                multi(&[&none, "<i4>0</i4>"]),
+                format!(
+                    "{down}: unexpected answer: a multicall entry that isn't an array or a fault"
+                ),
+            ),
+            (
+                answer("<i4>0</i4>"),
+                format!("{rows}: unexpected answer: a multicall answer that isn't an array"),
+            ),
+            // The whole request's fault (an rTorrent without the method)
+            // is the rows' call's.
+            (
+                Reply::new(
+                    200,
+                    format!(
+                        "<methodResponse><fault><value>{not_defined}</value></fault></methodResponse>"
+                    ),
+                ),
+                format!("{rows}: fault -506: Method 'system.multicall' not defined"),
+            ),
+        ];
+        for (n, (reply, expected)) in cases.into_iter().enumerate() {
+            let path = format!("/{n}");
+            fake.script(&path, answer("<string>h</string>"));
+            fake.script(&path, reply);
+            let url = format!("{}{path}", fake.url());
+            let one = section(vec![instance("rTorrent", &url)]);
+            let text = rtorrent(Some(&one), &shared, &Paint::plain()).await.text;
+            assert_eq!(text, format!("Error: {expected}"), "case {n}");
+        }
     }
 
     /// A server echoing the request's `Authorization` header shows the
