@@ -419,6 +419,18 @@ To discuss with the maintainer once every module is done, not before:
   correctness holds: every test, the mutation score and the specs'
   behaviour stay as they are, and each change carries its before and
   after figures. What it finds can also set tighter ratchet rows.
+  - **No size reduction that costs any performance, "not even a hint"**
+    (the maintainer, 2026-11-18). aws-lc's small build and dropping
+    Oniguruma are out. Duplicate code is folded only with zero runtime
+    cost, shown by the commands' instruction counts.
+  - **Declined after measuring** (2026-11-18):
+    - Overlapping Sandbox's fetch in `sb update`: about 0.4 to 0.6 s
+      saved per update, but it needs changes in three crates and loses
+      the fetch's live progress.
+    - Parsing the schemas in parallel: six threads took 0.84 ms off the
+      wall time and added 2.6 ms of CPU time (+35%); one thread for
+      motd's schema alone took 1.2 ms off and added 8% CPU. Both are a
+      CPU regression.
   - **Size: the build profile stays as it is** (maintainer, 2026-11-17).
     The production binary of 90e9d4f is 20,303,872 bytes (11,843,920 on
     964f963). The growth is the features added since, spread over the
