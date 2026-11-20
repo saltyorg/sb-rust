@@ -357,16 +357,44 @@ pub fn processes_out(count: Option<usize>, paint: &Paint) -> Out {
     }
 }
 
-/// The processes under `root` (a /proc), through procfs's iterator over
-/// its numeric entries
-/// (<https://docs.rs/procfs/0.18.0/procfs/process/fn.all_processes_with_root.html>).
-/// Every entry counts, one that ended while it was read too, as in
-/// sb-go's directory listing.
+/// The processes under `root` (a /proc): its entries whose name is a
+/// PID, from one listing, as sb-go counts its directory listing. Every
+/// entry counts, one that ended while it was read too, and so does a
+/// read error (the listing then ends), as procfs's
+/// `all_processes_with_root` counted them. Why not that iterator: it
+/// opens and closes each `/proc/<pid>` (a `Process` holds its directory),
+/// two syscalls and about 3.5 µs a process for a count that needs none;
+/// this is its own listing (rustix's `Dir`, which procfs reads with, and
+/// its PID test, `i32`'s parse) without the opens
+/// (<https://docs.rs/procfs/0.18.0/procfs/process/fn.all_processes_with_root.html>,
+/// <https://docs.rs/rustix/1.1.6/rustix/fs/struct.Dir.html>).
 fn count_processes(root: &Path) -> Option<usize> {
-    procfs::process::all_processes_with_root(root)
-        .inspect_err(|err| tracing::warn!("processes not counted: {err}"))
-        .ok()
-        .map(Iterator::count)
+    use rustix::fs::{Dir, Mode, OFlags};
+    let listing = rustix::fs::openat(
+        rustix::fs::CWD,
+        root,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .and_then(Dir::read_from);
+    let dir = match listing {
+        Ok(dir) => dir,
+        Err(err) => {
+            tracing::warn!("processes not counted: {}: {err}", root.display());
+            return None;
+        }
+    };
+    Some(
+        dir.filter(|entry| {
+            entry.as_ref().map_or(true, |entry| {
+                entry
+                    .file_name()
+                    .to_str()
+                    .is_ok_and(|name| name.parse::<i32>().is_ok())
+            })
+        })
+        .count(),
+    )
 }
 
 /// Processes on this host.
@@ -744,6 +772,18 @@ mod tests {
         std::fs::write(dir.path().join("loadavg"), "").unwrap();
         assert_eq!(count_processes(dir.path()), Some(3));
         assert_eq!(count_processes(&dir.path().join("missing")), None);
+        assert_eq!(count_processes(&dir.path().join("loadavg")), None);
+        // procfs's iterator's count, which this replaces: every name an
+        // `i32` reads (a sign too), a file as well as a directory.
+        for name in ["+5", "-1", "2147483648", "0", "007"] {
+            std::fs::create_dir(dir.path().join(name)).unwrap();
+        }
+        std::fs::write(dir.path().join("77"), "").unwrap();
+        let procfs = procfs::process::all_processes_with_root(dir.path())
+            .unwrap()
+            .count();
+        assert_eq!(procfs, 8);
+        assert_eq!(count_processes(dir.path()), Some(procfs));
         assert_eq!(processes(Some(3), &Paint::plain()), "3 running processes");
         let (paint, _) = painted();
         assert_eq!(
