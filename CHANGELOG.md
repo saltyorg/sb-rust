@@ -112,6 +112,10 @@ you could trip over.
 - **Restore decrypts in memory** and writes atomically, so a wrong password
   can't damage files.
 - **Releases come from saltyorg/sb-rust.**
+- **Shell completion asks sb at each Tab** (clap_complete's stubs), as
+  the calling user and without sudo, so it is quicker, and flag values
+  such as `--color`'s complete. Hidden commands and flags are never
+  offered, as in sb-go, whatever you have typed.
 
 ### Removed
 

@@ -170,6 +170,83 @@ fn the_index_marks_the_current_word() {
     }
 }
 
+/// A request from `shell`'s stub for `words` (after `sb`), the current
+/// word at `index` (bash's and zsh's `_CLAP_COMPLETE_INDEX`; fish passes
+/// none), with `root`'s cache; its reply, after checking it succeeded and
+/// printed nothing else.
+fn reply(shell: &str, root: &Path, words: &[&str], index: usize) -> String {
+    let logs = tempfile::tempdir().expect("temp dir");
+    let output = common::sb()
+        .env("SB_COMPLETE", shell)
+        .env("SB_SALTBOX_DIR", root)
+        .env("SB_LOG_DIR", logs.path())
+        .env("_CLAP_COMPLETE_INDEX", index.to_string())
+        .env("_CLAP_IFS", "\n")
+        .args(["--", "sb"])
+        .args(words)
+        .output()
+        .expect("run sb");
+    assert!(output.status.success(), "{shell} {words:?}: {output:?}");
+    assert!(output.stderr.is_empty(), "{shell} {words:?}: {output:?}");
+    String::from_utf8(output.stdout).expect("UTF-8")
+}
+
+/// Hidden commands and flags are never offered, whatever the prefix,
+/// in each shell (spec, "Hidden commands and flags are never offered"):
+/// the completion report's cases, `help`'s copies of the commands, the
+/// hidden `--verbose` and a hidden name typed in full. `clap_complete`
+/// offers each when nothing shown matches.
+#[test]
+fn hidden_commands_and_flags_are_never_offered() {
+    let root = saltbox(TAGS, None);
+    let cases: &[&[&str]] = &[
+        &["self"],
+        &["comp"],
+        &["setu"],
+        &["gh"],
+        &["update-"],
+        &["rest"],
+        &["self-update"],
+        &["help", "self"],
+        &["announcements", "p"],
+        &["announcements", "c"],
+        &["update", "--skip-g"],
+        &["update", "--skip-git"],
+        &["update", "--verify"],
+        &["update", "--verb"],
+        &["install", "--force"],
+        &["completion", "install", "--a"],
+    ];
+    for shell in ["bash", "zsh", "fish"] {
+        for words in cases {
+            let got = reply(shell, root.path(), words, words.len());
+            assert_eq!(got, "", "{shell} {words:?}");
+        }
+    }
+}
+
+/// What stays: a hidden command's own shown flags once its name is
+/// typed, a shown command's hidden alias on a prefix, and shown items.
+#[test]
+fn shown_items_and_aliases_still_complete() {
+    let root = saltbox(TAGS, None);
+    let flags = reply("fish", root.path(), &["self-update", "--"], 2);
+    let flags: Vec<&str> = flags
+        .lines()
+        .map(|line| line.split('\t').next().unwrap_or_default())
+        .collect();
+    assert_eq!(flags, ["--yes", "--color", "--channel", "--help"]);
+    assert_eq!(
+        reply("fish", root.path(), &["edit", "accounts."], 2),
+        "accounts.yml\tAccounts\n"
+    );
+    assert_eq!(reply("bash", root.path(), &["up"], 1), "update");
+    assert_eq!(
+        reply("zsh", root.path(), &["up"], 1),
+        "update:Update Saltbox & Sandbox"
+    );
+}
+
 /// Without `SB_COMPLETE`, or with it empty or `0`, sb runs as normal.
 #[test]
 fn an_unset_empty_or_zero_variable_runs_sb() {

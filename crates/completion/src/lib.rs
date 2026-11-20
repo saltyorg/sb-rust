@@ -7,10 +7,12 @@
 //! (ADR-001): every use of it is in this crate.
 
 pub mod install;
+mod reply;
 pub mod tags;
 #[cfg(feature = "testing")]
 pub mod testing;
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use clap_complete::env::{Bash, CompleteEnv, EnvCompleter, Fish, Shells, Zsh};
@@ -21,8 +23,9 @@ use sb_term_ui::{Labels, Step};
 /// variable could turn on for every run).
 pub const VAR: &str = "SB_COMPLETE";
 
-/// The shells sb completes in (sb-go's three; spec, difference 4).
-const SHELLS: Shells<'static> = Shells(&[&Bash, &Zsh, &Fish]);
+/// The shells sb completes in (sb-go's three; spec, difference 4), each
+/// through sb's adapter ([`Shell`]'s `EnvCompleter`).
+const SHELLS: Shells<'static> = Shells(&[&Shell::Bash, &Shell::Zsh, &Shell::Fish]);
 
 /// Answer a completion request and exit, when sb runs as one (`VAR` set,
 /// not empty or `0`); else return at once and let sb run. First in
@@ -202,7 +205,8 @@ impl Shell {
         self.engine().name()
     }
 
-    /// clap's adapter for it (`unstable-dynamic`, ADR-001).
+    /// clap's adapter for it (`unstable-dynamic`, ADR-001), whose stub
+    /// sb writes and whose reply format sb's follows.
     fn engine(self) -> &'static dyn EnvCompleter {
         match self {
             Self::Bash => &Bash,
@@ -241,6 +245,43 @@ impl Shell {
             }
         }
         stub
+    }
+}
+
+/// sb's adapter for each shell: clap's registration stub, as
+/// `CompleteEnv` prints it for `SB_COMPLETE=<shell> sb`, and sb's reply,
+/// clap's engine's candidates without the hidden commands and flags, in
+/// clap's format (spec, decision 11; the module `reply`). `CompleteEnv::shells` takes any `EnvCompleter`
+/// (<https://docs.rs/clap_complete/4.6.11/clap_complete/env/struct.CompleteEnv.html#method.shells>).
+impl EnvCompleter for Shell {
+    fn name(&self) -> &'static str {
+        self.engine().name()
+    }
+
+    fn is(&self, name: &str) -> bool {
+        self.engine().is(name)
+    }
+
+    fn write_registration(
+        &self,
+        var: &str,
+        name: &str,
+        bin: &str,
+        completer: &str,
+        buf: &mut dyn std::io::Write,
+    ) -> std::io::Result<()> {
+        self.engine()
+            .write_registration(var, name, bin, completer, buf)
+    }
+
+    fn write_complete(
+        &self,
+        cmd: &mut clap::Command,
+        args: Vec<OsString>,
+        current_dir: Option<&Path>,
+        buf: &mut dyn std::io::Write,
+    ) -> std::io::Result<()> {
+        reply::write(*self, cmd, args, current_dir, buf)
     }
 }
 
@@ -321,7 +362,7 @@ mod tests {
 
     #[test]
     fn names_are_sb_gos() {
-        let names: Vec<_> = Shell::ALL.iter().map(|shell| shell.name()).collect();
+        let names = Shell::ALL.map(Shell::name);
         assert_eq!(names, ["bash", "zsh", "fish"]);
     }
 }

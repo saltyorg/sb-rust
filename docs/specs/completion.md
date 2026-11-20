@@ -65,9 +65,28 @@ completion files in place.
   "stdout should not be written to before or after this has run").
   Without `SB_COMPLETE` set (or set empty or `0`), it returns and sb runs
   as normal.
-- **Commands and flags** come from clap's tree, hidden ones left out, as
-  clap_complete does; subcommand descriptions in zsh and fish from the
-  `about` texts.
+- **Commands and flags** come from clap's tree; subcommand descriptions
+  in zsh and fish from the `about` texts.
+- **Hidden commands and flags are never offered,** whatever the typed
+  prefix: `sb self<Tab>`, `sb update --skip-g<Tab>` and `sb update
+  --verb<Tab>` (the hidden `--verbose`) offer none of them, as sb-go's
+  cobra scripts. clap_complete 4.6.11 drops a hidden candidate only when
+  a visible one also matches (`engine/complete.rs:217-218`; its
+  maintainers' choice in clap issue #3951, "keep a completion hidden
+  unless there are no visible choices"), and has no option for it, so sb
+  filters the engine's candidates itself (decision 11). Only candidates
+  for a hidden command or a hidden argument of the command being
+  completed are dropped:
+  - the hidden aliases of a shown command still complete on a prefix,
+    as clap does (`sb edit accounts.<Tab>` gives `accounts.yml`);
+  - file names keep clap's rule for dot files (only `announcements
+    check`, itself hidden, completes files).
+
+  Once a hidden command's full name is typed, its own shown flags
+  complete (`sb self-update --<Tab>` gives `--yes`, `--channel`, ...),
+  as cobra does: the user has named the command already, and its help
+  lists those flags. The name itself is not completed (`sb
+  self-update<Tab>` adds nothing), nor is a hidden flag's.
 - **Tags for `sb install`:** an `ArgValueCompleter` on install's tags
   positional (`num_args(1..)`), with sb-go's rules
   (cmd/tag_completion.go):
@@ -286,6 +305,10 @@ the test's directory.
   research's list: commas, kept prefix and whitespace, earlier words,
   duplicates, `sandbox-`, mod tags absent, control characters, a leading
   quote, a corrupt cache, an empty cache.
+- **sb's reply, unit:** the filter on a small tree (a hidden command,
+  a hidden flag, a hidden global `-v`, a shown command's hidden alias,
+  a hidden command's shown flag) and each shell's reply, which is clap's
+  format byte for byte where nothing is hidden.
 - **Through the binary, no shell:** `SB_COMPLETE=bash sb -- sb install
   p` (and zsh, fish) with the stub's environment, output compared;
   run as a non-root user (crates/sb/tests/unprivileged.rs's way); no run
@@ -306,7 +329,7 @@ the test's directory.
   bash-completion, zsh and fish from apt; `sb completion install` as root,
   then a login shell per user driven in a PTY with Tab presses:
   commands, `install s<Tab>`, `plex,so<Tab>`, `sandbox-`, the earlier-word
-  rule. This is where the verification items below are settled.
+  rule; hidden commands and flags on a prefix. This is where the verification items below are settled.
 - Coverage and mutation as CONSTRAINTS.md.
 
 ## Verification items (facts to settle in slice 1, not questions)
@@ -411,6 +434,21 @@ the test's directory.
 10. **The proto-complete review comes first.** Source: capability map,
     open items ("review it before the `completion` module spec");
     B-ansible.md 7b.
+11. **sb filters the engine's candidates** (Tab completion, "Hidden
+    commands and flags are never offered"): a shell adapter of sb's own
+    (`EnvCompleter`, the extension point `CompleteEnv::shells` takes)
+    calls clap's engine (`clap_complete::engine::complete`), drops the
+    candidates for the hidden commands and arguments of the command
+    being completed, and writes the reply in the format clap's adapter
+    for that shell writes; registration stays clap's. Why not clap's
+    adapters as they are: they offer hidden items on a prefix, and
+    clap_complete 4.6.11 has no switch or hook for it (no option on
+    `CompleteEnv`, `Shells` or the engine). Why not a tree without the
+    hidden items: the engine still has to parse them in earlier words
+    (`-v`, `--skip-git`, a hidden command's own flags). An option is
+    proposed upstream (drafted for the maintainer, not posted). Source:
+    this spec ("hidden ones left out"); the completion test report of
+    2026-11-20 (B1).
 
 ## Known limits
 
