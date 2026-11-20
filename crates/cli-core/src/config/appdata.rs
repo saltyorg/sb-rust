@@ -33,7 +33,7 @@ use saphyr_parser::{Event, Marker, ScanError, Span, SpannedEventReceiver, Tag};
 const ALIAS_LIMIT: usize = 100_000;
 
 /// The key read.
-const KEY: &str = "server_appdata_path";
+pub(super) const KEY: &str = "server_appdata_path";
 
 /// What the loader would have found.
 pub(super) struct Reader<'input> {

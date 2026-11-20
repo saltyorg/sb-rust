@@ -187,15 +187,57 @@ fn read_beneath(dir: &Path, relative: &str) -> Result<Option<String>, ConfigErro
 /// <https://doc.rust-lang.org/std/path/struct.Path.html#method.components>);
 /// unlike Go's `filepath.Clean` it keeps `..` (std's `normalize_lexically`
 /// is unstable).
+///
+/// Every sb start reads it (the theme file is under the appdata path), and
+/// a command may again: a text that can't hold the key isn't parsed
+/// ([`may_hold_key`]), and the value of the last text parsed is kept for
+/// the process ([`appdata_in`]).
 #[must_use]
 pub fn appdata_path(inventory: &Path) -> PathBuf {
     read_inventory(inventory)
         .ok()
         .flatten()
-        .and_then(|text| inventory_appdata(&text).ok().flatten())
+        .and_then(appdata_in)
         .map(PathBuf::from)
         .filter(|path| path.is_absolute())
         .map_or_else(|| PathBuf::from("/opt"), |path| path.components().collect())
+}
+
+/// [`inventory_appdata`]'s string for `text`, refusals as none: skipped
+/// for a text that can't hold the key, and kept for the last text parsed,
+/// so a command that reads the inventory after sb's start parses it no
+/// second time. Why the text and not the path is the key: a playbook may
+/// rewrite the file while sb runs, and reading it again costs a few
+/// system calls, parsing it about 2 M instructions for a few KB of role
+/// overrides (performance research, round 3).
+fn appdata_in(text: String) -> Option<String> {
+    use std::sync::{Mutex, PoisonError};
+    /// The last text parsed and its value.
+    static LAST: Mutex<Option<(String, Option<String>)>> = Mutex::new(None);
+    if !may_hold_key(&text) {
+        return None;
+    }
+    // A panic in an earlier parse leaves nothing half-written here: the
+    // pair is set whole, after the parse.
+    let mut last = LAST.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some((seen, value)) = last.as_ref()
+        && *seen == text
+    {
+        return value.clone();
+    }
+    let value = inventory_appdata(&text).ok().flatten();
+    *last = Some((text, value.clone()));
+    value
+}
+
+/// Whether `text` can hold `server_appdata_path` as a key: it holds the
+/// name, or a backslash, with which a double-quoted scalar can spell it
+/// (`\x70`, an escaped line break). No other YAML form spells a key
+/// without its characters in a row: a plain or single-quoted scalar
+/// folds a line break into a space. A text that can't means `/opt`, as a
+/// file sb can't read or parse does.
+fn may_hold_key(text: &str) -> bool {
+    text.contains(appdata::KEY) || text.contains('\\')
 }
 
 /// The string `server_appdata_path` holds in the inventory's `text`, if
@@ -517,6 +559,73 @@ mod tests {
             appdata_path(&dir.path().join("missing.yml")),
             PathBuf::from("/opt")
         );
+    }
+
+    /// The key spelled with escapes, which only a double-quoted scalar
+    /// has, still counts: a text without the key's name is skipped only
+    /// when it has no backslash either.
+    #[test]
+    fn a_key_spelled_with_escapes_is_still_read() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let case = |text: &str| appdata_path(&file(dir.path(), "localhost.yml", text));
+        for text in [
+            "\"server_appdata_\\x70ath\": /srv\n",
+            "\"server_\\u0061ppdata_path\": /srv\n",
+            // An explicit key may span lines; the escaped line break
+            // joins them.
+            "? \"server_appdata_\\\n  path\"\n: /srv\n",
+        ] {
+            assert!(!text.contains("server_appdata_path"), "{text:?}");
+            assert_eq!(
+                inventory_appdata(text).expect("reads"),
+                Some("/srv".to_owned()),
+                "{text:?}"
+            );
+            assert_eq!(case(text), PathBuf::from("/srv"), "{text:?}");
+        }
+    }
+
+    /// Only a text with the key's name or a backslash is parsed: any
+    /// other holds no key and means `/opt` (Saltbox's default inventory
+    /// is a comment), whatever else is wrong with it.
+    #[test]
+    fn only_a_text_that_can_hold_the_key_is_parsed() {
+        for text in [
+            "",
+            "# a comment\n",
+            "other: 1\n",
+            "[unclosed\n",
+            "a: 1\na: 2\n",
+            "x: !custom 1\n",
+            "server_appdata: /srv\n",
+        ] {
+            assert!(!may_hold_key(text), "{text:?}");
+            assert_eq!(appdata_in(text.to_owned()), None, "{text:?}");
+            assert_eq!(inventory_appdata(text).ok().flatten(), None, "{text:?}");
+        }
+        for text in [
+            "server_appdata_path: /srv\n",
+            "# server_appdata_path\n",
+            "x: \"\\t\"\n",
+        ] {
+            assert!(may_hold_key(text), "{text:?}");
+        }
+    }
+
+    /// The value read last is kept for the same text, never for another:
+    /// an inventory rewritten while sb runs (a playbook's) is read again.
+    #[test]
+    fn a_changed_inventory_is_read_again() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inventory = file(dir.path(), "localhost.yml", "server_appdata_path: /a\n");
+        assert_eq!(appdata_path(&inventory), PathBuf::from("/a"));
+        assert_eq!(appdata_path(&inventory), PathBuf::from("/a"));
+        file(dir.path(), "localhost.yml", "server_appdata_path: /b\n");
+        assert_eq!(appdata_path(&inventory), PathBuf::from("/b"));
+        file(dir.path(), "localhost.yml", "x: 1\n");
+        assert_eq!(appdata_path(&inventory), PathBuf::from("/opt"));
+        file(dir.path(), "localhost.yml", "server_appdata_path: /b\n");
+        assert_eq!(appdata_path(&inventory), PathBuf::from("/b"));
     }
 
     /// yaml.v3 refuses a mapping with a duplicate key, so sb-go falls back
