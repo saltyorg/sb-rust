@@ -812,7 +812,7 @@ fn job(section: Section, context: &Context) -> run::Job {
             )
         }
         Section::Reboot => {
-            Box::pin(async move { packages::reboot(&packages::Paths::system(), &paint).await })
+            Box::pin(async move { packages::reboot(&packages::Paths::system(), &paint) })
         }
         Section::Sessions => Box::pin(async move {
             let release = system::version_id_here();

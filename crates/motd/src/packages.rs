@@ -4,7 +4,9 @@
 //!   `apt-check --human-readable --no-esm-messages`, then `apt list
 //!   --upgradable`;
 //! - Reboot Status: update-notifier's `/var/run/reboot-required` and
-//!   `.pkgs`, then its `update-motd-reboot-required` script.
+//!   `.pkgs` (sb-go then ran its `update-motd-reboot-required` script,
+//!   which prints that same file when it is there, so without the file
+//!   it printed nothing: Difference 37).
 //!
 //! Every child runs through sb-exec's `Cmd` under sb-go's 5 s
 //! (`motd/utils.go`, `ExecCommand`), and its text through term-ui's
@@ -41,8 +43,6 @@ pub struct Paths {
     pub reboot_required: PathBuf,
     /// The packages that asked for it, one per line.
     pub reboot_packages: PathBuf,
-    /// The script sb-go asks when the flag is absent.
-    pub motd_reboot_script: PathBuf,
 }
 
 impl Paths {
@@ -55,47 +55,26 @@ impl Paths {
             apt: PathBuf::from("apt"),
             reboot_required: PathBuf::from("/var/run/reboot-required"),
             reboot_packages: PathBuf::from("/var/run/reboot-required.pkgs"),
-            motd_reboot_script: PathBuf::from(
-                "/usr/lib/update-notifier/update-motd-reboot-required",
-            ),
         }
     }
 }
 
-/// Reboot Status, in the warning colour when a reboot is needed:
-/// - with the flag file there, `Reboot required (package: P)` for one
-///   package in `.pkgs`, `Reboot required (N packages)` for several, and
-///   `Reboot required` when the list is empty or can't be read;
-/// - without it, the script's output (5 s, exit 0 only), hidden when
-///   empty or saying `No reboot`, and in the warning colour when it says
-///   `reboot required`;
-/// - otherwise nothing, so the line is hidden.
-pub async fn reboot(paths: &Paths, paint: &Paint) -> Out {
+/// Reboot Status, in the warning colour when a reboot is needed: with
+/// the flag file there, `Reboot required (package: P)` for one package in
+/// `.pkgs`, `Reboot required (N packages)` for several, and `Reboot
+/// required` when the list is empty or can't be read; without it nothing,
+/// so the line is hidden. sb-go then ran update-notifier's
+/// `update-motd-reboot-required`, whose seven lines on 22.04, 24.04 and
+/// 26.04 print the flag file only when it exists (Difference 37): a
+/// child that could only print nothing.
+#[must_use]
+pub fn reboot(paths: &Paths, paint: &Paint) -> Out {
     if paths.reboot_required.exists() {
         let (line, packages) = required(&paths.reboot_packages);
         let value = json!({ "required": true, "packages": packages, "text": line });
         return Out::value(paint.warning(&line), value);
     }
-    let output = child_output(
-        Cmd::new(paths.motd_reboot_script.as_os_str()),
-        "reboot script",
-    )
-    .await;
-    if output.is_empty() || output.contains("No reboot") {
-        return Out::value(String::new(), json!({}));
-    }
-    let required = output.to_lowercase().contains("reboot required");
-    let value = json!({ "required": required, "packages": [], "text": output });
-    if required {
-        let line = output
-            .lines()
-            .map(|line| paint.warning(line))
-            .collect::<Vec<_>>()
-            .join("\n");
-        Out::value(line, value)
-    } else {
-        Out::value(output, value)
-    }
+    Out::value(String::new(), json!({}))
 }
 
 /// The flag file's text and the packages from `.pkgs`, read with
@@ -336,13 +315,7 @@ pub(crate) mod tests {
             apt: dir.join("apt"),
             reboot_required: dir.join("reboot-required"),
             reboot_packages: dir.join("reboot-required.pkgs"),
-            motd_reboot_script: dir.join("update-motd-reboot-required"),
         }
-    }
-
-    /// A stand-in script printing `output` and exiting `code`.
-    fn script(paths: &Paths, body: &str) {
-        stand_in(&paths.motd_reboot_script, body);
     }
 
     /// A stand-in program at `path` running `body` under sh.
@@ -370,10 +343,6 @@ pub(crate) mod tests {
             system.reboot_packages,
             Path::new("/var/run/reboot-required.pkgs")
         );
-        assert_eq!(
-            system.motd_reboot_script,
-            Path::new("/usr/lib/update-notifier/update-motd-reboot-required")
-        );
     }
 
     #[tokio::test]
@@ -384,7 +353,7 @@ pub(crate) mod tests {
         std::fs::write(&paths.reboot_required, "*** System restart required ***\n").unwrap();
         std::fs::write(&paths.reboot_packages, "linux-base\n").unwrap();
         assert_eq!(
-            reboot(&paths, &Paint::plain()).await.text,
+            reboot(&paths, &Paint::plain()).text,
             "Reboot required (package: linux-base)"
         );
     }
@@ -397,7 +366,7 @@ pub(crate) mod tests {
         std::fs::write(&paths.reboot_required, "").unwrap();
         std::fs::write(&paths.reboot_packages, "linux-base\n\nlibc6\ndbus\n").unwrap();
         assert_eq!(
-            reboot(&paths, &Paint::plain()).await.text,
+            reboot(&paths, &Paint::plain()).text,
             "Reboot required (3 packages)"
         );
     }
@@ -409,21 +378,12 @@ pub(crate) mod tests {
         let dir = tempfile::tempdir().unwrap();
         let paths = paths(dir.path());
         std::fs::write(&paths.reboot_required, "").unwrap();
-        assert_eq!(
-            reboot(&paths, &Paint::plain()).await.text,
-            "Reboot required"
-        );
+        assert_eq!(reboot(&paths, &Paint::plain()).text, "Reboot required");
         std::fs::write(&paths.reboot_packages, "\n\n").unwrap();
-        assert_eq!(
-            reboot(&paths, &Paint::plain()).await.text,
-            "Reboot required"
-        );
+        assert_eq!(reboot(&paths, &Paint::plain()).text, "Reboot required");
         std::fs::remove_file(&paths.reboot_packages).unwrap();
         std::fs::create_dir(&paths.reboot_packages).unwrap();
-        assert_eq!(
-            reboot(&paths, &Paint::plain()).await.text,
-            "Reboot required"
-        );
+        assert_eq!(reboot(&paths, &Paint::plain()).text, "Reboot required");
     }
 
     #[tokio::test]
@@ -434,7 +394,7 @@ pub(crate) mod tests {
         std::fs::write(&paths.reboot_required, "").unwrap();
         std::fs::write(&paths.reboot_packages, "evil\x1b]0;title\x07pkg\n").unwrap();
         assert_eq!(
-            reboot(&paths, &Paint::plain()).await.text,
+            reboot(&paths, &Paint::plain()).text,
             "Reboot required (package: evilpkg)"
         );
     }
@@ -447,66 +407,24 @@ pub(crate) mod tests {
         std::fs::write(&paths.reboot_required, "").unwrap();
         let paint = painted();
         assert_eq!(
-            reboot(&paths, &paint).await.text,
+            reboot(&paths, &paint).text,
             paint.warning("Reboot required")
         );
         assert_ne!(paint.warning("Reboot required"), "Reboot required");
     }
 
-    /// No flag and no script (or one that fails): the line is hidden.
+    /// No flag: the line is hidden and its value empty, with no child
+    /// (update-notifier's script would print only the absent file).
     #[tokio::test]
-    async fn no_flag_and_no_answer_hides_the_line() {
-        let _spawns = SPAWNS.lock().await;
+    async fn no_flag_hides_the_line() {
         let dir = tempfile::tempdir().unwrap();
         let paths = paths(dir.path());
-        assert_eq!(reboot(&paths, &Paint::plain()).await.text, "");
-        script(&paths, "echo 'reboot required'; exit 1");
-        assert_eq!(reboot(&paths, &Paint::plain()).await.text, "");
-        script(&paths, "printf '  \\n'");
-        assert_eq!(reboot(&paths, &Paint::plain()).await.text, "");
-        script(&paths, "echo 'No reboot needed'");
-        assert_eq!(reboot(&paths, &Paint::plain()).await.text, "");
-    }
-
-    /// The script's own text is shown, made safe, in the warning colour
-    /// only when it says a reboot is required.
-    #[tokio::test]
-    async fn the_scripts_text_is_shown_without_the_flag() {
-        let _spawns = SPAWNS.lock().await;
-        let dir = tempfile::tempdir().unwrap();
-        let paths = paths(dir.path());
-        script(
-            &paths,
-            "printf '\\n*** System Reboot Required ***\\nsecond\\033[2J\\n'",
-        );
-        let paint = painted();
-        assert_eq!(
-            reboot(&paths, &paint).await.text,
-            format!(
-                "{}\n{}",
-                paint.warning("*** System Reboot Required ***"),
-                paint.warning("second")
-            )
-        );
-        script(&paths, "echo '*** System restart required ***'");
-        assert_eq!(
-            reboot(&paths, &paint).await.text,
-            "*** System restart required ***"
-        );
-    }
-
-    /// A script past the 5 s limit is ended and hides the line.
-    #[tokio::test]
-    async fn a_hanging_script_is_ended_at_the_limit() {
-        let _spawns = SPAWNS.lock().await;
-        let dir = tempfile::tempdir().unwrap();
-        let paths = paths(dir.path());
-        script(&paths, "echo 'reboot required'; exec sleep 60");
-        let start = std::time::Instant::now();
-        assert_eq!(reboot(&paths, &Paint::plain()).await.text, "");
-        let took = start.elapsed();
-        assert!(took >= CHILD_TIMEOUT, "{took:?}");
-        assert!(took < Duration::from_secs(20), "{took:?}");
+        let out = reboot(&paths, &Paint::plain());
+        assert_eq!(out.text, "");
+        assert_eq!(out.json, crate::Json::Empty);
+        // A `.pkgs` list alone needs no reboot.
+        std::fs::write(&paths.reboot_packages, "libc6\n").unwrap();
+        assert_eq!(reboot(&paths, &Paint::plain()).text, "");
     }
 
     #[test]
@@ -758,7 +676,7 @@ pub(crate) mod tests {
         std::fs::write(&paths.reboot_required, "").unwrap();
         std::fs::write(&paths.reboot_packages, "linux-image\nlibc6\n").unwrap();
         assert_eq!(
-            reboot(&paths, &Paint::plain()).await.json,
+            reboot(&paths, &Paint::plain()).json,
             Json::Value(json!({
                 "required": true,
                 "packages": ["linux-image", "libc6"],

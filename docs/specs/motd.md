@@ -235,7 +235,7 @@ mount points.
 | GPU | sysfs `/sys/bus/pci/devices/*/{class,vendor,device,revision}`, classes 0300, 0302 and 0380, names from the host's `/usr/share/misc/pci.ids` through sb's own parser (decision 2), sb-go's BMC exclusions (`motd/info.go:780-790`) | `lspci` |
 | Memory Usage | `procfs::Meminfo`: MemAvailable, or else Free+Cached+Buffers; sb-go's `xG used, free, cached, available, total` | `/proc/meminfo` |
 | Package Status | update-notifier's `updates-available` file, then `/usr/lib/update-notifier/apt-check --human-readable --no-esm-messages`, then `apt list --upgradable` (children, 5 s each; `motd/info.go:372-570`) | same |
-| Reboot Status | `/var/run/reboot-required` and `.pkgs`, then `/usr/lib/update-notifier/update-motd-reboot-required` | same |
+| Reboot Status | `/var/run/reboot-required` and `.pkgs`; without the flag file the line is hidden (difference 37) | the same files, then `/usr/lib/update-notifier/update-motd-reboot-required` |
 | User Sessions | `loginctl list-sessions --output=json` up to 24.04, `--json=short` after, counting user sessions, then one `loginctl show-session -p Id -p State <ids>` to leave out the closing ones (decision 6, Difference 7) | `who` |
 | Last login | `last -w -n 5` (decision 6), with sb-go's text `user at Day Mon D HH:MM until HH:MM (dur) from IP` | `last -n 5`, then `lastlog -u root`, then `who -u` |
 | Disk Usage | `procfs` mountinfo plus `rustix::fs::statvfs`, with df's rules (below) and the bar of decision 8 | `df -H -x … --output=target,pcent,size` |
@@ -598,6 +598,13 @@ never reach stdout, stderr or the run log.
     and matches the `motd_colors` block the maintainer is adding to
     Saltbox; the hexes come from `Slot::built_in`, so the two can't
     drift apart.
+37. **Reboot Status runs no script** (the maintainer, 2026-11-20).
+    Without `/var/run/reboot-required` sb-go ran update-notifier's
+    `update-motd-reboot-required`, which on 22.04, 24.04 and 26.04 is the
+    same seven lines: it prints that file when it exists. So it printed
+    nothing, but for a flag written between sb-go's check and the
+    script's; sb hides the line without starting it, one child fewer at
+    each login. With the flag the line is as before.
 
 ### Scope
 
