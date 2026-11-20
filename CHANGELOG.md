@@ -116,8 +116,9 @@ you could trip over.
   the calling user and without sudo, so it is quicker, and flag values
   such as `--color`'s complete. Hidden commands and flags are never
   offered, as in sb-go, whatever you have typed, and Tab adds nothing
-  where only flags would fit (`sb update <Tab>`): flags complete after
-  a `-`. Lists are alphabetical in every shell, as sb-go's.
+  where only flags would fit (`sb update <Tab>`; bash may list file
+  names there): flags complete after a `-`. Lists are alphabetical in every shell, as sb-go's. A missing
+  or broken sb prints nothing at Tab.
 
 ### Removed
 

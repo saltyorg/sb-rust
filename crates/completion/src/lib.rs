@@ -218,9 +218,8 @@ impl Shell {
     /// clap's registration stub for `name`, which runs `completer` (a path,
     /// or a name looked up on `PATH`) at Tab time with [`VAR`] set
     /// (<https://docs.rs/clap_complete/4.6.11/clap_complete/env/trait.EnvCompleter.html#tymethod.write_registration>;
-    /// `unstable-dynamic`, ADR-001). No script of sb's own: the stub only
-    /// calls sb (spec, difference 1); zsh's last line is guarded
-    /// ([`zsh_guard`]).
+    /// `unstable-dynamic`, ADR-001), with sb's patches ([`Shell::patch`]).
+    /// No script of sb's own: the stub only calls sb (spec, difference 1).
     ///
     /// # Panics
     ///
@@ -228,30 +227,99 @@ impl Shell {
     #[must_use]
     pub fn registration(self, name: &str, completer: &str) -> Vec<u8> {
         let mut stub = Vec::new();
-        self.engine()
-            .write_registration(VAR, name, name, completer, &mut stub)
+        self.write_registration(VAR, name, name, completer, &mut stub)
             // Writing to a `Vec` can't fail.
             .expect("a stub in memory");
-        if self == Self::Zsh {
-            let function = format!("_clap_dynamic_completer_{}", name.replace('-', "_"));
-            let compdef = format!("compdef {function} {name}\n");
-            let guard = zsh_guard(&format!("_{name}"), &function, name);
-            // The stub ends with that line (clap_complete 4.6.11, pinned
-            // exactly: ADR-001; the tests check it).
-            if let Some(body) = stub.strip_suffix(compdef.as_bytes()) {
-                let mut guarded = body.to_vec();
-                guarded.extend_from_slice(guard.as_bytes());
-                stub = guarded;
+        stub
+    }
+
+    /// clap's `stub` for `name` (clap's identifier for the script) and
+    /// `bin` (the command it registers) with sb's changes, each matched
+    /// against `clap_complete` 4.6.11's exact text (pinned exactly:
+    /// ADR-001), so a stub that no longer matches is left as clap wrote it
+    /// and the tests fail: zsh's last line guarded ([`zsh_guard`]); bash's
+    /// and fish's quiet when the completer fails ([`quiet_bash`],
+    /// [`quiet_fish`]; spec, decision 12). sb passes the same for both
+    /// (`registration`, and `CompleteEnv` for sb's tree, which sets no
+    /// `bin_name`), but each goes where clap puts it.
+    fn patch(self, stub: String, name: &str, bin: &str) -> String {
+        match self {
+            Self::Bash => quiet_bash(stub),
+            Self::Fish => quiet_fish(stub),
+            Self::Zsh => {
+                // clap's function is named from `name`, its `compdef`
+                // registers `bin`, and compinit autoloads `_<bin>`.
+                let function = format!("_clap_dynamic_completer_{}", name.replace('-', "_"));
+                let compdef = format!("compdef {function} {bin}\n");
+                // The stub ends with that line.
+                match stub.strip_suffix(&compdef) {
+                    Some(body) => body.to_owned() + &zsh_guard(&format!("_{bin}"), &function, bin),
+                    None => stub,
+                }
             }
         }
+    }
+}
+
+/// The completer's call in clap's bash stub, the line's end
+/// (`clap_complete` 4.6.11, `env/shells.rs`: `"COMPLETER" -- "${words[@]}"
+/// \`).
+const BASH_CALL: &str = " -- \"${words[@]}\" \\\n";
+
+/// clap's bash stub with the completer's stderr discarded, as clap's zsh
+/// stub discards it (spec, decision 12): without it, a missing or
+/// unexecutable sb made bash print `/usr/local/bin/sb: No such file or
+/// directory` above the prompt on every Tab, and a failing one its own
+/// errors. The stub already drops the reply on a non-zero exit (its `$?`
+/// check). Why not upstream first: sb's installed files can't wait for a
+/// clap release; the change is proposed there with zsh's guard. Only a
+/// stub with the call once is patched.
+fn quiet_bash(stub: String) -> String {
+    if stub.matches(BASH_CALL).count() == 1 {
+        stub.replacen(BASH_CALL, " -- \"${words[@]}\" 2>/dev/null \\\n", 1)
+    } else {
         stub
     }
 }
 
-/// sb's adapter for each shell: clap's registration stub, as
-/// `CompleteEnv` prints it for `SB_COMPLETE=<shell> sb`, and sb's reply,
-/// clap's engine's candidates without the hidden commands and flags, in
-/// clap's format (spec, decision 11; the module `reply`). `CompleteEnv::shells` takes any `EnvCompleter`
+/// Where clap's fish stub's command substitution opens and closes
+/// (`clap_complete` 4.6.11, `env/shells.rs`: `--arguments "(VAR=fish
+/// COMPLETER -- ...)"`, the stub's only line).
+const FISH_OPEN: &str = " --arguments \"(";
+const FISH_CLOSE: &str = ")\"\n";
+
+/// clap's fish stub with the completer's stderr discarded and its reply
+/// used only when it exits 0 (spec, decision 12): fish takes a command
+/// substitution's output whatever its status, so a failing sb's stdout
+/// became a candidate (`Error:\ something\ broke`), and its stderr
+/// reached the prompt. `set` passes the substitution's status on ("In
+/// assignment mode, set does not modify the exit status, but passes along
+/// whatever $status was set, including by command substitutions",
+/// <https://fishshell.com/docs/3.3/cmds/set.html>, fish 3.3 being the
+/// oldest sb supports), and `string join` prints the reply's lines again,
+/// nothing for none
+/// (<https://fishshell.com/docs/3.3/cmds/string-join.html>). The `$` is
+/// escaped: the stub's outer double quotes are expanded when the file is
+/// sourced, the inside at each Tab. Only a stub with one substitution at
+/// its end is patched.
+fn quiet_fish(stub: String) -> String {
+    let patched = stub.split_once(FISH_OPEN).and_then(|(head, rest)| {
+        let call = rest.strip_suffix(FISH_CLOSE)?;
+        (!call.contains(FISH_OPEN)).then(|| {
+            format!(
+                "{head}{FISH_OPEN}set -l __sb_completion_reply ({call} 2>/dev/null); and string join \\n -- \\$__sb_completion_reply{FISH_CLOSE}"
+            )
+        })
+    });
+    patched.unwrap_or(stub)
+}
+
+/// sb's adapter for each shell: clap's registration stub with sb's
+/// patches ([`Shell::patch`]), as `generate` writes it and `CompleteEnv`
+/// prints it for `SB_COMPLETE=<shell> sb`, and sb's reply, clap's
+/// engine's candidates without the hidden commands and flags, in clap's
+/// format (spec, decision 11; the module `reply`). `CompleteEnv::shells`
+/// takes any `EnvCompleter`
 /// (<https://docs.rs/clap_complete/4.6.11/clap_complete/env/struct.CompleteEnv.html#method.shells>).
 impl EnvCompleter for Shell {
     fn name(&self) -> &'static str {
@@ -270,8 +338,12 @@ impl EnvCompleter for Shell {
         completer: &str,
         buf: &mut dyn std::io::Write,
     ) -> std::io::Result<()> {
+        let mut stub = Vec::new();
         self.engine()
-            .write_registration(var, name, bin, completer, buf)
+            .write_registration(var, name, bin, completer, &mut stub)?;
+        // clap writes the stub from `&str`s: UTF-8 throughout.
+        let stub = String::from_utf8_lossy(&stub).into_owned();
+        buf.write_all(self.patch(stub, name, bin).as_bytes())
     }
 
     fn write_complete(
@@ -358,6 +430,94 @@ mod tests {
             );
             assert!(!zsh.contains("\ncompdef "), "{name}: {zsh}");
         }
+    }
+
+    /// clap 4.6.11's bash stub, whole, with sb's one change: the
+    /// completer's stderr discarded (spec, decision 12). A clap release
+    /// that changes the stub fails here, not silently on a host.
+    #[test]
+    fn the_bash_stub_discards_the_completers_stderr() {
+        let bash =
+            String::from_utf8(Shell::Bash.registration("sb", "/usr/local/bin/sb")).expect("UTF-8");
+        let want = r#"
+_clap_complete_sb() {
+    local IFS=$'\013'
+    local _CLAP_COMPLETE_INDEX=${COMP_CWORD}
+    local _CLAP_COMPLETE_COMP_TYPE=${COMP_TYPE}
+    if compopt +o nospace 2> /dev/null; then
+        local _CLAP_COMPLETE_SPACE=false
+    else
+        local _CLAP_COMPLETE_SPACE=true
+    fi
+    local words=("${COMP_WORDS[@]}")
+    if [[ "${BASH_VERSINFO[0]}" -ge 4 ]]; then
+        words[COMP_CWORD]="$2"
+    fi
+    COMPREPLY=( $( \
+        _CLAP_IFS="$IFS" \
+        _CLAP_COMPLETE_INDEX="$_CLAP_COMPLETE_INDEX" \
+        _CLAP_COMPLETE_COMP_TYPE="$_CLAP_COMPLETE_COMP_TYPE" \
+        _CLAP_COMPLETE_SPACE="$_CLAP_COMPLETE_SPACE" \
+        SB_COMPLETE="bash" \
+        "/usr/local/bin/sb" -- "${words[@]}" 2>/dev/null \
+    ) )
+    if [[ $? != 0 ]]; then
+        unset COMPREPLY
+    elif [[ $_CLAP_COMPLETE_SPACE == false ]] && [[ "${COMPREPLY-}" =~ [=/:]$ ]]; then
+        compopt -o nospace
+    fi
+}
+if [[ "${BASH_VERSINFO[0]}" -eq 4 && "${BASH_VERSINFO[1]}" -ge 4 || "${BASH_VERSINFO[0]}" -gt 4 ]]; then
+    complete -o nospace -o bashdefault -o nosort -F _clap_complete_sb sb
+else
+    complete -o nospace -o bashdefault -F _clap_complete_sb sb
+fi
+
+"#;
+        assert_eq!(bash, want);
+    }
+
+    /// clap 4.6.11's fish stub, whole, with sb's change: the completer's
+    /// stderr discarded and its reply used only when it exits 0 (spec,
+    /// decision 12).
+    #[test]
+    fn the_fish_stub_uses_only_a_successful_reply() {
+        let fish =
+            String::from_utf8(Shell::Fish.registration("sb", "/usr/local/bin/sb")).expect("UTF-8");
+        let want = r#"complete --keep-order --exclusive --command sb --arguments "(set -l __sb_completion_reply (SB_COMPLETE=fish /usr/local/bin/sb -- (commandline --current-process --tokenize --cut-at-cursor) (commandline --current-token) 2>/dev/null); and string join \n -- \$__sb_completion_reply)"
+"#;
+        assert_eq!(fish, want);
+    }
+
+    /// A stub the patches don't match is left as clap wrote it (and the
+    /// tests above fail): never half patched.
+    #[test]
+    fn a_stub_the_patches_dont_match_is_kept() {
+        assert_eq!(quiet_bash("no call here\n".to_owned()), "no call here\n");
+        let twice = format!("{BASH_CALL}{BASH_CALL}");
+        assert_eq!(quiet_bash(twice.clone()), twice);
+        assert_eq!(
+            quiet_fish("complete --command sb\n".to_owned()),
+            "complete --command sb\n"
+        );
+        let open = "complete --arguments \"(x)\" --arguments \"(y)\"\n";
+        assert_eq!(quiet_fish(open.to_owned()), open);
+        let unclosed = "complete --arguments \"(x\n";
+        assert_eq!(quiet_fish(unclosed.to_owned()), unclosed);
+    }
+
+    /// The zsh guard follows clap's placement when `name` and `bin`
+    /// differ: the function from `name`, the `compdef` and the autoloaded
+    /// file from `bin`.
+    #[test]
+    fn the_zsh_guard_takes_name_and_bin_where_clap_puts_them() {
+        let mut stub = Vec::new();
+        EnvCompleter::write_registration(&Shell::Zsh, VAR, "sb-x", "sbx", "/bin/sbx", &mut stub)
+            .expect("memory");
+        let stub = String::from_utf8(stub).expect("UTF-8");
+        let guard = zsh_guard("_sbx", "_clap_dynamic_completer_sb_x", "sbx");
+        assert!(stub.ends_with(&guard), "{stub}");
+        assert!(!stub.contains("\ncompdef "), "{stub}");
     }
 
     #[test]

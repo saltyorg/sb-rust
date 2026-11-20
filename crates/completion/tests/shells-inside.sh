@@ -132,6 +132,22 @@ add "sb install --skip-tags so" "sb install --skip-tags so"
 add "sb install --extra-vars=so" "sb install --extra-vars=so"
 add "sb install --extra-vars \"x=y z\" so" "sb install --extra-vars \"x=y z\" sonarr"
 add "sb install \"plex\" p" "sb install \"plex\" p"
+# Hidden commands and flags are never offered, whatever the prefix (spec,
+# "Hidden commands and flags are never offered"); a shown command's
+# hidden alias still completes.
+for typed in "sb self" "sb comp" "sb setu" "sb gh" "sb update-" "sb rest" \
+  "sb self-update" "sb help self" "sb announcements p" "sb update --skip-g" \
+  "sb update --verify" "sb update --verb" "sb install --force" \
+  "sb completion install --a"; do
+  add "$typed" "$typed"
+done
+add "sb edit accounts." "sb edit accounts.yml"
+# An empty word where only flags fit gets nothing, so no `--` is inserted
+# (spec, difference 6). Bash falls back to file names (bashdefault), and
+# by now the home holds two (sofile, captured), so nothing is inserted.
+for typed in "sb update " "sb version " "sb branch " "sb docker restart "; do
+  add "$typed" "${typed% }"
+done
 
 failures=0
 # drive SHELL LABEL CASE...: a fresh login shell, the cases in order (the
@@ -237,6 +253,59 @@ zsh_dump_rebuild() {
   fi
 }
 zsh_dump_rebuild
+
+# sb install <Tab> with no, a corrupt and an empty tag cache: only flags
+# would fit, so nothing is inserted (spec, difference 6).
+cp /srv/git/saltbox/cache.json /out/cache.json
+for kind in missing corrupt empty; do
+  case $kind in
+    missing) rm -f /srv/git/saltbox/cache.json ;;
+    corrupt) printf '{"/srv/git/saltbox": {"tags": ["plex",' >/srv/git/saltbox/cache.json ;;
+    empty) : >/srv/git/saltbox/cache.json ;;
+  esac
+  for shell in /bin/bash /usr/bin/zsh /usr/bin/fish; do
+    # The first case leaves ~/captured, so bash's file fallback has two
+    # names and inserts none.
+    drive "$shell" "$(basename "$shell")-cache-$kind" "sb vers" "sb version" \
+      "sb install " "sb install"
+  done
+done
+install -m 0644 /out/cache.json /srv/git/saltbox/cache.json
+
+# A missing, unexecutable or failing completer prints nothing at Tab, and
+# fish never takes a failing one's stdout as a candidate (spec, "A failing
+# sb prints nothing at Tab"). The symlink name's files call
+# /usr/local/bin/saltbox, so that path is replaced; sb itself stays.
+for kind in missing noexec failing; do
+  rm -f /usr/local/bin/saltbox
+  case $kind in
+    missing) ;;
+    noexec) printf '#!/bin/sh\necho plex\n' >/usr/local/bin/saltbox; chmod 0644 /usr/local/bin/saltbox ;;
+    failing)
+      printf '#!/bin/sh\necho "Error: something broke"\necho "stderr: broken" >&2\nexit 1\n' >/usr/local/bin/saltbox
+      chmod 0755 /usr/local/bin/saltbox ;;
+  esac
+  for shell in /bin/bash /usr/bin/zsh /usr/bin/fish; do
+    label=$(basename "$shell")-completer-$kind
+    # fish completes file names for a command it can't run, as for any
+    # unknown command (silently), so `so` there would give sofile; a word
+    # no file starts with shows only that no candidate came. For the
+    # failing completer, `so` is in its stdout's "something" (fish matches
+    # substrings), so a used reply would show.
+    word=pl
+    [ "$kind" != failing ] || word=so
+    drive "$shell" "$label" "saltbox up" "saltbox up" "saltbox install $word" "saltbox install $word"
+    # Each shell's wording: bash's and zsh's (any case), fish's, the
+    # completer's own.
+    if grep -Eiq 'no such file|permission denied|unknown command|not executable|stderr: broken|error' "/out/screen-$label.txt"; then
+      echo "FAIL: $label: the screen shows the completer's failure: $(tr '\n' '|' <"/out/screen-$label.txt")"
+      failures=$((failures + 1))
+    else
+      echo "PASS: $label: nothing on the screen"
+    fi
+  done
+done
+ln -sf sb /usr/local/bin/saltbox
 
 [ "$failures" -eq 0 ] || fail "$failures case(s) failed"
 echo "RESULT: $rel: passed"

@@ -363,7 +363,7 @@ fn generate_prints_the_stub_for_sb() {
         ("zsh", "#compdef sb"),
         (
             "fish",
-            "complete --keep-order --exclusive --command sb --arguments \"(SB_COMPLETE=fish sb -- ",
+            "complete --keep-order --exclusive --command sb --arguments \"(set -l __sb_completion_reply (SB_COMPLETE=fish sb -- ",
         ),
     ] {
         let output = common::sb()
@@ -374,6 +374,20 @@ fn generate_prints_the_stub_for_sb() {
         let text = String::from_utf8(output.stdout).expect("UTF-8");
         assert!(text.starts_with(first), "{shell}: {text}");
         assert!(text.contains("SB_COMPLETE"), "{shell}: {text}");
+        // sb's stubs, quiet when the completer fails (spec, decision 12).
+        assert!(text.contains(" 2>/dev/null"), "{shell}: {text}");
+        // `SB_COMPLETE=<shell> sb`, clap's own way to print the stub,
+        // prints sb's too.
+        let printed = common::sb()
+            .env("SB_COMPLETE", shell)
+            .output()
+            .expect("run sb");
+        assert!(printed.status.success(), "{shell}: {printed:?}");
+        let printed = String::from_utf8(printed.stdout).expect("UTF-8");
+        assert!(printed.contains(" 2>/dev/null"), "{shell}: {printed}");
+        if shell == "zsh" {
+            assert!(printed.contains("funcstack"), "{printed}");
+        }
     }
     common::sb()
         .args(["completion", "generate", "powershell"])

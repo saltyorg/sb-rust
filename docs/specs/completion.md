@@ -94,6 +94,23 @@ completion files in place.
   as cobra does: the user has named the command already, and its help
   lists those flags. The name itself is not completed (`sb
   self-update<Tab>` adds nothing), nor is a hidden flag's.
+- **A failing sb prints nothing at Tab** (decision 12). clap 4.6.11's
+  bash and fish stubs don't redirect the completer's stderr, so a
+  missing, unexecutable or broken `/usr/local/bin/sb` printed the
+  shell's or sb's error above the prompt on every Tab; its zsh stub
+  already discards it (`2>/dev/null`). sb adds the same `2>/dev/null` to
+  the bash and fish stubs' call, and fish uses the reply only when the
+  completer exits 0 (`set` passes on the command substitution's status,
+  https://fishshell.com/docs/3.3/cmds/set.html, "Exit status"); bash's
+  stub already drops a reply on a non-zero exit. A missing or broken sb
+  then completes nothing (bash falls back to file names, through
+  `-o bashdefault`), silently, as sb-go's scripts did. clap's zsh stub
+  uses the completer's stdout whatever its status (zsh's `local` hides
+  it); that is left as clap's, since sb writes to stdout only once a
+  reply is complete (`CompleteEnv::complete` writes the buffer after
+  `write_complete` succeeds), and its errors and panics go to stderr. A
+  foreign program at sb's path that prints to stdout and fails can
+  still put a word into a zsh list.
 - **Tags for `sb install`:** an `ArgValueCompleter` on install's tags
   positional (`num_args(1..)`), with sb-go's rules
   (cmd/tag_completion.go):
@@ -328,7 +345,8 @@ the test's directory.
   a hidden flag, a hidden global `-v`, a shown command's hidden alias,
   a hidden command's shown flag, an empty word with only flags and with
   other candidates, the order) and each shell's reply, which is clap's
-  format byte for byte where nothing is hidden.
+  format byte for byte where nothing is hidden; each stub patch against
+  clap's exact stub text (a stub it doesn't match fails the test).
 - **Through the binary, no shell:** `SB_COMPLETE=bash sb -- sb install
   p` (and zsh, fish) with the stub's environment, output compared;
   run as a non-root user (crates/sb/tests/unprivileged.rs's way); no run
@@ -350,7 +368,8 @@ the test's directory.
   then a login shell per user driven in a PTY with Tab presses:
   commands, `install s<Tab>`, `plex,so<Tab>`, `sandbox-`, the earlier-word
   rule; hidden commands and flags on a prefix; no `--` inserted on an
-  empty word with only flags. This is where the verification items below are settled.
+  empty word with only flags; a missing, unexecutable and failing
+  `/usr/local/bin/sb`. This is where the verification items below are settled.
 - Coverage and mutation as CONSTRAINTS.md.
 
 ## Verification items (facts to settle in slice 1, not questions)
@@ -395,7 +414,8 @@ the test's directory.
 ## Boundaries
 
 - **Always:** clap_complete's engine and stubs, no shell script of ours
-  beyond what verification item 1 may need; nothing written to stdout
+  beyond what verification item 1 may need and decision 12's
+  redirections; nothing written to stdout
   before `CompleteEnv` runs; atomic writes with 0644; sb-go's paths,
   names and texts.
 - **Ask first:** moving the `clap_complete` pin (ADR-001's procedure);
@@ -475,6 +495,13 @@ the test's directory.
     proposed upstream (drafted for the maintainer, not posted). Source:
     this spec ("hidden ones left out"); the completion test report of
     2026-11-20 (B1, B2); the maintainer, 2026-11-20 (B2, the order).
+12. **The bash and fish stubs are quiet on failure** (Tab completion, "A
+    failing sb prints nothing at Tab"): sb patches clap's stub text, as
+    it patches zsh's last line (verification item 1), each patch matched
+    against clap 4.6.11's exact text, so a clap release that changes the
+    stub fails a test instead of leaving the stub unpatched. Source: the
+    completion test report of 2026-11-20 (B3, B4); sb-go's scripts are
+    silent there.
 
 ## Known limits
 
