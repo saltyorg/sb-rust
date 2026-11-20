@@ -459,7 +459,10 @@ No test touches a Saltbox checkout or the network.
   `inventories/host_vars/localhost.yml`, logs and retry files, `git
   clean -dn` lists nothing in either checkout.
 - Two sb runs updating the same checkout at once: the second fails on
-  git's `index.lock` with git's message. sb-go is the same.
+  git's `index.lock` with git's message. sb-go is the same. *Amended
+  2026-11-18: the commands that update a checkout take the host-wide
+  run lock, so a second run waits for the first (cli-core spec, "Run
+  lock").*
 - A host without Saltbox's `safe.directory` entries gets git's "dubious
   ownership" error (assumption 2).
 - A user's credential helper that prompts some other way than the

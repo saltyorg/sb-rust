@@ -614,6 +614,9 @@ moved), so `ops` callers and the tests can read them.
 - Moving sb-go's `update-saltbox-python` release action: release
   preparation.
 - A shared run lock between sb runs: sb-go has none; not part of parity.
+  *Amended 2026-11-18: the maintainer chose a host-wide run lock that
+  waits; `update-venv`, `reinstall-venv`, `reinstall-python` and
+  `reinstall-facts` take it (cli-core spec, "Run lock").*
 
 ## Tech Stack
 
@@ -965,7 +968,9 @@ developer's host. Every path is a `Layout` field on a `tempfile` root.
   runs as root anyway. A local writer can also keep a fact that reports
   a newer version (decision 2 keeps a newer one). Added with module
   build M19, from its security review.
-- **No lock between concurrent sb runs** (sb-go has none).
+- **No lock between concurrent sb runs** (sb-go has none). *Amended
+  2026-11-18: the host-wide run lock waits for the other run (cli-core
+  spec, "Run lock").*
 - **A broken published fact release** is installed and kept; the fix is a
   new release.
 
