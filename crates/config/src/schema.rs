@@ -5,7 +5,7 @@
 //! pattern that doesn't compile fails loading, naming the file and the
 //! line and column (and the key or value, where one is at fault).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::path::Path;
 
@@ -229,24 +229,64 @@ fn pattern<'de, D: Deserializer<'de>>(de: D) -> Result<Option<regex::Regex>, D::
         .transpose()
 }
 
-/// `source` as a regex, or why not, in one line: a syntax error's kind
-/// from regex-syntax (the parser regex uses, with the same defaults;
-/// `regex::Error` only carries its multi-line rendering), or regex's
-/// size limit.
-fn compile(source: &str) -> Result<regex::Regex, String> {
-    if let Err(err) = regex_syntax::parse(source) {
-        return Err(match err {
-            regex_syntax::Error::Parse(err) => err.kind().to_string(),
-            regex_syntax::Error::Translate(err) => err.kind().to_string(),
-            other => other.to_string(),
-        });
+std::thread_local! {
+    /// The patterns compiled while a schema loads ([`parse`]), by their
+    /// text: Saltbox's motd schema holds one colour pattern nine times
+    /// (the performance pass, 2026-11-20: with regex-syntax parsing only
+    /// what regex refused, 1.5 M instructions fewer per load). None
+    /// outside a load. Why not a
+    /// `DeserializeSeed` carrying the map: every derived rule type would
+    /// need a seed written by hand, for state only `pattern` reads. A clone
+    /// shares the compiled regex, reference counted, with a search cache
+    /// of its own
+    /// (<https://docs.rs/regex/1.13.1/regex/index.html#sharing-a-regex-across-threads-can-result-in-contention>).
+    static COMPILED: std::cell::RefCell<Option<HashMap<String, regex::Regex>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// [`COMPILED`] kept for one schema load: started empty, then dropped
+/// with the guard, so no load sees another's.
+struct Compiled;
+
+impl Compiled {
+    fn start() -> Self {
+        COMPILED.with_borrow_mut(|compiled| *compiled = Some(HashMap::new()));
+        Self
     }
-    regex::Regex::new(source).map_err(|err| match err {
-        regex::Error::CompiledTooBig(limit) => {
-            format!("it compiles to more than the {limit}-byte limit")
+}
+
+impl Drop for Compiled {
+    fn drop(&mut self) {
+        COMPILED.with_borrow_mut(|compiled| *compiled = None);
+    }
+}
+
+/// `source` as a regex ([`COMPILED`]'s when this load has compiled it),
+/// or why not, in one line: a syntax error's kind from regex-syntax (the
+/// parser regex uses, with the same defaults; `regex::Error` only carries
+/// its multi-line rendering), or regex's size limit. regex-syntax parses
+/// only a pattern regex refused, which parsed it already.
+fn compile(source: &str) -> Result<regex::Regex, String> {
+    if let Some(found) = COMPILED.with_borrow(|compiled| compiled.as_ref()?.get(source).cloned()) {
+        return Ok(found);
+    }
+    let compiled = regex::Regex::new(source).map_err(|err| match regex_syntax::parse(source) {
+        Err(regex_syntax::Error::Parse(err)) => err.kind().to_string(),
+        Err(regex_syntax::Error::Translate(err)) => err.kind().to_string(),
+        Err(other) => other.to_string(),
+        Ok(_) => match err {
+            regex::Error::CompiledTooBig(limit) => {
+                format!("it compiles to more than the {limit}-byte limit")
+            }
+            other => other.to_string(),
+        },
+    })?;
+    COMPILED.with_borrow_mut(|cache| {
+        if let Some(cache) = cache {
+            cache.insert(source.to_string(), compiled.clone());
         }
-        other => other.to_string(),
-    })
+    });
+    Ok(compiled)
 }
 
 /// serde-saphyr's error in one line, without its source snippet, ending
@@ -276,6 +316,7 @@ fn message(err: &serde_saphyr::Error) -> String {
 ///
 /// [`SchemaError::Invalid`] when the text isn't a valid schema.
 pub fn parse(file: &str, text: &str) -> Result<Rules, SchemaError> {
+    let _compiled = Compiled::start();
     serde_saphyr::from_str(text).map_err(|err| SchemaError::Invalid {
         file: file.to_string(),
         message: message(&err),
@@ -543,6 +584,29 @@ h:
         let message = error("a:\n  type: string\n---\nb:\n  type: string\n");
         assert!(message.contains("more than one YAML document"), "{message}");
         assert!(!message.contains("from_str_multiple"), "{message}");
+    }
+
+    /// A pattern repeated in a schema (motd's colour) is one compiled
+    /// regex for every rule that holds it, kept only while that schema
+    /// loads; a repeated pattern that doesn't compile fails at its first
+    /// place.
+    #[test]
+    fn a_repeated_pattern_is_compiled_once_per_load() {
+        let rules = parse(
+            "colours.schema.yml",
+            "a:\n  pattern: '^#[0-9a-f]{3}$'\nb:\n  pattern: '^#[0-9a-f]{3}$'\nc:\n  pattern: '^x$'\n",
+        )
+        .expect("loads");
+        let [a, b, c] = ["a", "b", "c"].map(|key| rules[key].pattern.as_ref().expect("pattern"));
+        assert!(a.is_match("#a1f") && b.is_match("#a1f") && !b.is_match("a1f"));
+        assert!(c.is_match("x") && !c.is_match("#a1f"));
+        assert!(COMPILED.with_borrow(Option::is_none));
+        let message = error("a:\n  pattern: '^#(['\nb:\n  pattern: '^#(['\n");
+        assert!(message.contains("line 2"), "{message}");
+        assert!(COMPILED.with_borrow(Option::is_none));
+        // Outside a load, nothing is kept.
+        compile("^y$").expect("compiles");
+        assert!(COMPILED.with_borrow(Option::is_none));
     }
 
     /// A pattern too big for regex's size limit says so, on one line.
