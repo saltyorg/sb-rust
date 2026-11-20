@@ -458,10 +458,72 @@ fn on_a_terminal_ctrl_c_at_a_question_leaves_the_screen_and_ends_by_sigint() {
         World::branch(&world.saltbox()),
         ("develop".into(), "develop".into())
     );
-    // The interrupted block, then one blank line before the prompt (cli-core
-    // spec, "The blank line at the end").
-    assert!(text.ends_with("\r\n\r\n"), "{text:?}");
-    assert!(!text.ends_with("\r\n\r\n\r\n"), "{text:?}");
+    // Ended by SIGINT, nothing after the interrupted block: the shell's
+    // own newline is the blank line (cli-core spec, "The blank line at
+    // the end"; below, under bash).
+    assert!(text.ends_with("\r\n"), "{text:?}");
+    assert!(!text.ends_with("\r\n\r\n"), "{text:?}");
+}
+
+/// Ctrl-C at a question, sb run from an interactive bash (its own
+/// newline after a job ended by SIGINT): one blank line between the
+/// interrupted block and the next prompt, not two (cli-core spec, "The
+/// blank line at the end").
+#[test]
+fn under_an_interactive_shell_ctrl_c_leaves_one_blank_line() {
+    if !root_gate::requested() {
+        return;
+    }
+    let world = World::new("develop", "master");
+    let sb = test_build();
+    let cmd = world.namespaced(
+        Path::new(&sb),
+        &["update", "--color=never", "--migrations", "skip"],
+        &[],
+    );
+    // The run as one line the shell runs: the namespaced command and its
+    // environment, each word quoted.
+    let quoted =
+        |word: &std::ffi::OsStr| format!("'{}'", word.to_string_lossy().replace('\'', "'\\''"));
+    // env's options (`-u`) before its assignments.
+    let mut line = vec!["exec env".to_owned()];
+    let mut set = Vec::new();
+    for (key, value) in cmd.get_envs() {
+        match value {
+            Some(value) => set.push(quoted(
+                format!("{}={}", key.to_string_lossy(), value.to_string_lossy()).as_ref(),
+            )),
+            None => line.push(format!("-u {}", quoted(key))),
+        }
+    }
+    line.extend(set);
+    line.push(quoted(cmd.get_program()));
+    line.extend(cmd.get_args().map(quoted));
+    let script = world.dir.path().join("run.sh");
+    std::fs::write(&script, line.join(" ")).expect("script");
+    let mut bash = Command::new("bash");
+    bash.args(["--norc", "--noprofile", "-i"])
+        .env("PS1", "PROMPT> ");
+    let mut pty = Pty::spawn(&bash);
+    assert!(pty.showing("PROMPT> "), "{}", pty.text());
+    pty.send(format!("bash {}\r", script.display()).as_bytes());
+    let question = "Saltbox: Do you want to reset to the 'master' branch?";
+    assert!(pty.showing(question), "{}", pty.text());
+    pty.send(b"\x03");
+    assert!(pty.showing("interrupted"), "{}", pty.text());
+    // The bytes from the interrupted block on, up to the next prompt.
+    let after = pty.text().rfind("interrupted").expect("interrupted");
+    assert!(pty.showing_after(after, "PROMPT> "), "{}", pty.text());
+    let text = pty.text();
+    let from_block = &text[after..];
+    // bash turns bracketed paste on before its prompt: escape codes left out.
+    let tail =
+        console::strip_ansi_codes(&from_block[..from_block.find("PROMPT> ").expect("the prompt")])
+            .into_owned();
+    assert!(tail.ends_with("\r\n\r\n"), "{tail:?}");
+    assert!(!tail.ends_with("\r\n\r\n\r\n"), "{tail:?}");
+    pty.send(b"exit\r");
+    let _ = pty.exit();
 }
 
 /// stderr not a terminal (redirected to a file) while the questions can

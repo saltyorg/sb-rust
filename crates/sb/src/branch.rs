@@ -46,7 +46,7 @@ pub fn branch(
             discard_local,
             ask,
             log,
-            lines: &mut anstream::stderr(),
+            lines: &mut crate::stderr(),
         };
         super::block_on(sb_ops::branch::run(
             checkout, &root, name, tools, shutdown, asked,

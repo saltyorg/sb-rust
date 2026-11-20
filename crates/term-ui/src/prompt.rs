@@ -188,6 +188,11 @@ fn confirm_over_on(
         writeln!(out, "{context}\n").map_err(failed)?;
     }
     let asked = confirm_on(question, None, flag, shutdown, false, || tty.try_clone());
+    // On the normal screen, the context and the answered question are
+    // lines there (cli-core's `tail`); on the alternate one, gone.
+    if screen.is_none() && asked.is_ok() {
+        sb_cli_core::tail::other();
+    }
     drop(screen);
     asked
 }

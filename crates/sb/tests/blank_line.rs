@@ -109,3 +109,40 @@ fn a_failing_command_ends_with_a_blank_line_on_a_terminal() {
     assert!(out.stderr.ends_with(b"\n"), "{out:?}");
     assert!(!out.stderr.ends_with(b"\n\n"), "{out:?}");
 }
+
+/// stdout a terminal, stderr a file: nothing is added (the line would go
+/// on stderr, which isn't one), and the file stays empty.
+#[test]
+fn with_stderr_not_a_terminal_nothing_is_added() {
+    let dir = tempfile::tempdir().expect("dir");
+    let log = dir.path().join("stderr");
+    let shown = on_a_terminal(&format!("version 2>'{}'", log.display()), &[]);
+    let text = String::from_utf8_lossy(&shown);
+    assert!(
+        text.ends_with(")\r\n") || text.ends_with("\r\n"),
+        "{text:?}"
+    );
+    assert!(!text.ends_with("\r\n\r\n"), "{text:?}");
+    assert_eq!(std::fs::read(&log).expect("stderr"), b"");
+}
+
+/// stdout a pipe whose reader is gone, stderr the terminal (`sb version |
+/// head -c0`: the quiet exit 141, or 0 when sb wrote first): what reached
+/// the terminal decides, and nothing did, so nothing is added.
+#[test]
+fn a_pipe_whose_reader_is_gone_adds_nothing() {
+    let program = common::sb().get_program().to_string_lossy().into_owned();
+    let mut cmd = Command::new("script");
+    common::apply_sb_env(&mut cmd);
+    let output = cmd
+        .args([
+            "-qec",
+            &format!("bash -c \"'{program}' version | head -c0; echo EXIT=\\${{PIPESTATUS[0]}}\""),
+            "/dev/null",
+        ])
+        .env("TERM", "xterm-256color")
+        .output()
+        .expect("run script");
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(text == "EXIT=141\r\n" || text == "EXIT=0\r\n", "{text:?}");
+}

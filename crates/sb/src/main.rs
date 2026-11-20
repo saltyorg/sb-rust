@@ -769,19 +769,19 @@ fn shown_time(at: std::time::SystemTime) -> String {
 /// replaced there too: neither gets here.
 fn main() -> RunEnd {
     let end = start();
-    tail::finish(&mut anstream::stderr());
+    tail::finish(&mut anstream::stderr(), end.by_sigint());
     end
 }
 
 /// sb's stderr: anstream's (`--color`, `NO_COLOR`), each byte recorded for
 /// the blank line at the end (cli-core's `tail`).
 pub(crate) fn stderr() -> tail::Tracked<anstream::Stderr> {
-    tail::Tracked::stderr(anstream::stderr())
+    tail::stderr()
 }
 
 /// sb's stdout, as [`stderr`].
 pub(crate) fn stdout() -> tail::Tracked<anstream::Stdout> {
-    tail::Tracked::stdout(anstream::stdout())
+    tail::stdout()
 }
 
 /// The run, from startup to how it ends ([`main`]).
@@ -1000,15 +1000,18 @@ fn parse_failed(err: clap::Error) -> ! {
             // Write errors are ignored, as clap ignores them for `--help`.
             let mut out = stdout();
             let _ = write!(out, "{}", err.render().ansi()).and_then(|()| out.flush());
-            tail::finish(&mut anstream::stderr());
+            tail::finish(&mut anstream::stderr(), false);
             std::process::exit(0)
         }
         // clap's own `exit` (help on stdout, exit 0), written through the
-        // tail so the blank line at the end follows it.
+        // tail so the blank line at the end follows it: clap's
+        // `Error::print` takes no writer (clap_builder 4.6.7
+        // `error/mod.rs`), and its colour choice is the same, anstream's
+        // global one, as sb sets no `Command::color`.
         clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion => {
             let mut out = stdout();
             let _ = write!(out, "{}", err.render().ansi()).and_then(|()| out.flush());
-            tail::finish(&mut anstream::stderr());
+            tail::finish(&mut anstream::stderr(), false);
             std::process::exit(err.exit_code())
         }
         _ => parse_error(err),
@@ -1025,7 +1028,7 @@ fn parse_error(err: clap::Error) -> ! {
     let err = hinted(err, &args);
     let block = help::parse_error_block(err, theme::current(), help::error_width());
     let _ = write!(stderr(), "{block}");
-    tail::finish(&mut anstream::stderr());
+    tail::finish(&mut anstream::stderr(), false);
     std::process::exit(code)
 }
 

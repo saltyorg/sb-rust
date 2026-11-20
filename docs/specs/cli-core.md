@@ -407,7 +407,8 @@ two.
   sb-go contract and parity tests, which read pipes. When stdout is a
   terminal and stderr isn't: nothing (the line
   would go on stderr, and stdout is never written for it).
-- **What is tracked** (`cli-core`'s `tail`): what sb writes to a
+- **What is tracked** (`cli-core`'s `tail`; `tail::stdout()` and
+  `tail::stderr()` are anstream's streams, tracked): what sb writes to a
   terminal, on stdout or stderr, through `tail::Tracked` (sb's own
   lines, the error block, help, version, tables, the commands' output)
   or `tail::note` (term-ui's tree when it is printed at the run's end):
@@ -422,7 +423,8 @@ two.
   report gives the row and column, not whether the line above is blank,
   no sequence reads a line back, and a run ending by a signal can't wait
   for a reply.
-- **At the end** (`tail::finish`, on stderr): nothing visible written,
+- **At the end** (`tail::finish`, on stderr, stdout flushed first):
+  nothing visible written,
   nothing; the last line blank, nothing; the last line ended, one `\n`;
   in the middle of a line, `\n\n`. A full-screen view leaves the normal
   screen as it found it (the alternate screen), so only what was printed
@@ -434,7 +436,18 @@ two.
   exit code; "interrupted" after Ctrl-C or a signal, before sb ends by
   the signal; the quiet SIGPIPE exit 141 (stdout's reader is gone; the
   rule reads what reached the terminal); the unsupported-release refusal
-  and a failed relaunch. Help (`--help`, bare `sb`) and clap's version
+  and a failed relaunch.
+- **Ended by SIGINT, one newline fewer:** an interactive shell (bash,
+  zsh) prints a newline of its own after a job that died of SIGINT (for
+  the `^C` echo; measured with bash 5.1 and zsh by the review), so sb
+  writes nothing after an ended line then, and one newline in the middle
+  of a line: the shell's newline is the blank line. Run from something
+  that prints no such newline, a Ctrl-C ending has no blank line. After
+  SIGTERM or SIGHUP the shell prints its own `Terminated`/`Hangup` line
+  after sb's blank line, which sb can't change. The forced exit (a
+  second signal) writes only the restore hooks' `\r\n` and ends by the
+  first signal, so after a Ctrl-C the shell's newline makes the blank
+  line there too. Help (`--help`, bare `sb`) and clap's version
   output are written through the tracker, then the line. A parse error's
   block ends in a blank line already, so nothing is added. Not for the
   completion request (it prints candidates only, before startup), nor

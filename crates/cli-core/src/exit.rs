@@ -37,6 +37,16 @@ pub enum RunEnd {
     Signal(i32),
 }
 
+impl RunEnd {
+    /// Whether the run ends by SIGINT (Ctrl-C), after which an
+    /// interactive shell prints a newline of its own (the blank line at
+    /// the end, [`crate::tail::finish`]).
+    #[must_use]
+    pub fn by_sigint(self) -> bool {
+        self == Self::Signal(signal_hook::consts::SIGINT)
+    }
+}
+
 impl From<ExitCode> for RunEnd {
     fn from(code: ExitCode) -> Self {
         Self::Code(code)

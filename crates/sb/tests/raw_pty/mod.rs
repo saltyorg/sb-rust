@@ -71,14 +71,22 @@ impl Pty {
 
     /// Wait until the output holds `text`; false at the timeout.
     pub fn showing(&mut self, text: &str) -> bool {
+        self.showing_after(0, text)
+    }
+
+    /// Wait until the output from byte `from` on holds `text`; false at
+    /// the timeout.
+    pub fn showing_after(&mut self, from: usize, text: &str) -> bool {
         let deadline = Instant::now() + Self::WAIT;
-        while !self.text().contains(text) {
+        let found =
+            |seen: &[u8]| String::from_utf8_lossy(&seen[from.min(seen.len())..]).contains(text);
+        while !found(&self.seen) {
             let Some(left) = deadline.checked_duration_since(Instant::now()) else {
                 return false;
             };
             match self.output.recv_timeout(left) {
                 Ok(bytes) => self.seen.extend(bytes),
-                Err(_) => return self.text().contains(text),
+                Err(_) => return found(&self.seen),
             }
         }
         true
