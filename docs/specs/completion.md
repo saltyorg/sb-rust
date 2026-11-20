@@ -67,6 +67,13 @@ completion files in place.
   as normal.
 - **Commands and flags** come from clap's tree; subcommand descriptions
   in zsh and fish from the `about` texts.
+- **Every list is in alphabetical order** (the maintainer, 2026-11-20),
+  as sb-go's lists are: commands, subcommands, flags, values and tags,
+  in every shell, by the candidate's text (`--color` before `help`
+  before `install`). clap's engine orders them by help heading and
+  declaration, and clap's stubs keep that order (bash's `-o nosort`,
+  zsh's `_describe -V`, fish's `--keep-order`), so sb's reply sorts
+  them (decision 11).
 - **Hidden commands and flags are never offered,** whatever the typed
   prefix: `sb self<Tab>`, `sb update --skip-g<Tab>` and `sb update
   --verb<Tab>` (the hidden `--verbose`) offer none of them, as sb-go's
@@ -320,7 +327,7 @@ the test's directory.
 - **sb's reply, unit:** the filter on a small tree (a hidden command,
   a hidden flag, a hidden global `-v`, a shown command's hidden alias,
   a hidden command's shown flag, an empty word with only flags and with
-  other candidates) and each shell's reply, which is clap's
+  other candidates, the order) and each shell's reply, which is clap's
   format byte for byte where nothing is hidden.
 - **Through the binary, no shell:** `SB_COMPLETE=bash sb -- sb install
   p` (and zsh, fish) with the stub's environment, output compared;
@@ -457,7 +464,9 @@ the test's directory.
     being completed, then every candidate when the current word is
     empty and all that are left are flags, and writes the reply in the
     format clap's adapter
-    for that shell writes; registration stays clap's. Why not clap's
+    for that shell writes, sorted (Tab completion, "Every list is in
+    alphabetical order"); registration stays clap's, whose stubs keep
+    the reply's order. Why not clap's
     adapters as they are: they offer hidden items on a prefix, and
     clap_complete 4.6.11 has no switch or hook for it (no option on
     `CompleteEnv`, `Shells` or the engine). Why not a tree without the
@@ -465,7 +474,7 @@ the test's directory.
     (`-v`, `--skip-git`, a hidden command's own flags). An option is
     proposed upstream (drafted for the maintainer, not posted). Source:
     this spec ("hidden ones left out"); the completion test report of
-    2026-11-20 (B1, B2); the maintainer, 2026-11-20 (B2).
+    2026-11-20 (B1, B2); the maintainer, 2026-11-20 (B2, the order).
 
 ## Known limits
 

@@ -117,7 +117,7 @@ you could trip over.
   such as `--color`'s complete. Hidden commands and flags are never
   offered, as in sb-go, whatever you have typed, and Tab adds nothing
   where only flags would fit (`sb update <Tab>`): flags complete after
-  a `-`.
+  a `-`. Lists are alphabetical in every shell, as sb-go's.
 
 ### Removed
 

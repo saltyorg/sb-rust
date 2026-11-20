@@ -62,7 +62,7 @@ fn request(shell: Shell, mut args: Vec<OsString>, index: Option<String>) -> (Vec
 /// `edit accounts`), a dot file. Then, on an empty word, none at all when
 /// only flags are left (spec, difference 6, the maintainer's rule): every
 /// shell would insert their common `--`, and sb-go offers flags only
-/// after a `-`.
+/// after a `-`. The rest in alphabetical order.
 fn shown(
     cmd: &clap::Command,
     args: &[OsString],
@@ -70,7 +70,7 @@ fn shown(
     candidates: Vec<CompletionCandidate>,
 ) -> Vec<CompletionCandidate> {
     let completed = completed_command(cmd, args, index);
-    let shown: Vec<_> = candidates
+    let mut shown: Vec<_> = candidates
         .into_iter()
         .filter(|candidate| !(candidate.is_hide_set() && for_hidden(completed, candidate)))
         .collect();
@@ -79,10 +79,15 @@ fn shown(
         candidate.get_value().as_encoded_bytes().starts_with(b"-")
     };
     if empty_word && shown.iter().all(flag) {
-        Vec::new()
-    } else {
-        shown
+        return Vec::new();
     }
+    // Alphabetical, by the text (spec, "Every list is in alphabetical
+    // order"): the engine orders by heading and declaration, and clap's
+    // stubs keep the reply's order (bash's `-o nosort`, zsh's `_describe
+    // -V`, fish's `--keep-order`), so the order is set here, for every
+    // shell at once, and no stub changes.
+    shown.sort_by(|a, b| a.get_value().cmp(b.get_value()));
+    shown
 }
 
 /// The command the word at `index` belongs to, found as the engine finds
@@ -256,6 +261,7 @@ mod tests {
         assert_eq!(values(&["update", "--verb"]), Vec::<String>::new());
         // `-h` and `--help` are one item: the engine keeps the first.
         assert_eq!(values(&["update", "-"]), ["--keep", "-h"]);
+        assert_eq!(values(&["u"]), ["update"]);
     }
 
     /// On an empty word, a list of flags only is no list (spec,
@@ -265,17 +271,29 @@ mod tests {
     fn an_empty_word_with_only_flags_gets_nothing() {
         assert_eq!(values(&["update", ""]), Vec::<String>::new());
         assert_eq!(values(&["self-update", ""]), Vec::<String>::new());
-        assert_eq!(values(&["update", "--"]), ["--keep", "--help"]);
+        assert_eq!(values(&["update", "--"]), ["--help", "--keep"]);
         assert_eq!(values(&["mode", "--mode", ""]), ["a:b", "c"]);
         let top = values(&[""]);
         assert!(top.contains(&"update".to_owned()), "{top:?}");
         assert!(top.contains(&"--help".to_owned()), "{top:?}");
     }
 
+    /// Alphabetical, by the candidate's text (spec, "Every list is in
+    /// alphabetical order"); the engine's order is by heading and
+    /// declaration.
+    #[test]
+    fn every_list_is_alphabetical() {
+        assert_eq!(
+            values(&[""]),
+            ["--help", "accounts", "help", "mode", "update"]
+        );
+        assert_eq!(values(&["mode", "--mode", ""]), ["a:b", "c"]);
+    }
+
     #[test]
     fn what_is_not_a_hidden_item_stays() {
         // A hidden command's own shown flags, once it is named.
-        assert_eq!(values(&["self-update", "--"]), ["--yes", "--help"]);
+        assert_eq!(values(&["self-update", "--"]), ["--help", "--yes"]);
         // A shown command's hidden alias.
         assert_eq!(values(&["accounts."]), ["accounts.yml"]);
         // Shown items, and values.
@@ -335,10 +353,11 @@ mod tests {
         assert_eq!(kept.len(), 1);
     }
 
-    /// The reply is clap's adapter's, byte for byte, where nothing hidden
-    /// is offered: the same request through clap's `write_complete` and
-    /// sb's. The tree has no binary name, so the default index (0, no
-    /// `_CLAP_COMPLETE_INDEX` in a test's environment) is the first word.
+    /// The reply is clap's adapter's, entry for entry and byte for byte,
+    /// where nothing hidden is offered (the order aside): the same request
+    /// through clap's `write_complete` and sb's. The tree has no binary
+    /// name, so the default index (0, no `_CLAP_COMPLETE_INDEX` in a
+    /// test's environment) is the first word.
     #[test]
     fn the_reply_is_claps_format() {
         let requests: &[&[&str]] = &[
@@ -364,11 +383,17 @@ mod tests {
                 shell
                     .write_complete(&mut cmd, args, None, &mut ours)
                     .expect("sb's");
-                assert_eq!(
-                    String::from_utf8_lossy(&ours),
-                    String::from_utf8_lossy(&theirs),
-                    "{shell:?} {words:?}"
-                );
+                // The same entries, each written as clap writes it; sb's
+                // in alphabetical order.
+                let entries = |reply: &[u8]| {
+                    let mut entries: Vec<String> = String::from_utf8_lossy(reply)
+                        .split('\n')
+                        .map(ToOwned::to_owned)
+                        .collect();
+                    entries.sort_unstable();
+                    entries
+                };
+                assert_eq!(entries(&ours), entries(&theirs), "{shell:?} {words:?}");
             }
         }
     }

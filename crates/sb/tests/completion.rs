@@ -136,8 +136,17 @@ fn sb_gos_protocol_cases() {
     }
     let words = ["install", "--extra-vars", "sonarr", "plex", ""];
     let got = candidates(&request(good.path(), logs.path(), &words));
-    assert_eq!(got[..2], ["radarr", "sonarr"], "{got:?}");
-    assert!(got[2..].iter().all(|flag| flag.starts_with('-')), "{got:?}");
+    // Alphabetical (spec, "Every list is in alphabetical order"): the
+    // flags first, then the tags.
+    let tags = got
+        .iter()
+        .position(|value| !value.starts_with('-'))
+        .expect("tags");
+    assert_eq!(got[tags..], ["radarr", "sonarr"], "{got:?}");
+    assert!(
+        got[..tags].iter().all(|flag| flag.starts_with('-')),
+        "{got:?}"
+    );
     assert!(
         got.iter().any(|flag| flag.starts_with("--extra-vars\t")),
         "{got:?}"
@@ -235,7 +244,7 @@ fn shown_items_and_aliases_still_complete() {
         .lines()
         .map(|line| line.split('\t').next().unwrap_or_default())
         .collect();
-    assert_eq!(flags, ["--yes", "--color", "--channel", "--help"]);
+    assert_eq!(flags, ["--channel", "--color", "--help", "--yes"]);
     assert_eq!(
         reply("fish", root.path(), &["edit", "accounts."], 2),
         "accounts.yml\tAccounts\n"
@@ -281,14 +290,51 @@ fn an_empty_word_with_only_flags_gets_nothing() {
         let dash = reply(shell, tags.path(), &["update", "-"], 2);
         assert!(dash.contains("--keep-branch"), "{shell}: {dash:?}");
         let install = reply(shell, tags.path(), &["install", ""], 2);
-        assert!(install.starts_with("plex"), "{shell}: {install:?}");
+        assert!(install.contains("plex"), "{shell}: {install:?}");
         assert!(install.contains("--no-cache"), "{shell}: {install:?}");
         let docker = reply(shell, tags.path(), &["docker", ""], 2);
-        assert!(docker.starts_with("ps"), "{shell}: {docker:?}");
+        assert!(docker.contains("ps"), "{shell}: {docker:?}");
         assert!(docker.contains("--color"), "{shell}: {docker:?}");
         let values = reply(shell, tags.path(), &["update", "--migrations", ""], 3);
         assert!(values.starts_with("run"), "{shell}: {values:?}");
     }
+}
+
+/// Every list is in alphabetical order, in each shell (spec, "Every list
+/// is in alphabetical order", the maintainer's rule of 2026-11-20):
+/// commands, subcommands, flags, values and tags, by their text.
+#[test]
+fn every_list_is_alphabetical() {
+    let root = saltbox(&["sonarr", "plex", "radarr"], None);
+    let cases: &[&[&str]] = &[
+        &[""],
+        &["docker", ""],
+        &["update", "-"],
+        &["install", ""],
+        &["install", "plex", "--"],
+        &["--color", ""],
+        &["help", ""],
+        &["edit", ""],
+    ];
+    for shell in ["bash", "zsh", "fish"] {
+        for words in cases {
+            let text = reply(shell, root.path(), words, words.len());
+            let values: Vec<&str> = text
+                .lines()
+                .map(|line| line.split(['\t', ':']).next().unwrap_or_default())
+                .collect();
+            let mut sorted = values.clone();
+            sorted.sort_unstable();
+            assert!(values.len() > 1, "{shell} {words:?}: {text:?}");
+            assert_eq!(values, sorted, "{shell} {words:?}");
+        }
+    }
+    let top = reply("fish", root.path(), &[""], 1);
+    let top: Vec<&str> = top
+        .lines()
+        .map(|line| line.split('\t').next().unwrap_or_default())
+        .collect();
+    assert_eq!(top[..3], ["--color", "--help", "announcements"], "{top:?}");
 }
 
 /// Without `SB_COMPLETE`, or with it empty or `0`, sb runs as normal.
