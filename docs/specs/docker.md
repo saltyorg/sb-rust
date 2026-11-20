@@ -610,6 +610,10 @@ no `--ignore`); a failed stop starts nothing.
     depend on sb-config (deny.toml allows only `sb` to), and config's
     carries its proxy setting and credential masking, which the
     controller doesn't need.
+  - No root certificates for the plain-http controller (reqwest's
+    `tls_certs_only` with none): loading the platform's would cost a
+    third of the command's CPU for a certificate never asked for. An
+    https `SB_DOCKER_CONTROLLER_URL` gets a client with them.
   - No redirects: the controller never answers with one
     (docs/platform-notes/docker-controller.md; decision 8).
 - **Ctrl-C or SIGTERM:** the current request or wait ends at once; the

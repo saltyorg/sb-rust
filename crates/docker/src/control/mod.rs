@@ -226,6 +226,41 @@ impl std::fmt::Display for Failure {
     }
 }
 
+/// Which root certificates the controller's client trusts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Roots {
+    /// None: the controller is plain http on loopback, so no certificate
+    /// is ever verified, and loading the platform's roots (about 15 M
+    /// instructions and 5 ms, a third of the command) would be for
+    /// nothing.
+    None,
+    /// The platform's, as every other client of sb's: an https override.
+    Platform,
+}
+
+/// The controller's client. No proxy: Go's `ProxyFromEnvironment` never
+/// proxies a loopback address, reqwest's system proxy would; no
+/// redirects: the controller never answers with one (decision 8). The
+/// timeout is set per request (`RequestBuilder::timeout`), so it can be a
+/// field. [`Roots::None`] is reqwest's `tls_certs_only` with no
+/// certificate, which leaves the platform's roots unloaded
+/// (<https://docs.rs/reqwest/0.13.5/reqwest/struct.ClientBuilder.html#method.no_proxy>,
+/// <https://docs.rs/reqwest/0.13.5/reqwest/redirect/struct.Policy.html#method.none>,
+/// <https://docs.rs/reqwest/0.13.5/reqwest/struct.RequestBuilder.html#method.timeout>,
+/// <https://docs.rs/reqwest/0.13.5/reqwest/struct.ClientBuilder.html#method.tls_certs_only>).
+fn http_client(roots: Roots) -> Result<reqwest::Client, ControlError> {
+    let builder = reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none());
+    let builder = match roots {
+        Roots::None => builder.tls_certs_only(std::iter::empty::<reqwest::Certificate>()),
+        Roots::Platform => builder,
+    };
+    builder
+        .build()
+        .map_err(|err| ControlError::Client(client::cause(&err)))
+}
+
 /// Where the controller is and how sb talks to it; `saltbox()` gives
 /// sb-go's values, the setters a test's or an override's.
 #[derive(Debug)]
@@ -251,18 +286,7 @@ impl Controller {
     ///
     /// [`ControlError::Client`] when the HTTP client can't be built.
     pub fn saltbox() -> Result<Self, ControlError> {
-        // No proxy: Go's `ProxyFromEnvironment` never proxies a loopback
-        // address, reqwest's system proxy would; no redirects: the
-        // controller never answers with one (decision 8). The timeout is
-        // set per request (`RequestBuilder::timeout`), so it can be a field
-        // (<https://docs.rs/reqwest/0.13.5/reqwest/struct.ClientBuilder.html#method.no_proxy>,
-        // <https://docs.rs/reqwest/0.13.5/reqwest/redirect/struct.Policy.html#method.none>,
-        // <https://docs.rs/reqwest/0.13.5/reqwest/struct.RequestBuilder.html#method.timeout>).
-        let http = reqwest::Client::builder()
-            .no_proxy()
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .map_err(|err| ControlError::Client(client::cause(&err)))?;
+        let http = http_client(Roots::None)?;
         let base = reqwest::Url::parse(&format!("http://{ADDRESS}"))
             .map_err(|err| ControlError::ParseUrl(err.to_string()))?;
         Ok(Self {
@@ -286,7 +310,8 @@ impl Controller {
     /// # Errors
     ///
     /// sb-go's [`ControlError::ParseUrl`] when `url` isn't a URL that can
-    /// take a path.
+    /// take a path; [`ControlError::Client`] when an https URL's client
+    /// can't be built.
     pub fn with_base(mut self, url: &str) -> Result<Self, ControlError> {
         let base =
             reqwest::Url::parse(url).map_err(|err| ControlError::ParseUrl(err.to_string()))?;
@@ -295,6 +320,11 @@ impl Controller {
                 "{}: can't take a path",
                 sb_cli_core::config::escape_controls(url)
             )));
+        }
+        // An https override verifies the controller's certificate, so its
+        // client gets the platform's roots.
+        if base.scheme() == "https" {
+            self.http = http_client(Roots::Platform)?;
         }
         self.base = base;
         Ok(self)

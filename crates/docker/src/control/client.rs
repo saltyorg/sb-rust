@@ -891,6 +891,28 @@ mod tests {
         assert_eq!(seen.seen().len(), 1);
     }
 
+    /// An https override gets a client with the platform's roots (the
+    /// plain-http controller's has none); asked, it fails as any https
+    /// request to a closed port does, with the request's text.
+    #[tokio::test]
+    async fn an_https_base_gets_a_client_of_its_own() {
+        let c = Controller::saltbox()
+            .expect("client")
+            .with_base("https://127.0.0.1:1")
+            .expect("base")
+            .with_request_timeout(Duration::from_secs(5));
+        assert_eq!(c.base.scheme(), "https");
+        let err = c
+            .request(Action::Start, &[])
+            .await
+            .expect_err("closed port");
+        assert!(
+            err.to_string()
+                .starts_with("send Docker controller request: "),
+            "{err}"
+        );
+    }
+
     /// The ID is one path segment, escaped, under a base with a path.
     #[tokio::test]
     async fn the_job_id_is_one_path_segment() {
