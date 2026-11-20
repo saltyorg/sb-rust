@@ -2,6 +2,7 @@
 //! for its config files, loaded strictly, for `sb validate-config`.
 
 pub mod cloudflare;
+pub mod defaults;
 pub mod dockerhub;
 pub mod facts;
 pub mod http;

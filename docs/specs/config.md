@@ -73,7 +73,8 @@ pass; and confirms that their Cloudflare and Docker Hub credentials work.
   | accounts.yml | schema/accounts.schema.yml | error |
   | adv_settings.yml | schema/adv_settings.schema.yml | error |
   | backup_config.yml | schema/backup_config.schema.yml | error |
-  | hetzner_vlan.yml | schema/hetzner_vlan.schema.yml | error |
+  | hetzner_vlan.yml | schema/hetzner_vlan.schema.yml | Saltbox's default copied in, else error |
+  | providers.yml | schema/providers.schema.yml, duplicate keys only while Saltbox has none | Saltbox's default copied in, else error |
   | settings.yml | schema/settings.schema.yml | error |
   | motd.yml | schema/motd.schema.yml | skipped, logged |
   | inventories/host_vars/localhost.yml | none: duplicate keys only | skipped, logged |
@@ -85,6 +86,78 @@ pass; and confirms that their Cloudflare and Docker Hub credentials work.
   issue. localhost.yml has no cap: cli-core reads it whole
   (`read_inventory`; hardening decision 41), and only its nesting depth
   is limited, below. *Amended by hardening Task 61.*
+- **providers.yml** (the maintainer, 2026-11-20; decision 10) holds the
+  DNS providers' credentials Traefik's DNS challenge reads (Saltbox's
+  roles/traefik/defaults/main.yml, `traefik_dns_provider_<provider>`,
+  for the provider adv_settings.yml's `traefik.provider` names). It is
+  checked against `schema/providers.schema.yml`, which Saltbox owns
+  (assumption 2) and doesn't ship yet: sb's draft is pinned as a test
+  fixture (`tests/fixtures/saltbox-schemas/`) until Saltbox's copy
+  lands. **While Saltbox has no such schema**, the file gets the check
+  localhost.yml gets (the pre-pass, the parse, duplicate keys) and an
+  info notice under its step, `schema/providers.schema.yml not found;
+  checked for duplicate keys only`, with no issue, so validate-config
+  passes on hosts without it. This is an exception to the rule above
+  for this one file (`File::schema_optional`); a missing schema of any
+  other file stays its issue. A schema that is there but can't be read
+  or loaded is an issue, as for every file.
+- **A missing hetzner_vlan.yml or providers.yml** (the maintainer,
+  2026-11-20; decision 10) is copied in from Saltbox's default,
+  `<root>/defaults/<file>.default`, then checked as any file. Saltbox's
+  playbook reads the default in its place (saltbox.yml's `vars_files`);
+  sb makes the file the user edits. The copy:
+  - happens only when nothing is at the path (`lstat`: a link, even a
+    broken one, is left alone and the file's check reports it);
+  - is the default's bytes, read up to 1 MiB through a handle opened
+    without following a link or crossing a mount point (cli-core's
+    rule for what root reads in the checkout) and checked to be a
+    regular file; written
+    through the Saltbox root's handle (opened with no link on its
+    path, as motd.yml's migration does) to a new temporary file
+    (`O_EXCL`, never through a link), given the default's owner and
+    group (the checkout's owner, the Saltbox user, as repo's update
+    leaves it; Saltbox's own copy, its settings role until 2025-10-01,
+    took saltbox.yml's, the same owner) and mode 0600 (`sb setup`'s
+    copies and update's "Securing Saltbox configuration permissions"
+    step), synced, then linked to the file's name (`linkat`, which
+    never replaces a file), the temporary name removed and the folder
+    synced. A file that appeared meanwhile is kept and checked;
+  - shows an info notice under the file's step, `<file> was missing;
+    copied Saltbox's default`, and writes a run-log record (`missing
+    config file copied from Saltbox's default`, with the file);
+  - when the default is missing, keeps today's issue (`required config
+    file not found: <path>`) with no notice; when it can't be read, the
+    Saltbox root is reached through a link (nothing is written there,
+    as for motd.yml's migration) or the copy fails, the same issue,
+    after a warning notice `<file> not copied from Saltbox's default:
+    <cause>`, a run-log warning, and the warning among the file's
+    `--json` issues;
+  - runs wherever a missing file would be the file's issue:
+    validate-config, `sb update`'s validation step, and `sb edit`
+    (before the editor opens, and after it when the editor removed the
+    file; tui spec, Editors);
+  - takes no run lock (cli-core spec, Run lock: validate-config and
+    `edit` never take it, and update holds it already). It needs none:
+    it creates the file only where none is and all at once (a reader
+    sees no file or the whole copy, and never a replaced one), and a
+    playbook reading meanwhile sees the default's values either way;
+  - in a build for tests, never under `/srv` (as motd.yml's migration);
+  - a known limit: sb killed between the temporary file's creation and
+    its removal leaves `.<file>.<pid>.<hex>.sb-tmp` (the default's
+    bytes, 0600) in the root, as motd.yml's migration can.
+- **The draft schema** (tests/fixtures/saltbox-schemas/providers.schema.yml)
+  is strict where Saltbox's use is clear: the sections and keys Traefik
+  reads (roles/traefik/defaults/main.yml), so an unknown section or key
+  is an issue; `cloudns.email` an email, `powerdns.api_url` a URL,
+  `namedotcom.server` a hostname, `netcup.customer_number` a whole
+  number. It is permissive where it isn't: every section and key is
+  optional (adv_settings.yml's `traefik.provider` picks the one used,
+  and the format can't tie them), values are untyped strings, and
+  `duck`, Duck DNS's section before Saltbox renamed it `duckdns` (2022,
+  with no migration), takes any keys, so a long-lived host's leftover
+  isn't an issue. A section a user adds for a provider Saltbox doesn't
+  list is an issue once the schema is in Saltbox (the format has no way
+  to allow extra top-level keys).
 - **Steps** (term-ui's runner, titled "sb validate-config"): one parent
   step, "Validating Saltbox configuration" → "Saltbox configuration
   validated" (a failed file makes it read term-ui's "sub-step failed"),
@@ -125,13 +198,12 @@ pass; and confirms that their Cloudflare and Docker Hub credentials work.
     issue count) and the parsed tree, so a caller that needs the values
     (motd's typed model) reads the file once. `FileError` is a read or
     schema-load failure, worded as validate-config words it.
-  - `run::PROVIDERS` is one more such entry, outside `FILES`:
-    providers.yml, capped, optional, with no schema, so it gets the
-    pre-pass, the parse and duplicate keys only, as localhost.yml does.
-    validate-config doesn't check it (sb-go doesn't); `sb edit providers`
-    does, as a required file, since the file existed when the editor
-    started, so a removed one is an issue (the tui spec, Difference 38;
-    *amended 2026-11-18*).
+  - providers.yml is one of `FILES` (*amended 2026-11-20*, decision
+    10; it was `run::PROVIDERS`, outside them, with no schema): required,
+    capped, its schema optional while Saltbox has none, its default
+    copied in when missing, as hetzner_vlan.yml's. `File` carries
+    `schema_optional` and `default` (the default's path under the root)
+    for these.
   - `run::validate_file(step, settings, file, checks)` draws
     `check_file`'s result under the caller's step exactly as `run` does
     for that file. `checks` is `Checks::Run` (validate-config and `sb
@@ -190,7 +262,15 @@ pass; and confirms that their Cloudflare and Docker Hub credentials work.
   `apprise`, `auth`, `credential`, `hook`, in any case) is a secret as
   well, on the schema and off it, whatever its type: a provider field
   Saltbox's schema adds as a `string` (`apikey`) is masked before the
-  list above names it (2026-11-18). It masks a few values that aren't
+  list above names it (2026-11-18). providers.yml's credentials are on
+  the list (2026-11-20): `cloudns.password`, `duckdns.token`,
+  `dynu.api_key`, `godaddy.api_key`, `godaddy.api_secret`,
+  `hetzner.api_key`, `linode.token`, `namecheap.api_key`,
+  `namecheap.api_user`, `namedotcom.api_token`, `netcup.api_key`,
+  `netcup.api_password`, `porkbun.api_key`, `porkbun.secret_key`,
+  `powerdns.api_key` and `powerdns.api_url` (the last two of these
+  names a user and a URL; the key-name rule masks them anyway, and the
+  list test asks for every such string). It masks a few values that aren't
   secret (`ssh_key`; the `authelia` section, tag errors under it
   included); masking too much is harmless.
 - **Parsing:** one YAML document, as Ansible's loader wants (a second
@@ -363,7 +443,10 @@ pass; and confirms that their Cloudflare and Docker Hub credentials work.
   | `files` | one object per file, in the order above |
   | `checks` | one object per credential check accounts.yml asks for or skips |
 
-  - **A file:** `file` (as the table names it), `outcome`, and `issues`.
+  - **A file:** `file` (as the table names it), `outcome`, `issues`,
+    and `notices` when it has any (*added 2026-11-20*): the info
+    notices its step showed, each a string (a default copied in, a
+    schema Saltbox doesn't ship yet).
     - `outcome` is `validated` (no issue, its checks passed), `skipped`
       (an optional file not there; `reason`, the notice's text) or
       `failed` (an issue, a failed check, or a file or schema that
@@ -496,6 +579,13 @@ pass; and confirms that their Cloudflare and Docker Hub credentials work.
   cloudflare-go waits as long as the server says, so one answer could
   hold the step for an hour).
 - `--json` (decision 9): sb-go has no machine-readable validate-config.
+- providers.yml is checked (decision 10): against
+  `schema/providers.schema.yml`, or for duplicate keys alone while
+  Saltbox has no such schema (sb-go doesn't check the file).
+- A missing hetzner_vlan.yml or providers.yml is copied in from
+  Saltbox's default, 0600, the default's owner, with a notice (decision
+  10; sb-go reports a missing hetzner_vlan.yml as an error and doesn't
+  look at providers.yml).
 - No `--verbose/-v` (decision 1): `-v` is a parse error, exit 2.
   *Amended 2026-11-18 by the maintainer's decision: `-v` and `--verbose` are accepted, hidden from help, and change nothing; the run prints one notice on stderr before its steps, naming this run in the run log (`-v isn't needed: sb logs full detail to <file> (run <id>)`), once however often the flag is given (crates/sb/src/verbose.rs).*
 - No `validate_rclone_remote` (decision 6): a schema naming it fails
@@ -589,7 +679,8 @@ docs/specs/config.md      this spec
 
 ## Boundaries
 
-- **Always:** read-only on Saltbox files; tests on fixtures only; secrets
+- **Always:** read-only on Saltbox files, but for motd.yml's migration
+  and the default copies (decision 10); tests on fixtures only; secrets
   marked where they're read.
 - **Ask first:** writing to any Saltbox file outside the facts half's
   specified saves (tui spec, Editors; *amended 2026-11-13 by the tui
@@ -632,6 +723,17 @@ docs/specs/config.md      this spec
     `run` does (a test over the fixture sets), and neither makes a request
     with `Checks::Skip`. *Amended 2026-11-13 by the tui spec* (numbered 13
     in its wording; 12 is the next free number here).
+13. providers.yml (decision 10): a valid file passes its schema; each
+    kind of violation (an unknown section or key, a bad email, URL or
+    hostname, a non-number customer number, a list where a section
+    belongs) is an issue; without the schema, duplicate keys only and
+    the notice, exit 0; its credentials never in any output, `--json`
+    or the run log.
+14. The default copies (decision 10): a missing hetzner_vlan.yml or
+    providers.yml is copied, 0600, the default's owner, with the notice
+    and the record, and then checked; a link in the way is never
+    followed or replaced; a missing default keeps the missing-file
+    issue.
 
 ## Decisions (maintainer, 2026-11-03)
 
@@ -670,3 +772,11 @@ docs/specs/config.md      this spec
 9. **`--json`** (the maintainer, 2026-11-18, the shape as proposed): for
    scripts, monitoring and CI, beside `sb version --json` and `sb docker
    ps --json`, in the shape under Behaviour.
+10. **providers.yml checked, two defaults copied** (the maintainer,
+    2026-11-20): providers.yml gets a schema (sb's draft, for Saltbox's
+    `schema/`) and is checked by validate-config; providers.yml and
+    hetzner_vlan.yml are required, and a missing one is copied from
+    Saltbox's default instead of failing. Decided here from the recorded
+    rules: a missing providers schema is a notice, not an issue (the
+    general rule would fail every host until Saltbox ships it); the
+    copy takes no run lock (Behaviour, the copy's rules).

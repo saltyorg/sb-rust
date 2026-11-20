@@ -1,0 +1,33 @@
+---
+cloudns:
+  client_id:
+  email:
+  password:
+duckdns:
+  token:
+dynu:
+  api_key:
+godaddy:
+  api_key:
+  api_secret:
+hetzner:
+  api_key:
+linode:
+  token:
+namecheap:
+  api_key:
+  api_user:
+namedotcom:
+  api_token:
+  server: api.name.com
+  username:
+netcup:
+  api_key:
+  api_password:
+  customer_number:
+porkbun:
+  api_key:
+  secret_key:
+powerdns:
+  api_key:
+  api_url:

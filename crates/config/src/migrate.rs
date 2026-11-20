@@ -70,7 +70,7 @@ pub fn default_backups() -> PathBuf {
 }
 
 /// motd.yml and its schema (sb-config's list; a test checks the entry).
-pub(crate) const MOTD: File = FILES[5];
+pub(crate) const MOTD: File = FILES[6];
 
 /// The app sections that held a bare list in the old format.
 pub(crate) const APPS: [&str; 11] = [
@@ -494,7 +494,7 @@ fn back_up(original: &Original, backups: &Path, stamp: &str) -> Result<PathBuf, 
 /// <https://docs.rs/rustix/1.1.6/rustix/fs/fn.openat2.html>): `O_NOFOLLOW`
 /// guards only the last part, and the Saltbox user may own a folder above
 /// it. A link is ELOOP.
-fn open_folder(folder: &Path) -> rustix::io::Result<OwnedFd> {
+pub(crate) fn open_folder(folder: &Path) -> rustix::io::Result<OwnedFd> {
     rustix::fs::openat2(
         rustix::fs::CWD,
         folder,

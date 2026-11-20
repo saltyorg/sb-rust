@@ -1,0 +1,125 @@
+# Saltbox DNS Providers Configuration Schema
+# This schema validates the providers.yml configuration file
+#
+# Traefik reads one section, the provider adv_settings.yml names in
+# traefik.provider, into its DNS challenge's environment
+# (roles/traefik/defaults/main.yml, traefik_dns_provider_<provider>).
+# Every section and key is optional: which one is used is decided in
+# adv_settings.yml. Unknown sections and keys are errors, but in duck,
+# Duck DNS's section before its rename, which takes any keys.
+
+cloudns:
+  type: object
+  required: false
+  description: "ClouDNS credentials (traefik.provider: cloudns)"
+  properties:
+    client_id:
+      type: string
+    email:
+      type: string
+      format: email
+    password:
+      type: string
+
+duck:
+  type: object
+  required: false
+  description: "Duck DNS's old section, renamed duckdns in 2022; Saltbox no longer reads it"
+
+duckdns:
+  type: object
+  required: false
+  description: "Duck DNS credentials (traefik.provider: duckdns)"
+  properties:
+    token:
+      type: string
+
+dynu:
+  type: object
+  required: false
+  description: "Dynu credentials (traefik.provider: dynu)"
+  properties:
+    api_key:
+      type: string
+
+godaddy:
+  type: object
+  required: false
+  description: "GoDaddy credentials (traefik.provider: godaddy)"
+  properties:
+    api_key:
+      type: string
+    api_secret:
+      type: string
+
+hetzner:
+  type: object
+  required: false
+  description: "Hetzner DNS credentials (traefik.provider: hetzner)"
+  properties:
+    api_key:
+      type: string
+
+linode:
+  type: object
+  required: false
+  description: "Linode credentials (traefik.provider: linode)"
+  properties:
+    token:
+      type: string
+
+namecheap:
+  type: object
+  required: false
+  description: "Namecheap credentials (traefik.provider: namecheap)"
+  properties:
+    api_key:
+      type: string
+    api_user:
+      type: string
+
+namedotcom:
+  type: object
+  required: false
+  description: "Name.com credentials (traefik.provider: namedotcom)"
+  properties:
+    api_token:
+      type: string
+    server:
+      type: string
+      format: hostname
+    username:
+      type: string
+
+netcup:
+  type: object
+  required: false
+  description: "netcup credentials (traefik.provider: netcup)"
+  properties:
+    api_key:
+      type: string
+    api_password:
+      type: string
+    customer_number:
+      type: number
+
+porkbun:
+  type: object
+  required: false
+  description: "Porkbun credentials (traefik.provider: porkbun)"
+  properties:
+    api_key:
+      type: string
+    secret_key:
+      type: string
+
+powerdns:
+  type: object
+  required: false
+  description: "PowerDNS credentials (traefik.provider: powerdns)"
+  properties:
+    api_key:
+      type: string
+    api_url:
+      type: string
+      format: url

@@ -21,6 +21,7 @@ use sb_term_ui::{Options, Runner, Target};
 const PASSWORD: &str = "pass-not-a-real-secret-1";
 const TOKEN: &str = "token-not-a-real-secret-2";
 const HUB_TOKEN: &str = "hub-not-a-real-secret-3";
+const DNS_KEY: &str = "dns-not-a-real-secret-4";
 
 /// A log writer the test can read back, through tracing-subscriber's
 /// `MakeWriter` for a closure. Why not its `Mutex<W>` or `Arc<W>` writers:
@@ -46,7 +47,9 @@ impl Write for Captured {
 
 /// The valid fixture set and the pinned schemas in `root`, with
 /// accounts.yml carrying the known secrets and an issue outside the
-/// credential sections (so the checks still run), and no motd.yml.
+/// credential sections (so the checks still run), providers.yml a DNS
+/// key and an issue beside it, no motd.yml, and `hetzner_vlan.yml`
+/// missing with Saltbox's default to copy.
 fn saltbox_root(root: &Path) {
     let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
     for entry in std::fs::read_dir(fixtures.join("valid")).expect("fixtures") {
@@ -70,6 +73,11 @@ fn saltbox_root(root: &Path) {
          dockerhub:\n  user: seed\n  token: {HUB_TOKEN}\n"
     );
     std::fs::write(root.join("accounts.yml"), accounts).expect("accounts");
+    let providers = format!("porkbun:\n  api_key: {DNS_KEY}\n  secret_kye: {DNS_KEY}\n");
+    std::fs::write(root.join("providers.yml"), providers).expect("providers");
+    let vlan = root.join("hetzner_vlan.yml");
+    std::fs::create_dir(root.join("defaults")).expect("defaults");
+    std::fs::rename(&vlan, root.join("defaults/hetzner_vlan.yml.default")).expect("default");
 }
 
 /// A loopback URL nothing listens on, with the socket that holds its
@@ -150,6 +158,13 @@ async fn files_issues_and_checks_are_logged_without_secrets() {
         backoff: no_wait,
     };
     assert!(validate(&settings).await.is_err());
+    // The copy is logged once, in the first run.
+    assert_eq!(
+        log.text()
+            .matches("missing config file copied from Saltbox's default")
+            .count(),
+        1
+    );
     // A second run: the password as a tag error, an issue on a secret.
     let accounts = std::fs::read_to_string(root.path().join("accounts.yml")).expect("read");
     let tagged = accounts.replace(
@@ -164,6 +179,11 @@ async fn files_issues_and_checks_are_logged_without_secrets() {
         // Each file, with its counts.
         "config file checked file=\"accounts.yml\" issues=1",
         "config file checked file=\"settings.yml\" issues=0",
+        "config file checked file=\"providers.yml\" issues=1",
+        "porkbun.secret_kye: unknown field",
+        // The default copied, named in the step's notice and its record.
+        "missing config file copied from Saltbox's default file=\"hetzner_vlan.yml\" default=\"defaults/hetzner_vlan.yml.default\"",
+        "text=\"hetzner_vlan.yml was missing; copied Saltbox's default\"",
         "step=\"Validating motd.yml\" text=\"motd.yml not found; skipped\"",
         "step=\"Validating localhost.yml (no duplicates)\"",
         // The issue, in its step's record.
@@ -177,7 +197,7 @@ async fn files_issues_and_checks_are_logged_without_secrets() {
     ] {
         assert!(text.contains(expected), "{expected}\n{text}");
     }
-    for secret in [PASSWORD, TOKEN, HUB_TOKEN] {
+    for secret in [PASSWORD, TOKEN, HUB_TOKEN, DNS_KEY] {
         assert!(!text.contains(secret), "{secret}\n{text}");
     }
 }

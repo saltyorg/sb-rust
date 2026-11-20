@@ -11,23 +11,42 @@ pub const REDACTED: &str = "[REDACTED]";
 /// The credential keys, by path (`[]` standing for any item of a list),
 /// besides every `type: password` field: accounts.yml's Cloudflare and
 /// Docker Hub credentials and its Apprise URL (which carries a token),
-/// `backup_config.yml`'s restore password, and motd.yml's tokens, API keys
-/// and passwords. The schemas type these `string`; a test checks the list
+/// `backup_config.yml`'s restore password, motd.yml's tokens, API keys
+/// and passwords, and providers.yml's DNS providers' keys, tokens and
+/// passwords, with the two strings whose names the key-name rule reads
+/// as credentials (`namecheap.api_user`, `powerdns.api_url`; config
+/// spec, decision 10). The schemas type these `string`; a test checks the list
 /// against the pinned schemas (`rules`' tests). Each ends in a key the
 /// shared key-name rule masks as well (2026-11-18), so the list documents
 /// Saltbox's known credentials and keeps them masked should that rule
 /// narrow; masking no longer waits for it to grow.
-const SECRET_PATHS: [&str; 16] = [
+const SECRET_PATHS: [&str; 32] = [
     "apprise",
     "backup.restore_service.pass",
     "cloudflare.api",
     "cloudflare.scoped_token",
+    "cloudns.password",
     "dockerhub.token",
+    "duckdns.token",
+    "dynu.api_key",
     "emby.instances[].token",
+    "godaddy.api_key",
+    "godaddy.api_secret",
+    "hetzner.api_key",
     "jellyfin.instances[].token",
     "lidarr.instances[].apikey",
+    "linode.token",
+    "namecheap.api_key",
+    "namecheap.api_user",
+    "namedotcom.api_token",
+    "netcup.api_key",
+    "netcup.api_password",
     "nzbget.instances[].password",
     "plex.instances[].token",
+    "porkbun.api_key",
+    "porkbun.secret_key",
+    "powerdns.api_key",
+    "powerdns.api_url",
     "qbittorrent.instances[].password",
     "radarr.instances[].apikey",
     "readarr.instances[].apikey",
@@ -197,8 +216,22 @@ mod tests {
             "qbittorrent.instances[0].password",
             "backup.restore_service.pass",
             "apprise",
+            "duckdns.token",
+            "porkbun.secret_key",
+            "cloudns.password",
+            "netcup.api_password",
         ] {
             assert!(is_secret(path, Some(Kind::String)), "{path}");
+        }
+        // providers.yml's names and numbers aren't secret.
+        for path in [
+            "cloudns.client_id",
+            "cloudns.email",
+            "namedotcom.username",
+            "namedotcom.server",
+            "netcup.customer_number",
+        ] {
+            assert!(!is_secret(path, Some(Kind::String)), "{path}");
         }
         assert!(!is_secret("plex.instances[0].name", Some(Kind::String)));
         assert!(!is_secret("nzbget.instances[0].user", Some(Kind::String)));
@@ -232,11 +265,18 @@ mod tests {
             names.into_iter().collect::<Vec<_>>(),
             [
                 "api",
+                "api_key",
+                "api_password",
+                "api_secret",
+                "api_token",
+                "api_url",
+                "api_user",
                 "apikey",
                 "apprise",
                 "pass",
                 "password",
                 "scoped_token",
+                "secret_key",
                 "token"
             ]
         );

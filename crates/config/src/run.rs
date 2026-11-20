@@ -23,75 +23,72 @@ use crate::tree::{self, Tree};
 use crate::validators::Saltbox;
 
 /// One config file: its path under the Saltbox root, its schema under
-/// `schema/` (none: duplicate keys only), whether it must exist, and
-/// whether it is read up to cli-core's 1 MiB cap (`read_small`) or at any
-/// length (`read_inventory`: the inventory, hardening plan decision 41).
+/// `schema/` (none: duplicate keys only), whether that schema may be
+/// missing (then duplicate keys only, with a notice), whether the file
+/// must exist, whether it is read up to cli-core's 1 MiB cap
+/// (`read_small`) or at any length (`read_inventory`: the inventory,
+/// hardening plan decision 41), and the default under the root copied
+/// in when it is missing (`defaults::copy_default`).
 #[derive(Clone, Copy, Debug)]
 pub struct File {
     pub path: &'static str,
     pub schema: Option<&'static str>,
+    pub schema_optional: bool,
     pub required: bool,
     pub capped: bool,
+    pub default: Option<&'static str>,
 }
 
-/// providers.yml (Saltbox's DNS providers' credentials, a `vars_files`
-/// entry of saltbox.yml): `sb edit providers` checks it, validate-config
-/// doesn't (sb-go doesn't), so it is outside [`FILES`]. Saltbox has no
-/// schema for it, so it gets localhost.yml's check: the pre-pass, the
-/// parse and duplicate keys (config spec, "One file"; tui spec,
-/// Difference 38).
-pub const PROVIDERS: File = File {
-    path: "providers.yml",
-    schema: None,
-    required: false,
-    capped: true,
-};
+impl File {
+    /// A required, capped file checked against `schema`, with no default.
+    const fn schema_backed(path: &'static str, schema: &'static str) -> Self {
+        Self {
+            path,
+            schema: Some(schema),
+            schema_optional: false,
+            required: true,
+            capped: true,
+            default: None,
+        }
+    }
+}
 
-/// The files, in sb-go's order.
-pub const FILES: [File; 7] = [
+/// The files, in sb-go's order, with `providers.yml` after
+/// `hetzner_vlan.yml` (config spec, decision 10: sb-go doesn't check it).
+/// Those two get Saltbox's default when missing; `providers.yml`'s
+/// schema, sb's draft, isn't in Saltbox yet, so it may be missing.
+pub const FILES: [File; 8] = [
+    File::schema_backed("accounts.yml", "accounts.schema.yml"),
+    File::schema_backed("adv_settings.yml", "adv_settings.schema.yml"),
+    File::schema_backed("backup_config.yml", "backup_config.schema.yml"),
     File {
-        path: "accounts.yml",
-        schema: Some("accounts.schema.yml"),
-        required: true,
-        capped: true,
+        default: Some("defaults/hetzner_vlan.yml.default"),
+        ..File::schema_backed("hetzner_vlan.yml", "hetzner_vlan.schema.yml")
     },
     File {
-        path: "adv_settings.yml",
-        schema: Some("adv_settings.schema.yml"),
-        required: true,
-        capped: true,
+        schema_optional: true,
+        default: Some("defaults/providers.yml.default"),
+        ..File::schema_backed("providers.yml", "providers.schema.yml")
     },
+    File::schema_backed("settings.yml", "settings.schema.yml"),
     File {
-        path: "backup_config.yml",
-        schema: Some("backup_config.schema.yml"),
-        required: true,
-        capped: true,
-    },
-    File {
-        path: "hetzner_vlan.yml",
-        schema: Some("hetzner_vlan.schema.yml"),
-        required: true,
-        capped: true,
-    },
-    File {
-        path: "settings.yml",
-        schema: Some("settings.schema.yml"),
-        required: true,
-        capped: true,
-    },
-    File {
-        path: "motd.yml",
-        schema: Some("motd.schema.yml"),
         required: false,
-        capped: true,
+        ..File::schema_backed("motd.yml", "motd.schema.yml")
     },
     File {
         path: "inventories/host_vars/localhost.yml",
         schema: None,
+        schema_optional: false,
         required: false,
         capped: false,
+        default: None,
     },
 ];
+
+/// The notice under a file whose optional schema is missing.
+fn schema_missing(schema: &str) -> String {
+    format!("schema/{schema} not found; checked for duplicate keys only")
+}
 
 /// What the run needs from its caller.
 #[derive(Clone)]
@@ -151,6 +148,9 @@ pub struct Checked {
     /// The parsed tree, for a schema-backed file that parsed: a caller
     /// that needs the values reads the file once.
     pub tree: Option<Tree>,
+    /// The info notices its check gives (a schema Saltbox doesn't ship
+    /// yet).
+    pub notices: Vec<String>,
 }
 
 impl Checked {
@@ -170,6 +170,7 @@ impl std::fmt::Debug for Checked {
             .field("warnings", &self.report.warnings.len())
             .field("checks", &self.report.requests.len())
             .field("tree", &self.tree.is_some())
+            .field("notices", &self.notices.len())
             .finish_non_exhaustive()
     }
 }
@@ -300,6 +301,9 @@ pub struct FileResult {
     pub detail: Option<String>,
     pub issues: Vec<Issue>,
     pub warnings: Vec<String>,
+    /// The info notices its step showed (a default copied in, a schema
+    /// Saltbox doesn't ship yet).
+    pub notices: Vec<String>,
 }
 
 /// A credential check's outcome.
@@ -342,6 +346,8 @@ pub fn render_json(results: &Results) -> String {
         #[serde(skip_serializing_if = "Option::is_none")]
         error: Option<&'a str>,
         issues: Vec<IssueJson<'a>>,
+        #[serde(skip_serializing_if = "<[String]>::is_empty")]
+        notices: &'a [String],
     }
     #[derive(serde::Serialize)]
     struct IssueJson<'a> {
@@ -389,6 +395,7 @@ pub fn render_json(results: &Results) -> String {
                 reason: detail.filter(|_| skipped),
                 error: detail.filter(|_| !skipped),
                 issues: errors.chain(warnings).collect(),
+                notices: &file.notices,
             }
         })
         .collect();
@@ -492,21 +499,29 @@ fn check_file_parsed(
             )));
         }
     };
+    let mut notices = Vec::new();
     let rules = match file.schema {
         Some(schema) => {
             let path = settings.root.join("schema").join(schema);
             let shown = escape_controls(&path.display().to_string());
             // Flattened: a read error's text already carries its causes.
-            Some(schema::load(&path, &shown).map_err(|err| match err {
-                SchemaError::Missing { .. } => {
-                    FileError::Schema(format!("schema file not found: {shown}"))
+            match schema::load(&path, &shown) {
+                Ok(rules) => Some(rules),
+                // Saltbox doesn't ship it yet (providers.yml): duplicate
+                // keys only, with a notice (config spec, decision 10).
+                Err(SchemaError::Missing { .. }) if file.schema_optional => {
+                    notices.push(schema_missing(schema));
+                    None
                 }
-                err => FileError::Schema(err.to_string()),
-            })?)
+                Err(SchemaError::Missing { .. }) => {
+                    return Err(FileError::Schema(format!("schema file not found: {shown}")));
+                }
+                Err(err) => return Err(FileError::Schema(err.to_string())),
+            }
         }
         None => None,
     };
-    let checked = match parsed {
+    let mut checked = match parsed {
         Some(parsed) if parsed.text == text => check_parsed(
             settings,
             file,
@@ -516,6 +531,7 @@ fn check_file_parsed(
         )?,
         _ => parse_and_check(settings, file, &text, rules.as_ref())?,
     };
+    checked.notices = notices;
     tracing::info!(
         file = file.path,
         issues = checked.report.issues.len(),
@@ -553,6 +569,7 @@ fn check_parsed(
             ..Report::default()
         },
         tree: None,
+        notices: Vec::new(),
     };
     let prepared = match prepared {
         Ok(prepared) => prepared,
@@ -576,6 +593,7 @@ fn check_parsed(
         Ok(Some((report, tree))) => Checked {
             report,
             tree: Some(tree),
+            notices: Vec::new(),
         },
         Ok(None) => only(Vec::new()),
         Err(issues) => only(issues),
@@ -619,25 +637,31 @@ async fn validate_checked(
             results.borrow_mut().files.push(result);
         }
     };
-    let ended = |outcome, detail| FileResult {
+    let mut notes = Notes::of_copy(step, &settings.root, file);
+    let ended = |outcome, detail, notes: Notes| FileResult {
         file: file.path,
         outcome,
         detail,
         issues: Vec::new(),
-        warnings: Vec::new(),
+        warnings: notes.warnings,
+        notices: notes.notices,
     };
     let checked = match check_file_parsed(settings, file, parsed) {
         Ok(checked) => checked,
         Err(skipped @ FileError::Skipped(_)) => {
-            record(ended(Outcome::Skipped, Some(skipped.to_string())));
+            record(ended(Outcome::Skipped, Some(skipped.to_string()), notes));
             step.info(skipped.to_string());
             return Ok(());
         }
         Err(err) => {
-            record(ended(Outcome::Failed, Some(err.to_string())));
+            record(ended(Outcome::Failed, Some(err.to_string()), notes));
             return Err(err.into());
         }
     };
+    for notice in &checked.notices {
+        step.info(notice.as_str());
+    }
+    notes.notices.extend(checked.notices.iter().cloned());
     let report = &checked.report;
     for warning in &report.warnings {
         step.warn(warning.as_str());
@@ -693,7 +717,8 @@ async fn validate_checked(
         outcome,
         detail: None,
         issues: report.issues.clone(),
-        warnings: report.warnings.clone(),
+        warnings: [notes.warnings, report.warnings.clone()].concat(),
+        notices: notes.notices,
     });
     if !report.issues.is_empty() {
         return Err(Issues::new(&report.issues).into());
@@ -702,6 +727,63 @@ async fn validate_checked(
         return Err(Exit(1).into());
     }
     Ok(())
+}
+
+/// The notices and warnings a file's step showed besides its check's
+/// own warnings, for its record.
+#[derive(Default)]
+struct Notes {
+    notices: Vec<String>,
+    warnings: Vec<String>,
+}
+
+impl Notes {
+    /// The default copy's note ([`copy_missing`]), if any.
+    fn of_copy(step: &mut Step, root: &Path, file: File) -> Self {
+        let mut notes = Self::default();
+        match copy_missing(step, root, file) {
+            Some(CopyNote::Info(notice)) => notes.notices.push(notice),
+            Some(CopyNote::Warning(warning)) => notes.warnings.push(warning),
+            None => {}
+        }
+        notes
+    }
+}
+
+/// What a default copy showed under its step ([`copy_missing`]), for
+/// the caller's record.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CopyNote {
+    /// `<file> was missing; copied Saltbox's default`.
+    Info(String),
+    /// `<file> not copied from Saltbox's default: <cause>`.
+    Warning(String),
+}
+
+/// `file`'s default copied in under `step` when the file is missing
+/// (`defaults::copy_default`; config spec, decision 10): the info notice,
+/// or a warning when the copy failed, shown and returned. Nothing for a
+/// file that is there, has no default entry or no default file (its
+/// missing-file issue says enough).
+pub fn copy_missing(step: &mut Step, root: &Path, file: File) -> Option<CopyNote> {
+    use crate::defaults::{CopyOutcome, copy_default};
+    match copy_default(root, file) {
+        CopyOutcome::Copied => {
+            let notice = format!("{} was missing; copied Saltbox's default", file.path);
+            step.info(notice.as_str());
+            Some(CopyNote::Info(notice))
+        }
+        CopyOutcome::Failed(why) => {
+            let warning = format!(
+                "{} not copied from Saltbox's default: {}",
+                file.path,
+                escape_controls(&why)
+            );
+            step.warn(warning.as_str());
+            Some(CopyNote::Warning(warning))
+        }
+        CopyOutcome::NotNeeded | CopyOutcome::NoDefault => None,
+    }
 }
 
 /// [`validate_file`], with motd.yml first migrated from its older format
@@ -1123,6 +1205,7 @@ mod tests {
                         "must be an absolute path",
                     )],
                     warnings: vec!["password is short\u{1b}".into()],
+                    notices: Vec::new(),
                 },
                 FileResult {
                     file: "motd.yml",
@@ -1130,6 +1213,7 @@ mod tests {
                     detail: Some("motd.yml not found; skipped".into()),
                     issues: Vec::new(),
                     warnings: Vec::new(),
+                    notices: Vec::new(),
                 },
                 FileResult {
                     file: "hetzner_vlan.yml",
@@ -1137,6 +1221,15 @@ mod tests {
                     detail: Some("required config file not found: /x/hetzner_vlan.yml".into()),
                     issues: Vec::new(),
                     warnings: Vec::new(),
+                    notices: Vec::new(),
+                },
+                FileResult {
+                    file: "providers.yml",
+                    outcome: Outcome::Validated,
+                    detail: None,
+                    issues: Vec::new(),
+                    warnings: Vec::new(),
+                    notices: vec!["providers.yml was missing; copied Saltbox's default".into()],
                 },
             ],
             checks: vec![
@@ -1165,7 +1258,8 @@ mod tests {
                 r#"{"file":"settings.yml","line":12,"column":3,"path":"downloads.path","severity":"error","message":"must be an absolute path"},"#,
                 r#"{"file":"settings.yml","line":null,"column":null,"path":"","severity":"warning","message":"password is short\u001b"}]},"#,
                 r#"{"file":"motd.yml","outcome":"skipped","reason":"motd.yml not found; skipped","issues":[]},"#,
-                r#"{"file":"hetzner_vlan.yml","outcome":"failed","error":"required config file not found: /x/hetzner_vlan.yml","issues":[]}],"#,
+                r#"{"file":"hetzner_vlan.yml","outcome":"failed","error":"required config file not found: /x/hetzner_vlan.yml","issues":[]},"#,
+                r#"{"file":"providers.yml","outcome":"validated","issues":[],"notices":["providers.yml was missing; copied Saltbox's default"]}],"#,
                 r#""checks":[{"check":"cloudflare","outcome":"validated"},"#,
                 r#"{"check":"dockerhub","outcome":"skipped","reason":"no Docker Hub credentials set; skipped"},"#,
                 r#"{"check":"dockerhub","outcome":"failed","message":"HTTP 401"}]}"#,
@@ -1186,6 +1280,7 @@ mod tests {
                 detail: None,
                 issues: vec![issue("settings.yml", 1, "", "x")],
                 warnings: Vec::new(),
+                notices: vec!["n".into()],
             }],
             checks: vec![CheckResult {
                 check: "cloudflare",
@@ -1199,7 +1294,10 @@ mod tests {
         };
         assert_eq!(keys(&value), ["checks", "files", "schema"]);
         assert_eq!(value["schema"], 1);
-        assert_eq!(keys(&value["files"][0]), ["file", "issues", "outcome"]);
+        assert_eq!(
+            keys(&value["files"][0]),
+            ["file", "issues", "notices", "outcome"]
+        );
         assert_eq!(
             keys(&value["files"][0]["issues"][0]),
             ["column", "file", "line", "message", "path", "severity"]
@@ -1842,7 +1940,7 @@ mod tests {
         let shown = format!("{checked:?}");
         assert_eq!(
             shown,
-            "Checked { issues: 0, warnings: 0, checks: 2, tree: true, .. }"
+            "Checked { issues: 0, warnings: 0, checks: 2, tree: true, notices: 0, .. }"
         );
         assert!(!shown.contains("not-a-real-token"), "{shown}");
 
@@ -2041,6 +2139,7 @@ mod tests {
                 "adv_settings.yml",
                 "backup_config.yml",
                 "hetzner_vlan.yml",
+                "providers.yml",
                 "settings.yml",
                 "motd.yml",
                 "inventories/host_vars/localhost.yml",

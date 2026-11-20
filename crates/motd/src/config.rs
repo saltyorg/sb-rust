@@ -28,7 +28,7 @@ use sb_config::tree::{Data, Node};
 use sb_config::validators::Saltbox;
 
 /// motd.yml under the Saltbox root, and its schema (sb-config's list).
-const FILE: run::File = run::FILES[5];
+const FILE: run::File = run::FILES[6];
 
 /// One of motd.yml's nine colours (motd decision 5).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -442,7 +442,7 @@ pub fn load_here() -> Loaded {
 /// The outcome of the check, as this run uses it.
 fn loaded(checked: Result<Checked, FileError>) -> Loaded {
     match checked {
-        Ok(Checked { report, tree }) if report.issues.is_empty() => Loaded {
+        Ok(Checked { report, tree, .. }) if report.issues.is_empty() => Loaded {
             motd: tree.as_deref().map(Motd::from_tree),
             line: None,
         },

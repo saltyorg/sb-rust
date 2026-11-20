@@ -619,3 +619,65 @@ fn json_reports_issues_with_their_positions() {
     assert_eq!(end[0], "Fix with: sb edit accounts", "{stderr}");
     assert!(end[1].starts_with("details: "), "{stderr}");
 }
+
+/// A missing providers.yml gets Saltbox's default (config spec, decision
+/// 10): the notice on stderr and in `--json`'s `notices`, the copy 0600,
+/// then the copy checked; a credential in it never shows on stdout,
+/// stderr or in the log, an issue on it naming the key.
+#[test]
+fn json_notes_a_copied_default_and_hides_its_credentials() {
+    const DNS_TOKEN: &str = "dns-not-a-real-secret-5";
+    if !root_gate::requested() {
+        return;
+    }
+    let root = saltbox_root("valid").expect("root");
+    std::fs::remove_file(root.path().join("providers.yml")).expect("remove");
+    std::fs::create_dir(root.path().join("defaults")).expect("defaults");
+    std::fs::write(
+        root.path().join("defaults/providers.yml.default"),
+        format!("duckdns:\n  token: !!int {DNS_TOKEN}\n"),
+    )
+    .expect("default");
+    let fake = healthy();
+    let logs = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).expect("logs");
+    let out = common::sb()
+        .args(["validate-config", "--json"])
+        .env("SB_LOG_DIR", logs.path())
+        .env("SB_SALTBOX_DIR", root.path())
+        .env("CLOUDFLARE_BASE_URL", format!("{}/client/v4/", fake.url()))
+        .env(
+            "SB_DOCKERHUB_URL",
+            format!("{}/v2/users/login/", fake.url()),
+        )
+        .output()
+        .expect("run sb");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "{stderr}");
+    let notice = "providers.yml was missing; copied Saltbox's default";
+    assert!(stderr.contains(&format!("› {notice}")), "{stderr}");
+    let stdout = String::from_utf8(out.stdout).expect("UTF-8");
+    assert!(
+        stdout.contains(&format!(
+            r#"{{"file":"providers.yml","line":2,"column":10,"path":"duckdns.token","severity":"error","message":"cannot decode !!str `[REDACTED]` as a !!int"}}],"notices":["{notice}"]}}"#
+        )),
+        "{stdout}"
+    );
+    let mode = std::fs::metadata(root.path().join("providers.yml"))
+        .expect("copied")
+        .permissions();
+    assert_eq!(
+        std::os::unix::fs::PermissionsExt::mode(&mode) & 0o7777,
+        0o600
+    );
+    let log: String = std::fs::read_dir(logs.path())
+        .expect("logs")
+        .map(|e| std::fs::read_to_string(e.expect("entry").path()).expect("read"))
+        .collect();
+    assert!(
+        log.contains("missing config file copied from Saltbox's default"),
+        "{log}"
+    );
+    for (name, text) in [("stderr", &*stderr), ("stdout", &*stdout), ("log", &*log)] {
+        assert!(!text.contains(DNS_TOKEN), "{name}:\n{text}");
+    }
+}

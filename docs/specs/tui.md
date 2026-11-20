@@ -1112,10 +1112,18 @@ command can corrupt a file Saltbox owns or race Saltbox while it writes.
   | Providers | providers.yml | `providers` | providers.yml |
 
   The last two are sb's (maintainer, 2026-11-18; Difference 38). Not
-  every host has them: the picker leaves each out when its file doesn't
-  exist, and `sb edit motd` or `sb edit providers` then fails with the
-  target check's `configuration file does not yet exist: <path>`, exit 1,
-  creating nothing. The six keep their behaviour.
+  every host has motd.yml: the picker leaves it out when its file
+  doesn't exist, and `sb edit motd` then fails with the target check's
+  `configuration file does not yet exist: <path>`, exit 1, creating
+  nothing. The six keep their behaviour, but for the default copy below.
+  - **A missing hetzner_vlan.yml or providers.yml** (the maintainer,
+    2026-11-20; config spec, decision 10) is copied in from Saltbox's
+    default before the target check, as validate-config copies it
+    (sb-config's `run::copy_missing`): a runner titled `sb edit` shows
+    one step, `Copying <file>.default`, with the config spec's notice,
+    then the editor opens on the copy. With no default to copy (or a
+    copy that fails, its warning shown), the target check fails as
+    before. Both are listed in the picker always.
   - **motd.yml** is validated as validate-config validates it, its
     schema included. A file still in its older format is migrated first,
     exactly as validate-config migrates it (sb-config's
@@ -1125,15 +1133,18 @@ command can corrupt a file Saltbox owns or race Saltbox while it writes.
   - **A file the editor removed** is the file's issue (`required config
     file not found`), offered again, as for the five required files. The
     file was there when the editor started (the target check), so `sb
-    edit` checks both as required; validate-config skips a missing one,
-    and localhost.yml stays skipped in both.
+    edit` checks motd.yml as required; validate-config skips a missing
+    one, and localhost.yml stays skipped in both. A removed
+    hetzner_vlan.yml or providers.yml gets Saltbox's default again, with
+    its notice, as validate-config would give it (*amended 2026-11-20*).
   - **providers.yml** holds Saltbox's DNS providers' credentials. It is a
     `vars_files` entry of saltbox.yml, read from the Saltbox root, with
     `defaults/providers.yml.default` when it's missing (Saltbox,
-    saltbox.yml). Saltbox has no schema for it, so it gets the check
-    localhost.yml gets: the YAML pre-pass, the parse and duplicate keys
-    (sb-config's `run::PROVIDERS`, not one of validate-config's files).
-    Its step reads `Validating providers.yml (no duplicates)`. The
+    saltbox.yml). It is checked as validate-config checks it
+    (*amended 2026-11-20*, config spec decision 10): against
+    `schema/providers.schema.yml`, or, while Saltbox has none, the
+    YAML pre-pass, the parse and duplicate keys with the config spec's
+    notice. Its step reads `Validating providers.yml`. The
     editor run and the log rules are the other files': the log has the
     file's name, its issue count and the step's record, never its
     content, and its issue lines name keys and positions, never values.
@@ -1438,7 +1449,10 @@ command can corrupt a file Saltbox owns or race Saltbox while it writes.
 38. `sb edit` also opens motd.yml ("Motd Settings", `sb edit motd`) and
     providers.yml ("Providers", `sb edit providers`), each left out of
     the picker when its file doesn't exist. sb-go's edit has neither
-    (maintainer, 2026-11-18; decision 42).
+    (maintainer, 2026-11-18; decision 42). *Amended 2026-11-20:*
+    providers.yml is listed always, and it and hetzner_vlan.yml are
+    copied from Saltbox's default when missing (sb-go's edit fails on a
+    missing hetzner_vlan.yml).
 39. Each `sb edit` subcommand also takes its file's name as a hidden
     alias (`sb edit accounts.yml`, `sb edit adv_settings.yml`, ...), and
     `inventory` also takes `localhost` and `localhost.yml`, the
@@ -1772,6 +1786,8 @@ the test's directory.
     validate-config migrates it, so the two commands never leave it
     differently. providers.yml gets the schema-less check sb-config
     already has (localhost.yml's), the only YAML check there is for it.
+    *Amended 2026-11-20* (config spec, decision 10): it gets
+    validate-config's check, its schema included once Saltbox has it.
     Both are left out of the picker when missing, and refused by name
     (the target check) when asked for directly.
 

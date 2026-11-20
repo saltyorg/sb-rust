@@ -30,6 +30,15 @@ you could trip over.
 - **`sb fact`'s editor**, a settings page with search, a changes panel
   and Copy (clipboard through OSC 52).
 - **`sb edit` validates the file you edited** and offers to edit it again.
+- **validate-config checks providers.yml** (the DNS providers' credentials)
+  after hetzner_vlan.yml, against `schema/providers.schema.yml` once
+  Saltbox ships it, and for duplicate keys until then. Its keys,
+  tokens and passwords never show. `sb update` and `sb edit providers`
+  check it the same way.
+- **A missing hetzner_vlan.yml or providers.yml is created** from
+  Saltbox's default (`defaults/<file>.default`, mode 0600, owned as the
+  default is), with a notice, by validate-config, `sb update` and `sb
+  edit`; sb-go reported a missing hetzner_vlan.yml as an error.
 - **A Certificates line in `sb motd`** (with `--traefik`), from Traefik's
   API.
 - **A theme file,** `<appdata>/sb/config.toml`: the built-in theme, with

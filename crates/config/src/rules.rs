@@ -1655,6 +1655,7 @@ mod tests {
             "backup_config",
             "hetzner_vlan",
             "motd",
+            "providers",
             "settings",
         ]
         .into_iter()

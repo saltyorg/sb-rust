@@ -3,8 +3,9 @@
 //! run, then the file validated as validate-config validates it and, with
 //! issues, "Edit <file> again?". Bare `sb edit` shows sb-tui's picker
 //! first (M53), then takes the same path with the file chosen. motd.yml
-//! and providers.yml are sb's own two, listed only when they exist (tui
-//! spec, Difference 38).
+//! and providers.yml are sb's own two (tui spec, Difference 38), motd.yml
+//! listed only when it exists; a missing `hetzner_vlan.yml` or
+//! providers.yml gets Saltbox's default first (config spec, decision 10).
 
 use std::ffi::OsStr;
 use std::fmt::Write as _;
@@ -48,11 +49,11 @@ impl File {
         Self::Providers,
     ];
 
-    /// Whether the picker lists it only when its file exists: motd.yml and
-    /// providers.yml, which not every host has. sb-go's six are always
-    /// listed (a missing one fails the target check once chosen).
+    /// Whether the picker lists it only when its file exists: motd.yml,
+    /// which not every host has. The others are always listed (a missing
+    /// one gets its default, or fails the target check, once chosen).
     fn optional(self) -> bool {
-        matches!(self, Self::Motd | Self::Providers)
+        matches!(self, Self::Motd)
     }
 
     /// The picker's title for it (sb-go cmd/edit.go:175-205).
@@ -115,16 +116,15 @@ impl File {
         }
     }
 
-    /// Its entry in validate-config's files (sb-config's `run::FILES`,
-    /// in sb-go's order), so it is checked exactly as validate-config
-    /// checks it; providers.yml, which validate-config doesn't check, its
-    /// own schema-less entry (`run::PROVIDERS`).
+    /// Its entry in validate-config's files (sb-config's `run::FILES`),
+    /// so it is checked exactly as validate-config checks it.
     fn checked_as(self) -> run::File {
         let [
             accounts,
             adv_settings,
             backup_config,
             hetzner_vlan,
+            providers,
             settings,
             motd,
             inventory,
@@ -138,17 +138,14 @@ impl File {
             Self::Inventory => inventory,
             // Required here: the file was there when the editor started
             // (the target check), so one the editor removed is the file's
-            // issue, offered again, as for the five required files;
+            // issue, offered again, as for the required files;
             // validate-config skips a missing one (tui spec, the editors'
             // files).
             Self::Motd => run::File {
                 required: true,
                 ..motd
             },
-            Self::Providers => run::File {
-                required: true,
-                ..run::PROVIDERS
-            },
+            Self::Providers => providers,
         }
     }
 }
@@ -245,6 +242,7 @@ pub fn edit(
 ) -> anyhow::Result<()> {
     let root = config::saltbox_dir(std::env::var_os("SB_SALTBOX_DIR"));
     let path = file.path(&root);
+    copy_default(file, &root, &path, shutdown)?;
     check_target(&path)?;
     let chosen = chosen_editor(
         std::env::var_os("VISUAL").as_deref(),
@@ -439,6 +437,50 @@ async fn validate(
     }
 }
 
+/// A missing `hetzner_vlan.yml` or providers.yml at `path` given Saltbox's
+/// default before the target check (tui spec, editors' files; config
+/// spec, decision 10): a runner titled `sb edit` with one step, `Copying
+/// <file>.default`, holding sb-config's notice or warning
+/// (`run::copy_missing`). Nothing is drawn for a file that is there (a
+/// link included), has no default entry or no default at its path; a
+/// copy that didn't happen leaves the target check to name the missing
+/// file.
+///
+/// # Errors
+///
+/// The runtime the runner draws in couldn't be built.
+fn copy_default(file: File, root: &Path, path: &Path, shutdown: &Shutdown) -> std::io::Result<()> {
+    let checked = file.checked_as();
+    let Some(default) = checked.default else {
+        return Ok(());
+    };
+    let missing = |path: &Path| {
+        matches!(
+            path.symlink_metadata(),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound
+        )
+    };
+    if !missing(path) || missing(&root.join(default)) {
+        return Ok(());
+    }
+    let name = Path::new(default).file_name().unwrap_or_default();
+    let label = format!("Copying {}", name.to_string_lossy());
+    // Started inside the runtime: a live runner spawns its drawing task
+    // there (term-ui's `Runner::start`), as [`validate`]'s does.
+    super::block_on(async {
+        let mut runner =
+            sb_term_ui::Runner::start("sb edit", shutdown, None, sb_term_ui::Options::default());
+        // The step can't fail: a failed copy is its warning.
+        let _ = runner
+            .step(sb_term_ui::Labels::new(&label, &label), async |step| {
+                let _ = run::copy_missing(step, root, checked);
+                Ok(())
+            })
+            .await;
+        runner.finish();
+    })
+}
+
 /// `path` followed through symlinks must be an existing regular file
 /// (sb-go `editorCommand`, cmd/edit.go:101-133). The path is shown as it
 /// is: cli-core's error block escapes every line it prints.
@@ -610,6 +652,7 @@ mod tests {
                 Some(File::AdvSettings),
                 Some(File::BackupConfig),
                 Some(File::HetznerVlan),
+                Some(File::Providers),
                 Some(File::Settings),
                 Some(File::Motd),
                 Some(File::Inventory),
@@ -683,16 +726,13 @@ mod tests {
         );
     }
 
-    /// The picker lists sb-go's six always, and motd.yml and
-    /// providers.yml only when something is at their path.
+    /// The picker lists every file always but motd.yml, which it lists
+    /// only when something is at its path.
     #[test]
-    fn the_picker_leaves_out_a_missing_motd_or_providers() {
+    fn the_picker_leaves_out_a_missing_motd() {
         let root = tempfile::tempdir().expect("root");
-        let always: Vec<File> = File::ALL.into_iter().filter(|f| !f.optional()).collect();
-        let six = always.as_slice();
-        assert_eq!(pickable(root.path()), six);
-        std::fs::write(root.path().join("providers.yml"), "a: 1\n").expect("providers");
-        assert_eq!(pickable(root.path()), [six, &[File::Providers]].concat());
+        let always: Vec<File> = File::ALL.into_iter().filter(|f| *f != File::Motd).collect();
+        assert_eq!(pickable(root.path()), always);
         std::os::unix::fs::symlink("gone", root.path().join("motd.yml")).expect("link");
         assert_eq!(pickable(root.path()), File::ALL);
     }
@@ -722,7 +762,14 @@ mod tests {
             );
         }
         assert_eq!(File::Motd.checked_as().schema, Some("motd.schema.yml"));
-        assert_eq!(File::Providers.checked_as().schema, None);
+        assert_eq!(
+            File::Providers.checked_as().schema,
+            Some("providers.schema.yml")
+        );
+        assert_eq!(
+            File::HetznerVlan.checked_as().default,
+            Some("defaults/hetzner_vlan.yml.default")
+        );
     }
 
     /// `changed` compares bytes; a file that couldn't be read is unknown.

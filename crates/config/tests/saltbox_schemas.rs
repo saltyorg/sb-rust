@@ -21,6 +21,7 @@ fn every_pinned_schema_loads() {
         "backup_config.schema.yml",
         "hetzner_vlan.schema.yml",
         "motd.schema.yml",
+        "providers.schema.yml",
         "settings.schema.yml",
     ] {
         assert!(!pinned(name).is_empty(), "{name}");

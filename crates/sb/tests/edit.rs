@@ -1423,10 +1423,10 @@ fn an_old_motd_yml_is_migrated_after_the_edit() {
 }
 
 /// providers.yml opens and saves as the others do, and is checked as
-/// localhost.yml is (no schema: the parse and duplicate keys); a
-/// duplicate key is an issue.
+/// validate-config checks it, against its schema (config spec, decision
+/// 10); a duplicate key is an issue.
 #[test]
-fn providers_opens_saves_and_gets_the_duplicate_check() {
+fn providers_opens_saves_and_gets_validate_configs_check() {
     if !root_gate::requested() {
         return;
     }
@@ -1442,10 +1442,7 @@ fn providers_opens_saves_and_gets_the_duplicate_check() {
         .expect("run sb");
     let text = stderr(&output);
     assert!(output.status.success(), "{text}");
-    assert!(
-        text.contains("✓ Validated providers.yml (no duplicates)"),
-        "{text}"
-    );
+    assert!(text.contains("✓ Validated providers.yml"), "{text}");
     assert_eq!(world.text("providers.yml"), edited);
     let duplicated = format!("{PROVIDERS}duckdns:\n  token:\n");
     // The editor's second run here saves `duplicated`.
@@ -1459,15 +1456,121 @@ fn providers_opens_saves_and_gets_the_duplicate_check() {
         .expect("run sb");
     let text = stderr(&output);
     assert_eq!(output.status.code(), Some(1), "{text}");
+    assert!(text.contains("✗ Validation of providers.yml"), "{text}");
+    // A key the schema doesn't know is an issue too.
+    let unknown = format!("{PROVIDERS}{UNKNOWN}");
+    // The editor's third run saves `unknown`.
+    let saves = world.saves(&["", "", &unknown]);
+    let output = world
+        .sb("providers")
+        .arg("--no-edit-again")
+        .env("VISUAL", world.fake())
+        .env("FAKE_SAVES", &saves)
+        .output()
+        .expect("run sb");
+    let text = stderr(&output);
+    assert_eq!(output.status.code(), Some(1), "{text}");
     assert!(
-        text.contains("✗ Validation of providers.yml (no duplicates)"),
+        text.contains("providers.yml:5:1: not_a_setting: unknown field"),
         "{text}"
     );
 }
 
-/// An editor that removes motd.yml or providers.yml leaves the file's
-/// issue, as for the five required files: offered again, exit 1 with
-/// `--no-edit-again`, the block naming the file.
+/// A missing `hetzner_vlan.yml` or providers.yml gets Saltbox's default
+/// before the editor opens (config spec, decision 10): a `Copying` step
+/// with the notice, the copy 0600, the editor run on it, then the file
+/// checked; one the editor removes gets the default again.
+#[test]
+fn a_missing_file_with_a_default_is_copied_before_the_editor() {
+    if !root_gate::requested() {
+        return;
+    }
+    let world = World::new();
+    std::fs::create_dir(world.root().join("defaults")).expect("defaults");
+    for (sub, file) in [
+        ("hetzner_vlan", "hetzner_vlan.yml"),
+        ("providers", "providers.yml"),
+    ] {
+        let path = world.root().join(file);
+        let default = world
+            .root()
+            .join("defaults")
+            .join(format!("{file}.default"));
+        std::fs::rename(&path, &default).expect("default");
+        let output = world
+            .sb(sub)
+            .env("VISUAL", world.fake())
+            .output()
+            .expect("run sb");
+        let text = stderr(&output);
+        assert!(output.status.success(), "{sub}: {text}");
+        assert!(text.contains(&format!("Copying {file}.default")), "{text}");
+        assert!(
+            text.contains(&format!("› {file} was missing; copied Saltbox's default")),
+            "{text}"
+        );
+        assert!(text.contains(&format!("✓ Validated {file}")), "{text}");
+        assert_eq!(world.argv().last(), Some(&path.display().to_string()));
+        assert_eq!(
+            std::fs::read(&path).expect("copy"),
+            std::fs::read(&default).expect("default")
+        );
+        let mode = std::fs::metadata(&path).expect("meta").permissions().mode();
+        assert_eq!(mode & 0o7777, 0o600, "{sub}");
+        assert!(
+            world
+                .log()
+                .contains("missing config file copied from Saltbox's default"),
+            "{}",
+            world.log()
+        );
+        // The editor removes it: the default comes back, with the notice.
+        let output = world
+            .sb(sub)
+            .arg("--no-edit-again")
+            .env("VISUAL", "/bin/rm")
+            .output()
+            .expect("run sb");
+        let text = stderr(&output);
+        assert!(output.status.success(), "{sub}: {text}");
+        assert!(
+            text.contains(&format!("› {file} was missing; copied Saltbox's default")),
+            "{text}"
+        );
+        assert!(path.exists(), "{sub}");
+    }
+}
+
+/// On a terminal too (the live runner needs the copy's own runtime):
+/// `sb edit providers` with the file missing copies Saltbox's default,
+/// shows the notice, opens the editor on the copy and validates it.
+#[test]
+fn a_default_is_copied_on_a_terminal() {
+    if !root_gate::requested() {
+        return;
+    }
+    let world = World::new();
+    std::fs::create_dir(world.root().join("defaults")).expect("defaults");
+    let path = world.root().join("providers.yml");
+    std::fs::rename(&path, world.root().join("defaults/providers.yml.default")).expect("default");
+    let fake = world.fake();
+    let mut pty = Pty::spawn(&world, &["providers"], &[("VISUAL", fake.as_ref())]);
+    let status = pty.exit();
+    let shown = pty.contents();
+    assert_eq!(status.exit_code(), 0, "{shown}");
+    assert!(
+        shown.contains("providers.yml was missing; copied Saltbox's default"),
+        "{shown}"
+    );
+    assert!(shown.contains("Validated providers.yml"), "{shown}");
+    assert!(world.ran());
+    let mode = std::fs::metadata(&path).expect("copy").permissions().mode();
+    assert_eq!(mode & 0o7777, 0o600);
+}
+
+/// An editor that removes motd.yml or providers.yml (with no default to
+/// copy) leaves the file's issue, as for the required files: offered
+/// again, exit 1 with `--no-edit-again`, the block naming the file.
 #[test]
 fn a_motd_or_providers_the_editor_removed_is_an_issue() {
     if !root_gate::requested() {
@@ -1501,9 +1604,9 @@ fn a_motd_or_providers_the_editor_removed_is_an_issue() {
     }
 }
 
-/// motd.yml and providers.yml aren't on every host: asked for directly
-/// when missing, each is named, exit 1, with no editor run and no file
-/// made.
+/// motd.yml isn't on every host, and providers.yml may have no default
+/// to copy: asked for directly when missing, each is named, exit 1, with
+/// no editor run, no copy step and no file made.
 #[test]
 fn a_missing_motd_or_providers_is_named_and_not_made() {
     if !root_gate::requested() {
@@ -1511,6 +1614,7 @@ fn a_missing_motd_or_providers_is_named_and_not_made() {
     }
     let world = World::new();
     std::fs::remove_file(world.root().join("motd.yml")).expect("remove motd.yml");
+    std::fs::remove_file(world.root().join("providers.yml")).expect("remove providers.yml");
     for (sub, file) in [("motd", "motd.yml"), ("providers", "providers.yml")] {
         let path = world.root().join(file);
         let output = world
@@ -1529,25 +1633,27 @@ fn a_missing_motd_or_providers_is_named_and_not_made() {
         );
         assert!(!path.exists(), "{sub}");
         assert!(!world.ran(), "{sub}");
+        assert!(!text.contains("Copying"), "{sub}: {text}");
     }
 }
 
-/// The picker lists motd.yml and providers.yml only when they exist, after
-/// sb-go's six; the six are always listed.
+/// The picker lists motd.yml only when it exists, after sb-go's six;
+/// the others, providers.yml included (its default is copied when it is
+/// missing), are always listed.
 #[test]
-fn the_picker_lists_motd_and_providers_only_when_they_exist() {
+fn the_picker_lists_motd_only_when_it_exists() {
     if !root_gate::requested() {
         return;
     }
     let world = World::new();
+    std::fs::remove_file(world.root().join("providers.yml")).expect("remove providers.yml");
     let mut pty = picker(&world);
     let shown = pty.contents();
     assert!(shown.contains("Motd Settings"), "{shown}");
-    assert!(!shown.contains("Providers"), "{shown}");
+    assert!(shown.contains("Providers"), "{shown}");
     assert!(shown.contains("Inventory Settings"), "{shown}");
     pty.send(b"q");
     assert_eq!(pty.exit().exit_code(), 0);
-    std::fs::write(world.root().join("providers.yml"), PROVIDERS).expect("providers");
     std::fs::remove_file(world.root().join("motd.yml")).expect("remove motd.yml");
     let mut pty = picker(&world);
     let shown = pty.contents();
