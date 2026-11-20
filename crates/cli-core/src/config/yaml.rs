@@ -81,7 +81,7 @@
 //! text go back to the original file through [`Prepared::original`].
 
 use saphyr_parser::{
-    Event, Marker, Parser, ScalarStyle, ScanError, Span, SpannedEventReceiver, Tag,
+    Event, Marker, Parser, ScalarStyle, ScanError, Span, SpannedEventReceiver, StrInput, Tag,
 };
 
 use super::MAX_FILE_BYTES;
@@ -236,6 +236,22 @@ fn constructed(tag: &Tag) -> bool {
 }
 
 impl Prepared {
+    /// `text` as written: nothing padded or taken out, so every position
+    /// maps to itself.
+    fn as_written(text: String) -> Self {
+        Prepared {
+            text,
+            pads: Vec::new(),
+            before: Vec::new(),
+            total: 0,
+            removed: Vec::new(),
+            depth: 0,
+            chars: 0,
+            eof_break: false,
+            top_scalar: None,
+        }
+    }
+
     /// The text for saphyr-parser.
     #[must_use]
     pub fn text(&self) -> &str {
@@ -499,9 +515,14 @@ fn document_marker(line: &[char]) -> Option<char> {
 /// Ansible's loader has no constructor for.
 pub fn prepare(text: &str) -> Result<Prepared, Refusal> {
     characters(text)?;
+    // Positions in the text as written, which map to themselves (only
+    // the mapping is read, never its text).
+    let as_is = Prepared::as_written(String::new());
+    // One parser pass over the text as written: whether its first
+    // document reads, and its whole stream, used when that text is.
+    let (parses, streamed) = read_as_written(text, &as_is);
     // The scan runs either way (it refuses what libyaml refuses); its
     // rewritten text is built only when saphyr can't read the original.
-    let parses = first_document_parses(text);
     let mut rewritten = rewrite(text, !parses)?;
     // A top-level block scalar ended at a comment: saphyr reads the
     // comment as content, so its text is the rewritten one either way.
@@ -512,19 +533,14 @@ pub fn prepare(text: &str) -> Result<Prepared, Refusal> {
     let mut prepared = if parses && !blanked {
         Prepared {
             text: text.to_string(),
-            pads: Vec::new(),
-            before: Vec::new(),
-            total: 0,
-            removed: Vec::new(),
-            depth: 0,
-            chars: 0,
             eof_break: rewritten.eof_break,
-            top_scalar: None,
+            depth: streamed.map_err(|stop| stop.refusal(&as_is))?,
+            ..as_is
         }
     } else {
+        rewritten.depth = stream(&rewritten)?;
         rewritten
     };
-    prepared.depth = stream(&prepared)?;
     prepared.chars = prepared.text.chars().count();
     Ok(prepared)
 }
@@ -572,17 +588,10 @@ pub fn with_stack<T: Send>(depth: usize, f: impl FnOnce() -> T + Send) -> std::i
 /// text to both. The message names the code point, never the text around
 /// it; the stream's own mark is no column.
 fn characters(text: &str) -> Result<(), Refusal> {
-    let refused = |c: char| {
-        matches!(c, '\0'..='\u{8}' | '\u{b}' | '\u{c}' | '\u{e}'..='\u{1f}' | '\u{7f}'..='\u{9f}')
-            || matches!(
-                c,
-                '\u{2028}' | '\u{2029}' | '\u{fffe}' | '\u{ffff}' | '\u{feff}'
-            )
-    };
     let mark = text
         .strip_prefix('\u{feff}')
         .map_or(0, |_| '\u{feff}'.len_utf8());
-    let Some(at) = text[mark..].find(refused).map(|at| at + mark) else {
+    let Some(at) = refused_at(&text.as_bytes()[mark..]).map(|at| at + mark) else {
         return Ok(());
     };
     let before = &text[..at];
@@ -627,6 +636,28 @@ fn characters(text: &str) -> Result<(), Refusal> {
     })
 }
 
+/// Where the first character [`characters`] refuses starts in `bytes`,
+/// valid UTF-8: a control character but tab and the line breaks (U+0000
+/// to U+0008, U+000B, U+000C, U+000E to U+001F, U+007F to U+009F), LS,
+/// PS, U+FEFF, U+FFFE or U+FFFF. Read by their UTF-8 bytes, where a
+/// lead byte can only start a character: about 13 instructions a byte
+/// fewer than `str::find` over decoded characters (the performance pass,
+/// 2026-11-20), the same answer (a test compares them).
+fn refused_at(bytes: &[u8]) -> Option<usize> {
+    let at = |i: usize| bytes.get(i).copied().unwrap_or(0);
+    bytes.iter().enumerate().position(|(i, &b)| match b {
+        b'\t' | b'\n' | b'\r' => false,
+        0..=0x1f | 0x7f => true,
+        // U+0080 to U+009F.
+        0xc2 => (0x80..=0x9f).contains(&at(i + 1)),
+        // U+2028, U+2029.
+        0xe2 => at(i + 1) == 0x80 && matches!(at(i + 2), 0xa8 | 0xa9),
+        // U+FEFF; U+FFFE, U+FFFF.
+        0xef => matches!((at(i + 1), at(i + 2)), (0xbb, 0xbf) | (0xbf, 0xbe | 0xbf)),
+        _ => false,
+    })
+}
+
 /// The prepared text's whole stream, as saphyr-parser reads it: its
 /// depth (an alias counted as the height of its anchor's collection, which
 /// the loader copies), or what Ansible's loader refuses: a second
@@ -640,14 +671,53 @@ fn characters(text: &str) -> Result<(), Refusal> {
 /// `check_yaml_budget` scans with another parser (granit-parser), counts
 /// no alias heights and knows nothing of the pre-pass's positions.
 fn stream(prepared: &Prepared) -> Result<usize, Refusal> {
-    let at = |marker: &Marker, message: &str| {
-        let marker = prepared.original(marker);
-        Refusal {
-            line: marker.line(),
-            column: marker.col() + 1,
-            message: message.to_string(),
+    let mut parser = Parser::new_from_str(prepared.text());
+    stream_of(prepared, &mut parser, &mut First::default()).map_err(|stop| stop.refusal(prepared))
+}
+
+/// A refusal at `marker`, a position in `prepared`'s text.
+fn refusal_at(prepared: &Prepared, marker: &Marker, message: &str) -> Refusal {
+    let marker = prepared.original(marker);
+    Refusal {
+        line: marker.line(),
+        column: marker.col() + 1,
+        message: message.to_string(),
+    }
+}
+
+/// Where [`stream_of`] stopped: saphyr's syntax error, its refusal made
+/// only when it is used ([`Stop::refusal`]), or a refusal of the walk's.
+enum Stop {
+    Syntax(ScanError),
+    Refused(Refusal),
+}
+
+impl Stop {
+    fn refusal(self, prepared: &Prepared) -> Refusal {
+        match self {
+            Stop::Syntax(err) => refusal_at(prepared, err.marker(), err.info()),
+            Stop::Refused(refusal) => refusal,
         }
-    };
+    }
+}
+
+/// Whether the first document (or the stream) has ended, and whether an
+/// error came before that, as [`stream_of`] reads the events.
+#[derive(Default)]
+struct First {
+    ended: bool,
+    failed: bool,
+}
+
+/// [`stream`] over `parser`'s events on `prepared`'s text (or on a text
+/// whose positions `prepared` maps as they are), noting in `first` how
+/// far the first document read.
+fn stream_of(
+    prepared: &Prepared,
+    parser: &mut Parser<'_, StrInput<'_>>,
+    first: &mut First,
+) -> Result<usize, Stop> {
+    let at = |marker: &Marker, message: &str| Stop::Refused(refusal_at(prepared, marker, message));
     let mut open: Vec<Open> = Vec::new();
     // Each anchor's height.
     let mut heights: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
@@ -657,8 +727,14 @@ fn stream(prepared: &Prepared) -> Result<usize, Refusal> {
     // after the parser, so a syntax error anywhere comes first.
     let mut unconstructed = None;
     let mut top_scalars = 0;
-    for event in Parser::new_from_str(prepared.text()) {
-        let (event, span) = event.map_err(|err| at(err.marker(), err.info()))?;
+    for event in parser {
+        let (event, span) = match event {
+            Ok(event) => event,
+            Err(err) => {
+                first.failed = !first.ended;
+                return Err(Stop::Syntax(err));
+            }
+        };
         // A comment ended the top-level scalar (`top_scalar_ends`): the
         // first document must be that one scalar, its lines blank, or the
         // scan and saphyr have read the text apart and libyaml's value
@@ -685,7 +761,7 @@ fn stream(prepared: &Prepared) -> Result<usize, Refusal> {
             && unconstructed.is_none()
             && !constructed(tag)
         {
-            unconstructed = Some(at(&span.start, NO_CONSTRUCTOR));
+            unconstructed = Some(refusal_at(prepared, &span.start, NO_CONSTRUCTOR));
         }
         // A collection (or an alias to one) where a mapping wants a key:
         // `PyYAML`'s constructor refuses it ("found unhashable key"), and
@@ -739,6 +815,10 @@ fn stream(prepared: &Prepared) -> Result<usize, Refusal> {
                 height
             }
             Event::Scalar(..) => 0,
+            Event::DocumentEnd | Event::StreamEnd => {
+                first.ended = true;
+                continue;
+            }
             _ => continue,
         };
         // A node has ended in its parent: a mapping's key gives way to its
@@ -748,7 +828,7 @@ fn stream(prepared: &Prepared) -> Result<usize, Refusal> {
             parent.key_next = parent.key_next.map(|key| !key);
         }
     }
-    unconstructed.map_or(Ok(deepest), Err)
+    unconstructed.map_or(Ok(deepest), |refusal| Err(Stop::Refused(refusal)))
 }
 
 /// An open collection in [`stream`].
@@ -765,13 +845,31 @@ fn too_deep() -> String {
     format!("nested deeper than {MAX_DEPTH} levels")
 }
 
-/// Whether saphyr-parser reads `text`'s first document without an error
-/// (as `Parser::load` with `multi` off would:
-/// <https://docs.rs/saphyr-parser/0.3.3/saphyr_parser/struct.Parser.html#method.load>).
-fn first_document_parses(text: &str) -> bool {
-    Parser::new_from_str(text)
-        .take_while(|event| !matches!(event, Ok((Event::DocumentEnd | Event::StreamEnd, _))))
-        .all(|event| event.is_ok())
+/// `text` as written, in one parser pass: whether saphyr-parser reads its
+/// first document without an error (as `Parser::load` with `multi` off
+/// would:
+/// <https://docs.rs/saphyr-parser/0.3.3/saphyr_parser/struct.Parser.html#method.load>),
+/// and its [`stream`], `as_is` mapping its positions as they are. A
+/// refusal inside the first document ended the stream early: the rest of
+/// that document is read for the first answer, as far as a pass of its
+/// own would have read it, so no file is read further than by the two
+/// passes this replaces, but for what follows a first document's end
+/// when the rewritten text is used after all (a blanked top-level
+/// scalar; the next document's start at most). The performance pass,
+/// 2026-11-20: one parser pass is about 170 instructions per byte.
+fn read_as_written(text: &str, as_is: &Prepared) -> (bool, Result<usize, Stop>) {
+    let mut parser = Parser::new_from_str(text);
+    let mut first = First::default();
+    let streamed = stream_of(as_is, &mut parser, &mut first);
+    while !(first.ended || first.failed) {
+        match parser.next() {
+            None => break,
+            Some(Ok((Event::DocumentEnd | Event::StreamEnd, _))) => first.ended = true,
+            Some(Err(_)) => first.failed = true,
+            Some(Ok(_)) => {}
+        }
+    }
+    (!first.failed, streamed)
 }
 
 /// The pass itself: `text` padded and with tabs after a key's colon made
@@ -1898,6 +1996,120 @@ mod tests {
             "a: [\n    ]\n"
         );
         assert!(prepare("a: 1\n\t\nb: 2\n").is_err());
+    }
+
+    /// The one pass over the text as written answers what the two passes
+    /// it replaced did: whether the first document reads (as
+    /// `Parser::load` reads it, the old pass written out here), and the
+    /// whole stream's depth or refusal (`stream` shares the walk: this
+    /// half checks that the early stop and the position mapping change
+    /// nothing; the corpus tests check the walk's answers).
+    /// A refusal inside the first document (a collection key, nesting)
+    /// still lets a later error in it count.
+    #[test]
+    fn one_pass_answers_as_the_two_did() {
+        let first_document_parses = |text: &str| {
+            Parser::new_from_str(text)
+                .take_while(|event| {
+                    !matches!(event, Ok((Event::DocumentEnd | Event::StreamEnd, _)))
+                })
+                .all(|event| event.is_ok())
+        };
+        // Block sequences on one line: past the depth limit, then an
+        // error (flow nesting would stop at saphyr's level of 255 first).
+        let deep = format!("{}1\nb: [\n", "- ".repeat(MAX_DEPTH + 1));
+        let cases = [
+            "",
+            "a: 1\n",
+            "a: [x,\n    y]\nb: &x {c: 1}\nd: *x\n",
+            "a: [\n]\n",
+            "a: 1\n---\nb: 2\n",
+            "a: 1\n---\nb: [\n",
+            "a: 1\n...\nb: 2\n",
+            "[a]: 1\n",
+            "[a]: 1\nb: [\n",
+            "[a]: 1\n---\nb: [\n",
+            "a: 1\n...\n]\n",
+            "a: &x [1]\n*x : 2\nc: 'x\n",
+            "a: !nope 1\nb: [\n",
+            "a: !nope 1\n",
+            "- a\nb: c\n",
+            deep.as_str(),
+        ];
+        let as_is = Prepared::as_written(String::new());
+        let one_pass = |text: &str| {
+            let (parses, streamed) = read_as_written(text, &as_is);
+            (parses, streamed.map_err(|stop| stop.refusal(&as_is)))
+        };
+        for text in cases {
+            let written = Prepared::as_written(text.to_string());
+            let shown = &text[..text.len().min(40)];
+            assert_eq!(
+                one_pass(text),
+                (first_document_parses(text), stream(&written)),
+                "{shown:?}"
+            );
+        }
+        // The refusals inside the first document, then its error.
+        assert!(!one_pass("[a]: 1\nb: [\n").0);
+        let (parses, streamed) = one_pass(&deep);
+        assert!(!parses);
+        assert_eq!(streamed.map_err(|refusal| refusal.message), Err(too_deep()));
+    }
+
+    /// The refused characters found by their bytes are those `str::find`
+    /// finds over decoded characters, on every short text of characters
+    /// near the refused ones.
+    #[test]
+    fn refused_bytes_are_refused_characters() {
+        let refused = |c: char| {
+            matches!(c, '\0'..='\u{8}' | '\u{b}' | '\u{c}' | '\u{e}'..='\u{1f}' | '\u{7f}'..='\u{9f}')
+                || matches!(
+                    c,
+                    '\u{2028}' | '\u{2029}' | '\u{fffe}' | '\u{ffff}' | '\u{feff}'
+                )
+        };
+        let parts = [
+            "a",
+            "\t",
+            "\n",
+            "\r",
+            "\0",
+            "\u{8}",
+            "\u{b}",
+            "\u{1f}",
+            " ",
+            "\u{7e}",
+            "\u{7f}",
+            "\u{80}",
+            "\u{9f}",
+            "\u{a0}",
+            "\u{bf}",
+            "é",
+            "\u{2027}",
+            "\u{2028}",
+            "\u{2029}",
+            "\u{202a}",
+            "\u{fefe}",
+            "\u{feff}",
+            "\u{fffd}",
+            "\u{fffe}",
+            "\u{ffff}",
+            "\u{10000}",
+            "\u{e2bb}",
+        ];
+        let mut texts = vec![String::new()];
+        let mut last = texts.clone();
+        for _ in 0..3 {
+            last = last
+                .iter()
+                .flat_map(|text| parts.iter().map(move |part| format!("{text}{part}")))
+                .collect();
+            texts.extend(last.iter().cloned());
+        }
+        for text in &texts {
+            assert_eq!(refused_at(text.as_bytes()), text.find(refused), "{text:?}");
+        }
     }
 
     /// Padding stops at its budget: a crafted file can't grow without
