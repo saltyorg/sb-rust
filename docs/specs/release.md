@@ -4,6 +4,10 @@ Approved by the maintainer as drafted (2026-11-13); a change after the
 maintainer's read-through becomes a fix
 task. *Amended 2026-11-18 with the maintainer's release decisions:
 the repository, versions, channels and CI ("Release channels").*
+*Amended 2026-11-20 with the maintainer's asks: release notes, the GitHub
+release and Discord as sb-go makes them ("Release notes and
+announcement"), and sb-go's Saltbox toolchain update, taken over at 1.0.0
+("Saltbox's toolchain update").*
 
 Module of the approved capability map (`release`), build order step 2
 (`host` → `repo`, `release`). It looks up GitHub releases (through the
@@ -302,7 +306,10 @@ The maintainer's decisions of 2026-11-18.
     - checks each binary's `version --json` (the tag's version, the
       asset's channel, a valid `uv_version`);
     - publishes the release, as a prerelease for rc tags, through the
-      `release` environment, whose required reviewers approve it.
+      `release` environment, whose required reviewers approve it, with
+      notes made from the commits ("Release notes and announcement");
+    - then announces it on Discord and, for a stable release only,
+      updates Saltbox's Python toolchain ("Saltbox's toolchain update").
   - The release runs only for a commit on `main` whose ci.yml run
     passed, and for a tag that is semver without leading zeros. A release
     reaches every host on its channel as root, since `sb update`
@@ -316,6 +323,166 @@ The maintainer's decisions of 2026-11-18.
       container sees them. A test reads Cross.toml against the variables
       build_info reads.
     - **sb-L8:** `build/Dockerfile`'s base is pinned by digest.
+
+### Release notes and announcement
+
+The maintainer's ask of 2026-11-20: sb-rust's releases look and announce
+as sb-go's (sb-go's build.yml, "Generate Release Notes", "Create GitHub
+Release", "Notify Discord"). The logic is `scripts/release.sh`, tested by
+`scripts/release.test.sh` against a fixture repository (check.sh, fast,
+when `scripts/` or `.github/` changed).
+
+- **The previous tag:** for a stable tag, the previous *stable* tag; for
+  an rc, the previous release tag of either kind. Previous means the
+  highest by semver precedence below the new tag, among the release tags
+  (semver without leading zeros, as the plan job reads them) that the new
+  tag's commit contains: a tag on a branch it doesn't contain, or one that
+  isn't a release tag (`v1.0.0`, `01.0.0`), never counts. Precedence is
+  ranked as install.sh ranks (`-` mapped to `~`, then `sort -V`), so
+  `1.0.0-rc.9` < `1.0.0-rc.10` < `1.0.0`. sb-go took `git describe` of
+  the parent commit, the nearest tag of any kind.
+- **The notes** (Markdown):
+  - `## What's Changed`, a blank line, then `### Commits since
+    <previous>:`, or `### Commits in this release:` when there is no
+    previous tag;
+  - a blank line, then one `- <subject> (<short hash>)` line per commit
+    in `<previous>..<tag>` (every commit up to the tag for a first
+    release), newest first, as `git log` lists them;
+  - a blank line, then `**Full Changelog**:
+    https://github.com/saltyorg/sb-rust/compare/<previous>...<tag>`. A
+    first release has no compare view, so it links
+    `https://github.com/saltyorg/sb-rust/commits/<tag>`, as GitHub's own
+    notes do (sb-go wrote `compare/...<tag>` there).
+  - They are made in the plan job, before the gate, and carried to the
+    publish and announce jobs as the `release-notes` artifact.
+- **The GitHub release** is published with
+  `softprops/action-gh-release@v3`, as sb-go's is: the title `Release
+  <tag>`, the notes as the body, the assets, `prerelease` for rc tags,
+  and `make_latest: legacy` (GitHub marks the highest stable version
+  latest; `false` for a prerelease). `target_commitish` is the built
+  commit, and steps first check that the tag still names it (the action
+  would otherwise create a missing tag elsewhere) and that the downloaded
+  assets are exactly the plan's.
+  - The security review of 2026-11-20 weighed `gh release create`
+    (first-party, as before) against the action, which now holds the
+    release job's write token; the action stays because the maintainer
+    asked for sb-go's. GitHub's immutable releases, a repository setting,
+    would keep a published asset from being replaced.
+- **Discord:** the `announce` job, after the publication, with no write
+  token. It builds the payload on every release (so a broken one shows)
+  and posts it when the `DISCORD_WEBHOOK` secret is set; unset, it says
+  `DISCORD_WEBHOOK isn't set: no announcement` and passes. The secret is
+  a repository or organisation secret, not the `release` environment's
+  (an environment secret would make this job wait for the environment's
+  reviewers again). The payload keeps sb-go's look:
+  - user name `GitHub` and its avatar, no mentions parsed
+    (`allowed_mentions`); one embed titled `🚀 New Release:
+    <tag>`, colour 5814783, linking the release page, the time of the
+    post, the footer `sb-rust` with saltyorg's avatar;
+  - the notes as the description, cut at sb-go's 1800 characters with
+    `...` after (Discord takes 4096:
+    https://discord.com/developers/docs/resources/message#embed-object-embed-limits);
+  - the fields `📥 Download` (the release's own channel's assets:
+    `sb_linux_amd64` and `sb_linux_arm64` for a stable release, the
+    `_beta` ones for an rc) and `📝 Full Changelog` (`[View
+    Changes](<release page>)`).
+  - It is built with `jq -n --arg`, so a subject's quotes, backslashes
+    and newlines reach Discord as text; sb-go escaped with sed.
+  - A failed post fails only the `announce` job, which can be re-run
+    alone; the release stands.
+
+### Saltbox's toolchain update
+
+The maintainer's decision of 2026-11-20: sb-rust replaces sb-go at
+1.0.0, so its release workflow takes over sb-go's update-saltbox-python
+job. sb-go's job stops when sb-go is retired (sb-go's change, not this
+repository's).
+
+- **What it updates,** in `saltyorg/Saltbox`'s `master`, in one signed
+  commit `chore(deps): update python toolchain` (GitHub's
+  `createCommitOnBranch`, with `expectedHeadOid` the commit it was
+  prepared against, then checked: one parent, the expected tree, the
+  message, verified):
+  - `.python-version`: the newest CPython of the tracked minor (`3.12`,
+    the action's `python-minor`) for Linux x86_64 glibc that the
+    released uv lists (`uv python list --managed-python`), installed and
+    run to check its version;
+  - `.uv-version`: the released sb's `uv_version`, from the published
+    `sb_linux_amd64`'s own `sb version --json` (sb-go read its build's;
+    the field is the same);
+  - `.github/renovate.json`: its `constraints.uv`, set to that uv;
+  - `requirements/requirements-saltbox.txt`: compiled with hashes by
+    that uv for that Python from Saltbox's `requirements-saltbox.in`.
+  - Neither version may go down. Before the commit the lock is synced
+    into a scratch venv, `uv pip check`ed, and `ansible`, `certbot` and
+    `apprise` run `--version`. Each child runs isolated as sb's own
+    Python steps are (`managed-python.sh`, aligned with
+    `crates/python-env/src/isolate.rs`).
+- **When it runs:** after the release is published with its assets, and
+  only when `scripts/release.sh saltbox-gate` says `run=true`, which needs
+  all of:
+  - the tag is a stable release tag, `MAJOR.MINOR.PATCH` and nothing
+    else (no `-` part, no build metadata);
+  - GitHub's release is the tag's, not a draft, not marked prerelease,
+    with an uploaded `sb_linux_amd64`;
+  - that asset's `sb version --json` reports the tag and the `release`
+    channel.
+  - Anything else skips both of the jobs that touch Saltbox, with the
+    reason in the gate's log: an rc, any other prerelease form, a stable
+    tag on a release marked prerelease, a beta-channel build. A release
+    that passes but reports no valid `uv_version` fails. The tests cover
+    `1.0.0` (runs) and `1.0.0-rc.1`, `1.0.0-beta.1`, `1.0.0+build`,
+    `v1.0.0`, and a stable tag on a prerelease (skipped).
+- **Three jobs** (`saltbox-gate`, `saltbox-prepare`, `saltbox-commit`):
+  - the gate reads the release with the workflow's read-only token;
+  - prepare runs the action's `prepare` mode with no write token: the
+    preflight runs Saltbox's packages' own code (their builds and entry
+    points). It leaves the four files and the base commit as the
+    `saltbox-update` artifact, and says whether anything changed;
+  - commit runs only when something changed. It mints the App's token
+    (`actions/create-github-app-token@v3.3.0`: `client-id` from the
+    `SALTBOX_AUTOMATION_APP_ID` organisation variable, `private-key` from
+    the `SALTBOX_AUTOMATION_PRIVATE_KEY` organisation secret, `owner:
+    saltyorg`, `repositories: Saltbox`, `permission-contents: write`,
+    as sb-go's) and runs the `commit` mode, which runs only git, jq and
+    gh, in the `saltbox` environment. It refuses a master that moved
+    since the preparation, and a handover the preparation's package code
+    could have rewritten: any other file, a `.uv-version` other than the
+    release's uv, a lower Python or uv than master's, a `renovate.json`
+    that is more than master's with `constraints.uv` set, or a lock with
+    any line uv doesn't write (only comments, `name==version` and
+    `--hash=sha256:` lines: no index option or URL, so pip fetches from
+    PyPI only, where a hash that isn't the file's fails the install). It
+    prints what it commits.
+  - The commit still takes the lock's pins from the preparation: a
+    package that runs code there could pin another package published on
+    PyPI. Saltbox's CI, which recompiles the lock, sees it only after the
+    commit. Required reviewers on the `saltbox` environment, reading the
+    commit job's own diff, would close it (the maintainer's setting).
+- **The preflight by hand:** `.github/workflows/saltbox-toolchain.yml`
+  (`workflow_dispatch`), as sb-go's test-gha.yml `verify-toolchain-update`
+  job: the newest stable release through the same gate, then the
+  `prepare` mode, which writes nothing to Saltbox (sb-go's `dry-run:
+  'true'`). A separate job mints a read-only App token
+  (`permission-metadata: read`; sb-go's minted contents write) to show
+  the credentials reach sb-rust.
+- **Before the first stable release** (settings the maintainer approves
+  later): sb-rust is added to the selected repositories of the
+  organisation's `SALTBOX_AUTOMATION_APP_ID` variable and
+  `SALTBOX_AUTOMATION_PRIVATE_KEY` secret. Narrower, as the security
+  review advised: the key as a secret of sb-rust's `saltbox` environment
+  (which `saltbox-commit` and the preflight's `credentials` job name),
+  deployable only from the release tags and `main`, since a selected
+  repository's workflows on any branch can read an organisation secret,
+  and whoever has the key can mint any token the App's installation
+  allows. The maintainer's rules let an
+  authorised sb-go release update Saltbox's master through this action;
+  that permission names sb-go, and moves to sb-rust only when the
+  maintainer says so.
+- The action is `.github/actions/update-saltbox-python/`, ported from
+  sb-go's (4006309) with its tests: `commit_test.sh`, `download_test.sh`,
+  `isolation_test.py`, and `publish_test.sh` for the commit mode (check.sh,
+  fast, in the sandbox, no network).
 
 ### Differences from sb-go (the complete list)
 
@@ -353,6 +520,17 @@ The maintainer's decisions of 2026-11-18.
 15. `version` and the standalone `self-update` run on an unsupported
     Ubuntu release, with a warning; sb-go refused every command there
     (maintainer, 2026-11-18).
+16. Release notes start, for a stable release, from the previous stable
+    tag, and a first release links its commits; sb-go took the nearest
+    tag and wrote an empty compare link ("Release notes and
+    announcement").
+17. The Discord payload is built with jq and posted from its own job;
+    sb-go escaped with sed in the release job.
+18. Saltbox's toolchain is updated only for a stable release, by the
+    gate's three conditions; sb-go had no prereleases and no such check.
+    Its preparation and its commit are separate jobs, so the write token
+    never meets the preflight's package code; sb-go did both in one
+    ("Saltbox's toolchain update").
 
 ### Scope
 
@@ -361,6 +539,9 @@ The maintainer's decisions of 2026-11-18.
   the API python-env needs (below).
 - **Here since 2026-11-18:** the channels, the repository, the local
   CI and release workflows, sb-M4 and sb-L8 ("Release channels").
+- **Here since 2026-11-20:** the release notes, the GitHub release's
+  body, the Discord announcement and Saltbox's toolchain update ("Release
+  notes and announcement", "Saltbox's toolchain update").
 - **Later:** signed checksums (minisign or sigstore; decided.md D-Q2)
   and sb-M1 (triage DEFER); creating saltyorg/sb-rust, pushing and
   publishing, each authorised separately. The `update` integration is
@@ -674,7 +855,9 @@ No test reaches the network or replaces an installed sb.
   update-saltbox-python action reads sb's version that way.
 - **The workflows are unrun:** written locally, never pushed. The
   repository's settings they rely on (the `release` environment's
-  reviewers, a ruleset on who may push version tags) wait for the
+  reviewers, a ruleset on who may push version tags, the
+  `DISCORD_WEBHOOK` secret, sb-rust among the selected repositories of
+  the Saltbox App's organisation variable and secret) wait for the
   maintainer with the repository itself. GitHub's 22.04 runners are
   deprecated from 2026-09-17 and unsupported from 2027-04-17; the 22.04
   jobs need a plan by then.

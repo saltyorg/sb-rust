@@ -48,6 +48,10 @@ Each sb binary follows one channel, fixed when it was built:
 - **beta** follows every release, prereleases (`1.1.0-rc.1`) included. When
   a stable release comes out, beta hosts get it too and stay on beta.
 
+Each release's notes on GitHub list its commits: since the previous stable
+release for a stable one, since the previous release of either kind for a
+prerelease.
+
 `sb version` shows the channel. `sb update` updates sb on its own channel
 first; `sb self-update`, hidden from `sb --help`, does the same on its own.
 

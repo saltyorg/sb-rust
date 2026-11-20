@@ -4,8 +4,9 @@
 #
 #   scripts/check.sh fast [base]   after edits: each crate's deny.toml entry
 #                                  and lints, fmt, clippy, floor guard (and
-#                                  the guard's own tests when scripts/ changed),
-#                                  secrets
+#                                  the guard's own tests when scripts/ changed,
+#                                  the release scripts' when scripts/ or
+#                                  .github/ did), secrets
 #   scripts/check.sh task [base]   before handing work back: fast + tests
 #                                  (under coverage, then in a release
 #                                  build), changed-line coverage, mutation
@@ -108,6 +109,8 @@ RUNTIME_RELEASES=(22.04 24.04 26.04)
 #   tasks/. Nothing a build, a test or a measurement reads is there.
 # - scripts_changed: a file under scripts/ changed, or nothing changed at
 #   all (a run over a clean tree checks everything).
+# - release_changed: the same, for a file under scripts/ or .github/ (the
+#   release workflow's scripts and the Saltbox updater's action).
 mapfile -d '' -t changed_files < <(
   # --no-renames: a file moved into docs/ is listed under its old path
   # too, so a moved test fixture or script isn't taken for a document.
@@ -116,8 +119,10 @@ mapfile -d '' -t changed_files < <(
 )
 documents_only=0
 scripts_changed=0
+release_changed=0
 if ((${#changed_files[@]} == 0)); then
   scripts_changed=1
+  release_changed=1
 else
   documents_only=1
   for f in "${changed_files[@]}"; do
@@ -126,6 +131,7 @@ else
     *) documents_only=0 ;;
     esac
     case $f in scripts/*) scripts_changed=1 ;; esac
+    case $f in scripts/* | .github/*) release_changed=1 ;; esac
   done
 fi
 
@@ -307,6 +313,22 @@ fast() {
     in_sandbox node --test --test-reporter=dot scripts/floor-guard.test.mjs
   else
     skip "nothing under scripts/ changed since $base"
+  fi
+  # The release workflow's shell logic (release spec, "Release notes and
+  # announcement", "Saltbox's toolchain update"): fixture repositories, fake
+  # gh and curl, no network. In the sandbox, as the guard's tests run.
+  step "release scripts' tests (notes, Discord, the Saltbox gate and updater)"
+  if ((release_changed)); then
+    # Checked here, not with the stage's tools: only this step runs them.
+    check_tools jq python3
+    local action=.github/actions/update-saltbox-python
+    in_sandbox scripts/release.test.sh
+    in_sandbox bash "$action/commit_test.sh"
+    in_sandbox bash "$action/download_test.sh"
+    in_sandbox bash "$action/publish_test.sh"
+    in_sandbox python3 -I "$action/isolation_test.py"
+  else
+    skip "nothing under scripts/ or .github/ changed since $base"
   fi
   step "floor guard"
   node scripts/floor-guard.mjs --base "$base"

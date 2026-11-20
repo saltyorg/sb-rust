@@ -1,16 +1,20 @@
 # A release from a version tag (release spec, "Release channels"): the
 # whole gate, the by-hand container suites, then each asset built with its
-# version, commit and channel baked in, checked, and published.
+# version, commit and channel baked in, checked, and published with notes
+# made from the commits; then the Discord announcement and, for a stable
+# release only, Saltbox's Python toolchain update (release spec, "Release
+# notes and announcement" and "Saltbox's toolchain update").
 #
 # Tags are bare semantic versions: `1.0.0` (stable) or `1.0.0-rc.N` (a
 # prerelease). A stable tag publishes the plain `release` assets and the
 # `_beta` ones, from the same code, so a beta host stays beta across
 # stable releases; a prerelease publishes `_beta` assets only.
 #
-# Written locally (2026-11-18) and not yet run: creating saltyorg/sb-rust,
-# pushing tags and publishing are remote actions the maintainer authorises
-# separately (and the user rules ask for green CI on the exact commit
-# before any tag is pushed).
+# Written locally (2026-11-18, the notes, Discord and Saltbox jobs
+# 2026-11-20) and not yet run: pushing tags, publishing and updating
+# Saltbox are remote actions the maintainer authorises separately (and the
+# user rules ask for green CI on the exact commit before any tag is
+# pushed).
 name: release
 
 on:
@@ -68,6 +72,20 @@ jobs:
             echo "prerelease=false" >>"$GITHUB_OUTPUT"
             echo 'assets=[{"arch":"amd64","channel":"release"},{"arch":"arm64","channel":"release"},{"arch":"amd64","channel":"beta"},{"arch":"arm64","channel":"beta"}]' >>"$GITHUB_OUTPUT"
           fi
+      # The notes, from the commits since the previous release tag (a
+      # stable release's previous stable one), made here so that a broken
+      # history fails before the gate's hours.
+      - name: Release notes
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          scripts/release.sh notes "$TAG" "$GITHUB_REPOSITORY" >"$RUNNER_TEMP/release-notes.md"
+          cat "$RUNNER_TEMP/release-notes.md"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-notes
+          path: ${{ runner.temp }}/release-notes.md
+          if-no-files-found: error
 
   # `check.sh full` with no base: every step, the production build's size,
   # its runs on each release and the aarch64 build under QEMU included.
@@ -236,7 +254,7 @@ jobs:
             '.version == $v and .channel == $c and (.uv_version | test("^[0-9]+\\.[0-9]+\\.[0-9]+$"))' <<<"$json"
       - uses: actions/upload-artifact@v7
         with:
-          name: ${{ matrix.asset.arch }}-${{ matrix.asset.channel }}
+          name: asset-${{ matrix.asset.arch }}-${{ matrix.asset.channel }}
           path: ${{ env.ASSET }}
           if-no-files-found: error
 
@@ -253,18 +271,196 @@ jobs:
       - uses: actions/download-artifact@v8
         with:
           path: dist
+          pattern: asset-*
           merge-multiple: true
-      # GitHub records each asset's sha256 digest, which self-update
-      # requires (release spec, assumption 3); install.sh checks the pinned
-      # URL, the ELF machine, the version and the channel instead.
-      - name: Publish
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-notes
+          path: notes
+      # Exactly the plan's assets: an `asset-*` artifact another job of the
+      # run uploaded is no asset.
+      - name: The assets are the plan's
+        env:
+          ASSETS: ${{ needs.plan.outputs.assets }}
+        run: |
+          want=$(jq -r '.[] | "sb_linux_\(.arch)\(if .channel == "beta" then "_beta" else "" end)"' <<<"$ASSETS" | sort)
+          got=$(find dist -mindepth 1 -printf '%P\n' | sort)
+          [[ $got == "$want" ]] || { printf 'dist has:\n%s\nnot the plan'"'"'s:\n%s\n' "$got" "$want" >&2; exit 1; }
+      # The action would create a missing tag on target_commitish; the
+      # release is only ever the built commit's.
+      - name: The tag still names the built commit
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.plan.outputs.version }}
-          PRERELEASE: ${{ needs.plan.outputs.prerelease }}
         run: |
-          # No --latest: gh marks the highest stable release latest itself,
-          # so a backport (1.0.5 after 1.1.0) doesn't become install.sh's.
-          flags=(--verify-tag --title "$TAG" --generate-notes)
-          if [[ $PRERELEASE == true ]]; then flags+=(--prerelease); fi
-          gh release create "$TAG" "${flags[@]}" --repo "$GITHUB_REPOSITORY" dist/*
+          read -r type sha < <(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}" --jq '.object.type + " " + .object.sha')
+          if [[ $type == tag ]]; then
+            sha=$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${sha}" --jq '.object.sha')
+          fi
+          [[ $sha == "$GITHUB_SHA" ]] || { echo "tag $TAG names $sha, not the built $GITHUB_SHA" >&2; exit 1; }
+      # GitHub records each asset's sha256 digest, which self-update
+      # requires (release spec, assumption 3); install.sh checks the pinned
+      # URL, the ELF machine, the version and the channel instead.
+      # As sb-go publishes, with softprops/action-gh-release and the notes
+      # as the body: https://github.com/softprops/action-gh-release
+      # make_latest `legacy`: GitHub marks the highest stable version
+      # latest, so a backport (1.0.5 after 1.1.0) doesn't become
+      # install.sh's; a prerelease is never latest:
+      # https://docs.github.com/en/rest/releases/releases#create-a-release
+      - name: Publish
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ needs.plan.outputs.version }}
+          target_commitish: ${{ github.sha }}
+          name: Release ${{ needs.plan.outputs.version }}
+          body_path: notes/release-notes.md
+          draft: false
+          prerelease: ${{ needs.plan.outputs.prerelease }}
+          make_latest: ${{ needs.plan.outputs.prerelease == 'true' && 'false' || 'legacy' }}
+          files: dist/*
+          fail_on_unmatched_files: true
+
+  # sb-go's "Notify Discord" step, as its own job: no write token, and a
+  # failed post leaves the publication alone (re-run this job only). The
+  # payload is built (and so checked) on every release; it is sent when
+  # the DISCORD_WEBHOOK secret is set.
+  announce:
+    needs: [plan, publish]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-notes
+          path: ${{ runner.temp }}/notes
+      # The payload is built without the secret in reach; only the post
+      # step has it.
+      - name: Discord payload
+        env:
+          TAG: ${{ needs.plan.outputs.version }}
+        run: |
+          scripts/release.sh discord "$TAG" "$GITHUB_REPOSITORY" "$RUNNER_TEMP/notes/release-notes.md" \
+            "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" >"$RUNNER_TEMP/discord.json"
+      - name: Notify Discord
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        run: |
+          if [[ -z $DISCORD_WEBHOOK ]]; then
+            echo "DISCORD_WEBHOOK isn't set: no announcement"
+          else
+            curl --fail-with-body --silent --show-error --proto =https --max-time 30 \
+              -H 'Content-Type: application/json' --data-binary "@$RUNNER_TEMP/discord.json" "$DISCORD_WEBHOOK"
+          fi
+
+  # Saltbox's Python toolchain from a published stable release (release
+  # spec, "Saltbox's toolchain update"), sb-go's update-saltbox-python
+  # job, ported. It never writes to Saltbox for a prerelease: the gate
+  # below decides (scripts/release.sh saltbox-gate, tested), and the two
+  # jobs after it are skipped unless it says run=true.
+  saltbox-gate:
+    needs: [plan, publish]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      run: ${{ steps.gate.outputs.run }}
+      uv-version: ${{ steps.gate.outputs.uv-version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      # GitHub's record of the published release, and the published
+      # sb_linux_amd64's own report (a prerelease has no such asset).
+      - id: gate
+        name: The release is a published stable one
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.plan.outputs.version }}
+        run: |
+          dir=$RUNNER_TEMP/saltbox-gate
+          mkdir -p "$dir"
+          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" >"$dir/release.json"
+          if jq -e 'any(.assets[]?; .name == "sb_linux_amd64")' "$dir/release.json" >/dev/null; then
+            gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern sb_linux_amd64 --dir "$dir/bin"
+            chmod 0755 "$dir/bin/sb_linux_amd64"
+            env -u GH_TOKEN SB_LOG_DIR="$dir/sb-log" "$dir/bin/sb_linux_amd64" version --json >"$dir/version.json"
+          fi
+          scripts/release.sh saltbox-gate "$TAG" "$dir/release.json" "$dir/version.json" | tee -a "$GITHUB_OUTPUT"
+
+  # The preflight runs Saltbox's requirements' own code (their builds and
+  # entry points), so it has no write token; the commit below has the
+  # token and runs no package code.
+  saltbox-prepare:
+    needs: [plan, saltbox-gate]
+    if: needs.saltbox-gate.outputs.run == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    outputs:
+      changed: ${{ steps.prepare.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - id: prepare
+        uses: ./.github/actions/update-saltbox-python
+        with:
+          mode: prepare
+          sb-release: ${{ needs.plan.outputs.version }}
+          uv-version: ${{ needs.saltbox-gate.outputs.uv-version }}
+          directory: ${{ runner.temp }}/saltbox-update
+      - uses: actions/upload-artifact@v7
+        with:
+          name: saltbox-update
+          path: ${{ runner.temp }}/saltbox-update
+          if-no-files-found: error
+          include-hidden-files: true
+          # A re-run of this job (after master moved) replaces it.
+          overwrite: true
+
+  # The App's token: contents write on saltyorg/Saltbox alone, as sb-go's
+  # job asks for it. The App's variable and key reach this repository
+  # through the `saltbox` environment, which the maintainer limits to the
+  # release tags (or through the organisation's selected repositories), a
+  # setting approved before the first stable release. publish.sh checks
+  # the prepared files against master before it commits them.
+  saltbox-commit:
+    needs: [plan, saltbox-gate, saltbox-prepare]
+    if: needs.saltbox-gate.outputs.run == 'true' && needs.saltbox-prepare.outputs.changed == 'true'
+    runs-on: ubuntu-24.04
+    environment: saltbox
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          name: saltbox-update
+          path: ${{ runner.temp }}/saltbox-update
+      - name: Create Saltbox toolchain update token
+        id: saltbox-token
+        uses: actions/create-github-app-token@v3.3.0
+        with:
+          client-id: ${{ vars.SALTBOX_AUTOMATION_APP_ID }}
+          private-key: ${{ secrets.SALTBOX_AUTOMATION_PRIVATE_KEY }}
+          owner: saltyorg
+          repositories: Saltbox
+          permission-contents: write
+      - name: Update supported Python toolchain for Saltbox
+        uses: ./.github/actions/update-saltbox-python
+        with:
+          mode: commit
+          token: ${{ steps.saltbox-token.outputs.token }}
+          sb-release: ${{ needs.plan.outputs.version }}
+          uv-version: ${{ needs.saltbox-gate.outputs.uv-version }}
+          directory: ${{ runner.temp }}/saltbox-update

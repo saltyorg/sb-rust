@@ -1152,13 +1152,22 @@ const TOOLS_MD = `# Constraints
 | script (util-linux) | 2.39 | minimum | system package |
 | cross | 0.2.5 | exact | cargo |
 | Docker | 29 | minimum | system package |
+| jq | 1.6 | minimum | system package |
+| python3 | 3.10 | minimum | system package |
 
 ## Exceptions
 `;
+// The release scripts' tests check.sh's fast stage runs (when scripts/ or
+// .github/ changed, or nothing did), as empty scripts: their own content
+// is tested by running them, not here.
+const RELEASE_TESTS = Object.fromEntries(['scripts/release.test.sh',
+  ...['commit_test.sh', 'download_test.sh', 'publish_test.sh', 'isolation_test.py']
+    .map((f) => '.github/actions/update-saltbox-python/' + f)].map((f) => [f, '#!/bin/sh\n']));
 const VERSIONS = {
   'cargo-llvm-cov': '0.9.1', 'diff-cover': '9.7.2', 'cargo-mutants': '27.1.0', 'cargo-nextest': '0.9.151',
   'cargo-deny': '0.20.2', hyperfine: '2.0.0', gitleaks: '8.30.1', go: '1.27.3', node: '24.20.0', script: '2.39.3', cross: '0.2.5',
   docker: '29.7.2',
+  jq: '1.7.1', python3: '3.12.3',
 };
 // check.sh's MUTATION_TESTERS names sb-journal, sb-host and sb-tui, so
 // they are here beside sb-foo and the binary.
@@ -1195,6 +1204,8 @@ const stubs = (versions, arch) => {
     node: version('v' + versions.node),
     script: version('script from util-linux ' + versions.script),
     docker: version('Docker version ' + versions.docker + ', build a7dcaa6'),
+    jq: version('jq-' + versions.jq),
+    python3: version('Python ' + versions.python3),
     go: 'if [ "$1 $2" = "version -m" ]; then printf \'%s: go1.27.3\\n\\tpath\\tgithub.com/zricethezav/gitleaks/v8\\n'
       + '\\tmod\\tgithub.com/zricethezav/gitleaks/v8\\tv' + versions.gitleaks + '\\th1:x=\\n\' "$3"; exit 0; fi\n'
       + 'echo "go version go' + versions.go + ' linux/amd64"\n',
@@ -1473,6 +1484,7 @@ const checkRun = (stage, { files = {}, work = {}, commits = [], base = 'HEAD', v
       'scripts/check.sh': readFileSync(join(SCRIPTS, 'check.sh'), 'utf8'),
       'build/qemu.Dockerfile': readFileSync(join(SCRIPTS, '../build/qemu.Dockerfile'), 'utf8'),
       'scripts/check-commit-messages.sh': readFileSync(join(SCRIPTS, 'check-commit-messages.sh'), 'utf8'),
+      ...RELEASE_TESTS,
       'CONSTRAINTS.md': TOOLS_MD, '.gitignore': '/target/\n', ...CRATES, ...files,
     }, 0o755);
     const commit = (message) => git('-c', 'user.name=test', '-c', 'user.email=test', 'commit', '-q', '--allow-empty', '-m', message);
