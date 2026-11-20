@@ -796,7 +796,8 @@ fn start() -> RunEnd {
     // profile. The colour
     // choice must be anstream's global one before the real parse, which
     // prints help (spec: startup steps 5 and 6).
-    colour::early_choice(verbose::with_flags(Cli::command()), std::env::args_os()).write_global();
+    let early = colour::early_read(verbose::with_flags(Cli::command()), std::env::args_os());
+    early.color.write_global();
     let (choice, mut warnings) = theme_choice();
     let (profile, warning) = theme::Profile::choose(
         std::env::var("SB_COLOR_PROFILE").ok().as_deref(),
@@ -810,7 +811,7 @@ fn start() -> RunEnd {
     // run hands over to a root run through sudo, which then reads its own
     // settings and warns about those: a run about to relaunch leaves the
     // startup warnings to it.
-    let parsed = parse(profile);
+    let parsed = parse(profile, early.help);
     let support = allow_unsupported_release(
         sb_host::check_support(),
         parsed
@@ -957,27 +958,77 @@ fn config_override(value: Option<std::ffi::OsString>) -> Option<std::path::PathB
 /// (<https://docs.rs/clap/4.6.7/clap/builder/struct.Styles.html#method.plain>).
 /// Nothing is printed here: help, version and errors come back as `Err`
 /// for [`parse_failed`].
-fn parse(profile: theme::Profile) -> Result<Cli, clap::Error> {
-    let cmd = match profile {
-        theme::Profile::Ascii => Cli::command().styles(clap::builder::Styles::plain()),
-        _ => Cli::command(),
+///
+/// The help is laid out only for a line that shows it: a command line
+/// that runs a command never does, and laying out every command's help
+/// took about 2 M instructions of each run (performance research, round
+/// 2, item 5). A line that asks for help (`help`, from the colour
+/// pre-pass: cli-core's `colour::early_read`) parses once, with the help
+/// laid out, as before. Any other line parses without it; should clap
+/// still answer with help (`-h` before a typo, which the pre-pass can't
+/// parse), the line is parsed again with the help laid out: `help::apply` sets only help texts and the help
+/// template, which play no part in matching, so the second parse ends the
+/// same way. A parse error is kept from the first parse: its block
+/// (`help::parse_error_block`) drops clap's usage, the one part of an
+/// error drawn from the command's help settings, so it reads the same.
+/// Why not clap's `Command::defer`
+/// (<https://docs.rs/clap/4.6.7/clap/struct.Command.html#method.defer>):
+/// it takes a plain `fn`, which can't carry the theme, colour and width,
+/// and clap runs it for the root and the matched subcommands on every
+/// parse (`clap_builder` 4.6.7 `_do_parse`, `_build_subcommand`), so a
+/// command that runs would still lay out their help.
+fn parse(profile: theme::Profile, help: bool) -> Result<Cli, clap::Error> {
+    parse_from(profile, help, std::env::args_os())
+}
+
+/// [`parse`] of `args` (sb's command line).
+fn parse_from(
+    profile: theme::Profile,
+    help: bool,
+    args: impl IntoIterator<Item = std::ffi::OsString>,
+) -> Result<Cli, clap::Error> {
+    use clap::error::ErrorKind;
+    let tree = || {
+        let cmd = match profile {
+            theme::Profile::Ascii => Cli::command().styles(clap::builder::Styles::plain()),
+            _ => Cli::command(),
+        };
+        // Before the help's layout, which lists each command's flags.
+        let cmd = force_update_arg(cmd, &BuildInfo::current(env!("CARGO_PKG_VERSION")));
+        verbose::with_flags(cmd)
     };
+    let args: Vec<std::ffi::OsString> = args.into_iter().collect();
+    if !help {
+        match tree().try_get_matches_from(&args) {
+            Ok(matches) => return cli_from(&matches),
+            Err(err)
+                if !matches!(
+                    err.kind(),
+                    ErrorKind::DisplayHelp | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+                ) =>
+            {
+                return Err(err);
+            }
+            Err(_) => {}
+        }
+    }
     // Help goes to stdout; whether it shows in colour decides the shaded
     // usage block's padding rows, and its width where its lines wrap.
     let colour =
         profile != theme::Profile::Ascii && sb_term_ui::colour_on(sb_term_ui::Stream::Stdout);
-    // Before the help's layout, which lists each command's flags.
-    let cmd = force_update_arg(cmd, &BuildInfo::current(env!("CARGO_PKG_VERSION")));
-    let cmd = verbose::with_flags(cmd);
-    let cmd = help::apply(cmd, theme::current(), colour, help::width());
-    cmd.try_get_matches().and_then(|matches| {
-        let mut cli = Cli::from_arg_matches(&matches)?;
-        cli.verbose_given = verbose::given(&matches);
-        if let Command::SelfUpdate { force_update, .. } = &mut cli.command {
-            *force_update = forced(&matches);
-        }
-        Ok(cli)
-    })
+    let matches =
+        help::apply(tree(), theme::current(), colour, help::width()).try_get_matches_from(&args)?;
+    cli_from(&matches)
+}
+
+/// sb's command from clap's matches.
+fn cli_from(matches: &clap::ArgMatches) -> Result<Cli, clap::Error> {
+    let mut cli = Cli::from_arg_matches(matches)?;
+    cli.verbose_given = verbose::given(matches);
+    if let Command::SelfUpdate { force_update, .. } = &mut cli.command {
+        *force_update = forced(matches);
+    }
+    Ok(cli)
 }
 
 /// Whether `--force-update` was given (only builds that have it can).
@@ -1535,6 +1586,64 @@ mod contract;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A line the pre-pass didn't read as help that clap still answers
+    /// with help is parsed again with sb's help laid out: the help is the
+    /// one a line read as help gets.
+    #[test]
+    fn help_the_pre_pass_missed_is_still_sbs() {
+        let rendered = |help: bool| {
+            let args = ["sb", "docker", "--help"].map(std::ffi::OsString::from);
+            match parse_from(theme::Profile::Ascii, help, args) {
+                Err(err) => (err.kind(), err.render().to_string()),
+                Ok(_) => panic!("help is no command"),
+            }
+        };
+        let (kind, text) = rendered(false);
+        assert_eq!(kind, clap::error::ErrorKind::DisplayHelp);
+        assert_eq!((kind, text.clone()), rendered(true));
+        assert!(text.contains("  USAGE"), "{text}");
+    }
+
+    /// The colour pre-pass reads which lines ask for help, for `parse`:
+    /// `-h` and `--help` (alone or in a cluster of short flags) before
+    /// `--`, `help`, bare `sb`, and a command clap shows help for when it's
+    /// alone. A value that reads `help` is no help.
+    #[test]
+    fn the_pre_pass_reads_help() {
+        let wanted = |line: &[&str]| {
+            let args = std::iter::once("sb").chain(line.iter().copied());
+            colour::early_read(verbose::with_flags(Cli::command()), args).help
+        };
+        for line in [
+            &[][..],
+            &["--help"],
+            &["-h"],
+            &["list", "-h"],
+            &["list", "--help", "sonarr"],
+            &["docker", "ps", "-h"],
+            &["help"],
+            &["help", "docker"],
+            &["docker"],
+            &["--color", "never", "docker"],
+        ] {
+            assert!(wanted(line), "{line:?}");
+        }
+        for line in [
+            &["version"][..],
+            &["docker", "ps"],
+            &["list", "sonarr"],
+            &["list", "help"],
+            // Only the root has a `help` subcommand: a usage error.
+            &["edit", "help"],
+            &["install", "sonarr", "--", "-h"],
+            &["install", "--skip-tags", "x"],
+            &["bogus"],
+            &["--color", "bogus"],
+        ] {
+            assert!(!wanted(line), "{line:?}");
+        }
+    }
 
     /// No help text sb gives clap holds `{n}`: clap's help template would
     /// print it as a new line (cli-core's help module, "What the template

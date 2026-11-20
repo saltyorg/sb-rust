@@ -243,6 +243,11 @@ fn apply_at(cmd: Command, path: &str, inherited: &[Arg], look: &Look<'_>) -> Com
     if let Some(long) = long {
         cmd = cmd.before_long_help(StyledStr::from(long));
     }
+    // `mut_subcommand` moves the command it changes to the end (clap_builder
+    // 4.6.7 `Command::mut_subcommand`), so walking them in order keeps
+    // their order: sb's parse renders errors (`[subcommands: …]`, its
+    // suggestions) from the tree without this layout, and they must read
+    // the same.
     for name in names {
         let sub_path = format!("{path} {name}");
         cmd = cmd.mut_subcommand(&name, |sub| apply_at(sub, &sub_path, &below, look));

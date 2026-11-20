@@ -17,8 +17,11 @@
 //! error) and then clap's own lexer (`clap_lex`, `--color=V` or `--color V`
 //! before `--`) look for the flag, so even that error message follows it;
 //! the lexer may then take another option's value for the flag, which only
-//! colours that error. `main` re-applies the real parse's choice. When console or crossterm output lands
-//! (term-ui), `always`/`never` are passed on to them too.
+//! colours that error. `main` re-applies the real parse's choice.
+//! [`early_read`] also says, from the same parse, whether the line asks
+//! for help, so sb lays its help out only then. When console or
+//! crossterm output lands (term-ui), `always`/`never` are passed on to
+//! them too.
 //!
 //! Why not a clap API: there is none. Built-in help "is acted on
 //! immediately" (open issue <https://github.com/clap-rs/clap/issues/6013>,
@@ -35,6 +38,32 @@ pub use colorchoice_clap::Color;
 /// The `--color` choice in `args`, read before the real parse. Missing,
 /// bad or unreachable values give `auto`; the real parse reports bad ones.
 pub fn early_choice<I, T>(cmd: Command, args: I) -> Color
+where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString> + Clone,
+{
+    early_read(cmd, args).color
+}
+
+/// What the pre-pass reads from the command line before the real parse.
+#[derive(Debug)]
+pub struct Early {
+    /// The `--color` choice, as [`early_choice`] gives it.
+    pub color: Color,
+    /// Whether clap will answer the line with help: `-h` or `--help`
+    /// anywhere before `--` (in a cluster too), the `help` subcommand, or
+    /// a command clap shows help for when it's alone
+    /// (`arg_required_else_help`, bare `sb` included). A line the
+    /// pre-pass can't parse reads `false`, unless clap stopped it to show
+    /// help or saw a help flag before its error; the real parse may still
+    /// show help for it (`-h` after a typo it can't get past).
+    pub help: bool,
+}
+
+/// [`early_choice`]'s pre-pass, also saying whether the line asks for
+/// help ([`Early::help`]): read from the same parse, so it costs nothing
+/// more, and in clap's own terms (clusters, `--`, option values).
+pub fn early_read<I, T>(cmd: Command, args: I) -> Early
 where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,
@@ -66,16 +95,41 @@ where
     // it fails (the run ends in clap's exit-2 error) do the partial parse
     // and then the lexer look further, and then only that error's colour
     // depends on them.
+    // The help flag is global, so the root's matches hold it wherever it
+    // was given. Read without `get_flag`, which panics on a partial
+    // parse: `ignore_errors` sets no defaults, so an unset flag has no
+    // value there.
+    let asks_help = |matches: &clap::ArgMatches| {
+        matches!(matches.try_get_one::<bool>("help"), Ok(Some(true)))
+            || matches.subcommand_name() == Some("help")
+    };
     match pre_pass.clone().try_get_matches_from(&args) {
-        Ok(matches) => from_command_line(matches).unwrap_or_default(),
-        Err(_) => pre_pass
-            .ignore_errors(true)
-            .try_get_matches_from(&args)
-            .ok()
-            .and_then(from_command_line)
-            .unwrap_or_else(|| Color {
-                color: lexed_choice(args).unwrap_or(ColorChoice::Auto),
-            }),
+        Ok(matches) => Early {
+            help: asks_help(&matches),
+            color: from_command_line(matches).unwrap_or_default(),
+        },
+        Err(err) => {
+            let partial = pre_pass
+                .ignore_errors(true)
+                .try_get_matches_from(&args)
+                .ok();
+            Early {
+                // A subcommand's own `help` subcommand, and a command
+                // shown alone, still stop the pre-pass with help; a help
+                // flag before the error (`sb --help`, which lacks a
+                // command) is in the partial parse.
+                help: matches!(
+                    err.kind(),
+                    clap::error::ErrorKind::DisplayHelp
+                        | clap::error::ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+                ) || partial.as_ref().is_some_and(asks_help),
+                color: partial
+                    .and_then(from_command_line)
+                    .unwrap_or_else(|| Color {
+                        color: lexed_choice(args).unwrap_or(ColorChoice::Auto),
+                    }),
+            }
+        }
     }
 }
 
@@ -132,6 +186,39 @@ mod tests {
             #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
             rest: Vec<String>,
         },
+    }
+
+    /// The pre-pass's help, in clap's terms: no arguments (clap shows help
+    /// for a missing command), the flag anywhere before `--`, with no
+    /// command too, and the `help` subcommand; not after `--` or past a
+    /// typo.
+    #[test]
+    fn the_pre_pass_says_when_help_is_asked() {
+        let help = |args: &[&str]| {
+            let all = std::iter::once("sb").chain(args.iter().copied());
+            early_read(Cli::command(), all).help
+        };
+        for args in [
+            &[][..],
+            &["-h"],
+            &["--help"],
+            &["version", "--help"],
+            &["version", "-h", "--json"],
+            &["help"],
+            &["help", "version"],
+        ] {
+            assert!(help(args), "{args:?}");
+        }
+        for args in [
+            &["version"][..],
+            &["run", "x", "-h"],
+            &["run", "--", "--help"],
+            &["bogus", "-h"],
+            // A partial parse sets no defaults, the help flag's included.
+            &["--color", "bogus"],
+        ] {
+            assert!(!help(args), "{args:?}");
+        }
     }
 
     fn choice(args: &[&str]) -> ColorChoice {
