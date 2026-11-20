@@ -450,6 +450,17 @@ To discuss with the maintainer once every module is done, not before:
       wall time and added 2.6 ms of CPU time (+35%); one thread for
       motd's schema alone took 1.2 ms off and added 8% CPU. Both are a
       CPU regression.
+  - **Fixed patterns matched by hand** (2026-11-20, a "Library first"
+    divergence with its measurement). regex compiles a pattern on its
+    first use in each run, and sb runs once per command, so a fixed
+    pattern costs its compile every time. Seven of them are matched by
+    hand, each tested against regex's own match on every short text of
+    the characters that matter: motd's ` N-Core` tail and digit runs
+    (1.2 M instructions at each login), and validate-config's email,
+    hostname, URL, `yamlStyleFloat` and `[n]` item (1.9 M, 8% of
+    validate-config). regex-lite wasn't taken: a crate new to the tree
+    for a few lines each. Patterns a schema or the redaction gives
+    stay with regex.
   - **Size: the build profile stays as it is** (maintainer, 2026-11-17).
     The production binary of 90e9d4f is 20,303,872 bytes (11,843,920 on
     964f963). The growth is the features added since, spread over the

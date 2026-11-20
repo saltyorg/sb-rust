@@ -8,7 +8,6 @@
 //! else at the value.
 
 use std::collections::BTreeSet;
-use std::sync::LazyLock;
 
 use crate::issue::Issue;
 use crate::scalar::Value;
@@ -450,7 +449,7 @@ impl Walk<'_> {
                 return Some("must be a string".to_string());
             };
             let (valid, name) = match format {
-                Format::Email => (EMAIL.is_match(text), "a valid email address"),
+                Format::Email => (valid_email(text), "a valid email address"),
                 Format::Hostname => (valid_hostname(text), "a valid hostname"),
                 Format::Url => (valid_url(text), "a valid URL"),
             };
@@ -600,32 +599,61 @@ fn string(value: &Node) -> Option<&str> {
     }
 }
 
-/// sb-go's email pattern.
-static EMAIL: LazyLock<regex::Regex> = LazyLock::new(|| {
-    regex::Regex::new(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$").expect("a valid pattern")
-});
+// sb-go's email, hostname and URL patterns are matched by hand, each the
+// same answer as regex's match of the pattern (the tests compare them on
+// every short text of the characters that matter): why not regex, these
+// three patterns' compile and the float's and the `[n]` item's
+// (`scalar.rs`, `secret.rs`), the hostname's two `{0,61}` repeats most of
+// it, were 1.9 M instructions, 8% of validate-config (the performance
+// pass, 2026-11-20: 22.9 → 21.0 M); nor regex-lite, a crate new to the
+// tree for a few lines each. Classes are ASCII, as written in the
+// patterns.
 
-/// sb-go's hostname pattern.
-static HOSTNAME: LazyLock<regex::Regex> = LazyLock::new(|| {
-    regex::Regex::new(
-        r"^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*$",
-    )
-    .expect("a valid pattern")
-});
-
-/// sb-go's URL pattern; Go's `\s` is ASCII whitespace only (Rust's is
-/// Unicode), so it is spelled out.
-static URL: LazyLock<regex::Regex> =
-    LazyLock::new(|| regex::Regex::new(r"^https?://[^\t\n\f\r ]+$").expect("a valid pattern"));
-
-/// sb-go's `isValidURL`.
-pub(crate) fn valid_url(text: &str) -> bool {
-    URL.is_match(text)
+/// sb-go's email pattern, `^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$`:
+/// one `@`, a local part of its characters, and a domain whose last `.`
+/// follows at least one of its characters and precedes two letters or
+/// more.
+fn valid_email(text: &str) -> bool {
+    let Some((local, domain)) = text.split_once('@') else {
+        return false;
+    };
+    let Some((name, top)) = domain.rsplit_once('.') else {
+        return false;
+    };
+    let all = |part: &str, more: &[u8]| {
+        !part.is_empty()
+            && part
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || more.contains(&b))
+    };
+    all(local, b"._%+-")
+        && all(name, b".-")
+        && top.len() >= 2
+        && top.bytes().all(|b| b.is_ascii_alphabetic())
 }
 
-/// sb-go's `isValidHostname`: 1 to 253 bytes, then the pattern.
+/// sb-go's URL pattern, `^https?://[^\s]+$` (Go's `\s` is ASCII white
+/// space, `[\t\n\f\r ]`; Rust's is Unicode): `http://` or `https://`,
+/// then one character or more, none of them that white space.
+pub(crate) fn valid_url(text: &str) -> bool {
+    text.strip_prefix("https://")
+        .or_else(|| text.strip_prefix("http://"))
+        .is_some_and(|rest| !rest.is_empty() && !rest.bytes().any(|b| b"\t\n\x0c\r ".contains(&b)))
+}
+
+/// sb-go's `isValidHostname`: 1 to 253 bytes, then its pattern,
+/// `^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*$`:
+/// labels between dots of 1 to 63 letters, digits and `-`, each starting
+/// and ending with a letter or digit.
 pub(crate) fn valid_hostname(text: &str) -> bool {
-    (1..=253).contains(&text.len()) && HOSTNAME.is_match(text)
+    (1..=253).contains(&text.len())
+        && text.split('.').all(|label| {
+            let b = label.as_bytes();
+            (1..=63).contains(&b.len())
+                && b.iter().all(|c| c.is_ascii_alphanumeric() || *c == b'-')
+                && b.first().is_some_and(u8::is_ascii_alphanumeric)
+                && b.last().is_some_and(u8::is_ascii_alphanumeric)
+        })
 }
 
 /// sb-go's `validateNumberValue`: an integer, or a string Go's `Atoi`
@@ -729,6 +757,52 @@ mod tests {
     use crate::dockerhub::DockerhubLogin;
     use crate::schema;
     use std::cell::RefCell;
+
+    /// The email, URL and hostname checks by hand answer as regex's match
+    /// of sb-go's patterns, on every short text of the characters that
+    /// matter and at the hostname's length limits.
+    #[test]
+    fn the_hand_checks_are_sb_gos_patterns() {
+        let pattern = |source: &str| regex::Regex::new(source).expect("compiles");
+        let email = pattern(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$");
+        for text in crate::testing::texts(&["a", "Z", "1", ".", "@", "-", "%", " ", "é"], 6) {
+            assert_eq!(valid_email(&text), email.is_match(&text), "{text:?}");
+        }
+        for text in [
+            "me@example.com",
+            "a.b+c@x-y.co",
+            "a@b.c",
+            "a@b.c1",
+            "a@@b.cd",
+            "@b.cd",
+        ] {
+            assert_eq!(valid_email(text), email.is_match(text), "{text:?}");
+        }
+        let url = pattern(r"^https?://[^\t\n\f\r ]+$");
+        for text in crate::testing::texts(&["http", "s", "://", "x", " ", "\x0b", "\n", "é"], 4) {
+            assert_eq!(valid_url(&text), url.is_match(&text), "{text:?}");
+        }
+        let hostname = pattern(
+            r"^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*$",
+        );
+        let by_pattern = |text: &str| (1..=253).contains(&text.len()) && hostname.is_match(text);
+        for text in crate::testing::texts(&["a", "Z", "0", "-", ".", "_", "é"], 6) {
+            assert_eq!(valid_hostname(&text), by_pattern(&text), "{text:?}");
+        }
+        let label = |len: usize| "a".repeat(len);
+        for text in [
+            label(62),
+            label(63),
+            label(64),
+            format!("a{}a", "-".repeat(61)),
+            format!("a{}a", "-".repeat(62)),
+            format!("{}.{}", label(63), label(63)),
+            [label(63), label(63), label(63), label(61)].join("."),
+            [label(63), label(63), label(63), label(62)].join("."),
+        ] {
+            assert_eq!(valid_hostname(&text), by_pattern(&text), "{}", text.len());
+        }
+    }
 
     /// Validators for tests: a value `bad` is invalid, `warn` warns, and a
     /// password `short` warns; every call is recorded.

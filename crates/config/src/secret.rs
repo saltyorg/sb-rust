@@ -3,10 +3,6 @@
 //! shows `[REDACTED]` in its place (term-ui's form); an issue on a secret
 //! names the key.
 
-use std::sync::LazyLock;
-
-use regex::Regex;
-
 use crate::schema::Kind;
 
 /// Shown in place of a secret value.
@@ -65,13 +61,40 @@ pub(crate) fn credential_names() -> impl Iterator<Item = &'static str> {
     SECRET_PATHS.iter().map(|path| key_name(path))
 }
 
-/// `path` with each `[n]` item written `[]`: `a[].b` for `a[2].b`
-/// (<https://docs.rs/regex/1.13.1/regex/struct.Regex.html#method.replace_all>;
-/// `[0-9]`, not `\d`, which is Unicode).
+/// `path` with each `[n]` item (ASCII digits) written `[]`: `a[].b` for
+/// `a[2].b`, borrowed when it has none. Found by hand from the left, as
+/// regex's `replace_all` of `\[[0-9]+\]` finds them (a test compares
+/// them): why not regex, its compile was part of the fixed patterns'
+/// 1.9 M instructions in validate-config (`rules.rs`).
 fn any_item(path: &str) -> std::borrow::Cow<'_, str> {
-    static ITEM: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"\[[0-9]+\]").expect("a valid pattern"));
-    ITEM.replace_all(path, "[]")
+    let b = path.as_bytes();
+    let mut out: Option<String> = None;
+    let mut last = 0;
+    let mut at = 0;
+    while at < b.len() {
+        if b[at] == b'[' {
+            let mut end = at + 1;
+            while b.get(end).is_some_and(u8::is_ascii_digit) {
+                end += 1;
+            }
+            if end > at + 1 && b.get(end) == Some(&b']') {
+                let out = out.get_or_insert_with(|| String::with_capacity(path.len()));
+                out.push_str(&path[last..at]);
+                out.push_str("[]");
+                last = end + 1;
+                at = end + 1;
+                continue;
+            }
+        }
+        at += 1;
+    }
+    match out {
+        None => std::borrow::Cow::Borrowed(path),
+        Some(mut out) => {
+            out.push_str(&path[last..]);
+            std::borrow::Cow::Owned(out)
+        }
+    }
 }
 
 /// The key a dotted path ends in, without its `[n]` items: `pass` for
@@ -125,6 +148,23 @@ pub fn hide(text: &str, value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The items by hand are regex's `\[[0-9]+\]`, each written `[]`, on
+    /// every short text of the characters that matter.
+    #[test]
+    fn the_items_are_the_patterns() {
+        let pattern = regex::Regex::new(r"\[[0-9]+\]").expect("compiles");
+        for text in crate::testing::texts(&["[", "]", "1", "23", "a", ".", "\u{FF16}"], 6) {
+            let (ours, theirs) = (any_item(&text), pattern.replace_all(&text, "[]"));
+            assert_eq!(ours, theirs, "{text:?}");
+            // Borrowed when there is no item, as regex's.
+            assert_eq!(
+                matches!(ours, std::borrow::Cow::Borrowed(_)),
+                matches!(theirs, std::borrow::Cow::Borrowed(_)),
+                "{text:?}"
+            );
+        }
+    }
 
     #[test]
     fn the_credentials_and_passwords_are_secret() {

@@ -10,8 +10,6 @@
 //! `.`), nor is jiff in sb. One difference: `!!binary` text stays as
 //! written (yaml.v3 decodes the base64; config spec, differences).
 
-use std::sync::LazyLock;
-
 use saphyr::{ScalarStyle, Tag};
 
 /// A scalar's value as yaml.v3 decodes it into Go's `interface{}`.
@@ -194,16 +192,52 @@ fn go_parse_int(s: &str, signed: bool) -> Option<i128> {
     range.contains(&value).then_some(value)
 }
 
-/// resolve.go's `yamlStyleFloat`, the same pattern.
-static YAML_STYLE_FLOAT: LazyLock<regex::Regex> = LazyLock::new(|| {
-    regex::Regex::new(r"^[-+]?(\.[0-9]+|[0-9]+(\.[0-9]*)?)([eE][-+]?[0-9]+)?$")
-        .expect("a valid pattern")
-});
+/// Whether `s` matches resolve.go's `yamlStyleFloat`,
+/// `^[-+]?(\.[0-9]+|[0-9]+(\.[0-9]*)?)([eE][-+]?[0-9]+)?$`: a sign, then
+/// `.` and digits or digits with an optional `.` and digits, then an
+/// optional exponent with its digits. Matched by hand, the same answer as
+/// regex's match of the pattern (a test compares them on every short text
+/// of the characters that matter): why not regex, its compile was part
+/// of the fixed patterns' 1.9 M instructions in validate-config
+/// (`rules.rs`); no part of it needs a step back.
+fn yaml_style_float_text(s: &str) -> bool {
+    let b = s.as_bytes();
+    let mut at = usize::from(matches!(b.first(), Some(b'-' | b'+')));
+    let digits = |at: &mut usize| {
+        let start = *at;
+        while b.get(*at).is_some_and(u8::is_ascii_digit) {
+            *at += 1;
+        }
+        *at > start
+    };
+    if b.get(at) == Some(&b'.') {
+        at += 1;
+        if !digits(&mut at) {
+            return false;
+        }
+    } else {
+        if !digits(&mut at) {
+            return false;
+        }
+        if b.get(at) == Some(&b'.') {
+            at += 1;
+            digits(&mut at);
+        }
+    }
+    if matches!(b.get(at), Some(b'e' | b'E')) {
+        at += 1;
+        at += usize::from(matches!(b.get(at), Some(b'-' | b'+')));
+        if !digits(&mut at) {
+            return false;
+        }
+    }
+    at == b.len()
+}
 
 /// `yamlStyleFloat`, then Go's `ParseFloat`, which refuses a value past
 /// f64's range.
 fn yaml_style_float(s: &str) -> Option<f64> {
-    if !YAML_STYLE_FLOAT.is_match(s) {
+    if !yaml_style_float_text(s) {
         return None;
     }
     s.parse::<f64>().ok().filter(|f| f.is_finite())
@@ -321,6 +355,23 @@ fn valid_zone(s: &str) -> bool {
 mod tests {
     use super::*;
     use saphyr::{MarkedYamlOwned, YamlDataOwned};
+
+    /// The float check by hand answers as regex's match of resolve.go's
+    /// `yamlStyleFloat`, on every short text of the characters that
+    /// matter.
+    #[test]
+    fn the_float_check_is_yaml_style_float() {
+        let pattern = regex::Regex::new(r"^[-+]?(\.[0-9]+|[0-9]+(\.[0-9]*)?)([eE][-+]?[0-9]+)?$")
+            .expect("compiles");
+        for text in crate::testing::texts(&["1", "0", ".", "e", "E", "-", "+", "a", "\u{FF16}"], 6)
+        {
+            assert_eq!(
+                yaml_style_float_text(&text),
+                pattern.is_match(&text),
+                "{text:?}"
+            );
+        }
+    }
 
     /// The value of `v` in `v: <source>` as saphyr's loader keeps it,
     /// resolved.

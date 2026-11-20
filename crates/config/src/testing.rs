@@ -280,6 +280,22 @@ async fn answer(
     response
 }
 
+/// Every text of up to `len` of `parts`, joined: the inputs on which the
+/// hand-written matchers' tests compare them with regex.
+#[must_use]
+pub fn texts(parts: &[&str], len: usize) -> Vec<String> {
+    let mut texts = vec![String::new()];
+    let mut last = texts.clone();
+    for _ in 0..len {
+        last = last
+            .iter()
+            .flat_map(|text| parts.iter().map(move |part| format!("{text}{part}")))
+            .collect();
+        texts.extend(last.iter().cloned());
+    }
+    texts
+}
+
 /// A Saltbox root in a new temporary directory: the fixture set `set`
 /// (`valid`, say) as its config files, and the pinned schemas under
 /// `schema/`, as Saltbox lays them out. Copied per test, so a test can
