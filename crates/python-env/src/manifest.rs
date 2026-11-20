@@ -258,6 +258,26 @@ mod tests {
         assert_eq!(names, [FILE]);
     }
 
+    /// A manifest that can't take its place (a directory there) fails
+    /// its activation, and the temporary file goes.
+    #[test]
+    fn a_manifest_that_cant_replace_its_place_leaves_no_temporary() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(dir.path().join(FILE).join("taken")).expect("in the way");
+        let err = write(dir.path(), &sb_go()).expect_err("not activated");
+        assert!(matches!(err, WriteError::Activate(_)), "{err:?}");
+        assert!(
+            err.to_string()
+                .starts_with("activate generation manifest: "),
+            "{err}"
+        );
+        let names: Vec<_> = std::fs::read_dir(dir.path())
+            .expect("list")
+            .map(|entry| entry.expect("entry").file_name())
+            .collect();
+        assert_eq!(names, [FILE]);
+    }
+
     #[test]
     fn a_manifest_in_a_missing_generation_is_named() {
         let err = write(Path::new("/nonexistent/generation"), &sb_go()).expect_err("missing");

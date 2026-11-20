@@ -504,6 +504,44 @@ mod tests {
         assert!(whole.capped());
     }
 
+    /// The progress is how far back the search has read: the oldest time
+    /// either side reached, kept when a later step (the newer side's)
+    /// reached a newer one.
+    #[test]
+    fn the_progress_is_the_oldest_time_reached() {
+        let started: Timestamp = "2026-11-20T12:00:00Z".parse().expect("time");
+        let mut whole = Whole::new(1, started, Vec::new(), true, true, 10);
+        assert_eq!(whole.back(), None);
+        let ago = |hours: i64| started - jiff::SignedDuration::from_hours(hours);
+        whole.step(
+            Side::Older,
+            Order::NearestFirst,
+            found(&[5]),
+            Some(ago(3)),
+            None,
+        );
+        assert_eq!(whole.back().as_deref(), Some("3 h"));
+        whole.step(
+            Side::Newer,
+            Order::FarthestFirst,
+            found(&[9]),
+            Some(ago(1)),
+            None,
+        );
+        assert_eq!(whole.back().as_deref(), Some("3 h"));
+        whole.step(
+            Side::Older,
+            Order::NearestFirst,
+            found(&[2]),
+            Some(ago(5)),
+            None,
+        );
+        assert_eq!(whole.back().as_deref(), Some("5 h"));
+        // A step that read nothing new leaves it.
+        whole.step(Side::Newer, Order::FarthestFirst, Vec::new(), None, None);
+        assert_eq!(whole.back().as_deref(), Some("5 h"));
+    }
+
     #[test]
     fn ages_read_as_minutes_hours_and_days() {
         assert_eq!(age(jiff::SignedDuration::from_secs(3_600)), "1 h");

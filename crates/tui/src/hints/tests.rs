@@ -311,6 +311,36 @@ fn a_short_screen_scrolls_it() {
     assert!(!overlay.is_open());
 }
 
+/// Scrolled to its end, the keys back up scroll it back, not close it: a
+/// line (↑ or `k`), a page (`PgUp` or `b`), the top (`Home` or `g`), where
+/// the first heading shows again.
+#[test]
+fn the_keys_back_up_scroll_it_back() {
+    let mut overlay = Overlay::default();
+    overlay.open();
+    drawn(&mut overlay, 30, 8);
+    let top = |overlay: &mut Overlay| drawn(overlay, 30, 8).join("\n").contains(" Move");
+    for back in [
+        [KeyCode::Up, KeyCode::Char('k')],
+        [KeyCode::PageUp, KeyCode::Char('b')],
+    ] {
+        for code in back {
+            overlay.key(plain_key(KeyCode::End));
+            let end = drawn(&mut overlay, 30, 8);
+            assert_eq!(overlay.key(plain_key(code)), Flow::Redraw);
+            assert!(overlay.is_open(), "{code:?}");
+            assert_ne!(drawn(&mut overlay, 30, 8), end, "{code:?} scrolled back");
+        }
+    }
+    for code in [KeyCode::Home, KeyCode::Char('g')] {
+        overlay.key(plain_key(KeyCode::End));
+        assert!(!top(&mut overlay), "at the end");
+        overlay.key(plain_key(code));
+        assert!(overlay.is_open(), "{code:?}");
+        assert!(top(&mut overlay), "{code:?} goes to the top");
+    }
+}
+
 /// Too tall for one column but wide enough for two: the groups side by
 /// side, the mouse's line under them.
 #[test]

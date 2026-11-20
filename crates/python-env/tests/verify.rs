@@ -247,3 +247,79 @@ async fn an_untrusted_python_manifest_is_reported() {
         ran.screen
     );
 }
+
+/// Two packages listing one file with different digests (the later
+/// wheel's bytes on disk) are counted in the notice, not checked, and no
+/// damage: the venv is kept.
+#[tokio::test]
+async fn a_file_two_packages_list_differently_is_counted_not_rebuilt() {
+    let _spawns = SPAWNS.lock().await;
+    let (tree, active, module) = tree();
+    let site = module
+        .parent()
+        .and_then(Path::parent)
+        .expect("site-packages");
+    std::fs::create_dir_all(site.join("other-2.0.dist-info")).expect("dist-info");
+    let sha = sb_release::sha256_reader(&b"VALUE = 9\n"[..]).expect("digest");
+    let digest = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(sha);
+    std::fs::write(
+        site.join("other-2.0.dist-info/RECORD"),
+        format!("pkg/__init__.py,sha256={digest},10\n"),
+    )
+    .expect("record");
+    let (ran, outcome) = run(&tree, true).await;
+    assert_eq!(ran.error, None, "{}", ran.screen);
+    assert_eq!(outcome, Some(VenvOutcome::UpToDate));
+    assert!(
+        ran.screen.contains(
+            "Packages: 0 files checked, 0 bad, 0 missing, 1 listed differently by two packages \
+             (not checked)"
+        ),
+        "{}",
+        ran.screen
+    );
+    assert!(active.venv.exists(), "the venv is kept");
+}
+
+/// A venv whose manifest names a Python outside sb's releases (a hand
+/// edit) has its packages checked, and its Python not, with the reason;
+/// the cleanup after then refuses it.
+#[tokio::test]
+async fn a_python_outside_the_releases_is_not_checked() {
+    let _spawns = SPAWNS.lock().await;
+    let (tree, active, _) = tree();
+    let mut manifest = active.manifest.clone();
+    let outside = tree
+        .layout
+        .python_releases
+        .join("..")
+        .join(active.python_install.file_name().expect("a name"));
+    manifest.python_install = outside.display().to_string();
+    tree.manifest(&active.dir, &manifest);
+    let (ran, outcome) = run(&tree, true).await;
+    assert_eq!(outcome, None);
+    assert!(
+        ran.error
+            .as_deref()
+            .is_some_and(|err| err.contains(&format!(
+                "active Python installation {} is not directly under managed releases",
+                outside.display()
+            ))),
+        "{:?}",
+        ran.error
+    );
+    assert!(
+        ran.screen.contains(&format!(
+            "Python: not checked, {} is not a release sb manages",
+            outside.display()
+        )),
+        "{}",
+        ran.screen
+    );
+    assert!(
+        ran.screen
+            .contains("Packages: 1 file checked, 0 bad, 0 missing"),
+        "{}",
+        ran.screen
+    );
+}

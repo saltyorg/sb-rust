@@ -245,6 +245,28 @@ fn a_failed_probe_fails_only_its_shell() {
     );
 }
 
+/// A bash-completion framework that isn't a regular file (a directory in
+/// its place) fails bash's detection, and nothing is written for bash.
+/// bash itself isn't run: its detection reads the framework only.
+#[test]
+fn a_bash_completion_framework_that_isnt_a_file_fails_bash() {
+    let _spawns = SPAWNS.lock();
+    let root = Root::new();
+    root.shell("bash", "exit 0");
+    std::fs::create_dir_all(root.at("usr/share/bash-completion/bash_completion"))
+        .expect("a directory");
+    let report = root.install(&[Shell::Bash]);
+    assert_eq!(
+        lines(&report),
+        ["Failed bash completion: bash-completion framework is not a regular file"]
+    );
+    assert_eq!(
+        report.failures,
+        ["detect bash: bash-completion framework is not a regular file"]
+    );
+    assert!(!root.at(BASH).exists());
+}
+
 /// Under a test root, a directory a shell reports outside that root is
 /// refused: a stand-in can't send a write elsewhere (a `..` never gets
 /// this far: fish's directory must be clean). The outside directory is

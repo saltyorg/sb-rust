@@ -256,6 +256,26 @@ mod tests {
         drop(dir);
     }
 
+    /// A stale wrapper that can't be opened (a link to itself) is its read
+    /// error, naming it, and stays.
+    #[test]
+    fn a_stale_wrapper_that_cant_be_opened_is_its_error() {
+        let (_dir, layout) = tree();
+        let path = layout.wrappers.join("ansible");
+        std::os::unix::fs::symlink(&path, &path).expect("a loop");
+        let err = remove_stale(&layout, &names(&["ansible"]), &[]).expect_err("a loop");
+        assert!(
+            matches!(&err, WrapperError::Inspect { path: named, .. } if *named == path),
+            "{err:?}"
+        );
+        assert!(
+            err.to_string()
+                .starts_with(&format!("read wrapper {}: ", path.display())),
+            "{err}"
+        );
+        assert!(path.symlink_metadata().is_ok(), "it stays");
+    }
+
     /// A directory where a wrapper goes is never replaced, and isn't read
     /// as a stale wrapper: each is the wrapper's error, naming it; the
     /// directory stays, and no temporary file is left beside it.

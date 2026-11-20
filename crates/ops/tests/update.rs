@@ -1797,6 +1797,39 @@ async fn without_a_terminal_local_changes_need_a_flag() {
     assert!(!world.sandbox().join("notes.txt").exists());
 }
 
+/// Without a terminal, a checkout whose discards git can't read up front
+/// (its branch has no upstream to count local commits against) is left
+/// out of the refusal, dirty as it is: the refusal names only the other
+/// one, and nothing ran or changed.
+#[tokio::test]
+async fn without_a_terminal_a_checkout_without_an_upstream_is_left_out_of_the_refusal() {
+    let _spawns = SPAWNS.lock().await;
+    let world = World::new("master", "master");
+    dirty(&world.sandbox());
+    dirty(&world.saltbox());
+    let _ = sb_ops::testing::git(&world.saltbox(), &["branch", "--unset-upstream", "master"]);
+    let before = snapshot(&world.saltbox());
+    let ran = world
+        .run(
+            &args(&PIPED),
+            Err("no terminal".to_owned()),
+            &[],
+            None,
+            &roomy(),
+        )
+        .await;
+    let error = ran.error.expect("refused");
+    assert!(
+        error.contains(&format!(
+            "--discard-local or --skip-git (Sandbox has {DIRTY} that the update would discard)"
+        )),
+        "{error}"
+    );
+    assert!(!error.contains("Saltbox"), "{error}");
+    assert!(world.host.calls().is_empty(), "{:?}", world.host.calls());
+    assert_eq!(snapshot(&world.saltbox()), before);
+}
+
 /// A question that comes up after a terminal check passed but can't be
 /// asked (sb went to the background) is the refusal with the counts,
 /// ending the run before any step.

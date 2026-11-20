@@ -1053,6 +1053,158 @@ mod tests {
         assert_eq!(found.checked, 2);
     }
 
+    /// A release removed after its manifest was written is one missing
+    /// path, the release itself; nothing beneath it is opened.
+    #[test]
+    fn a_release_gone_since_its_manifest_is_missing() {
+        let (_dir, release, manifest) = release();
+        write_release_manifest(&release, &manifest, me()).expect("written");
+        std::fs::remove_dir_all(&release).expect("rm");
+        assert_eq!(
+            check_release(&release, &manifest, me(), &token()),
+            Ok(ReleaseCheck::Checked(Findings {
+                missing: vec![release.clone()],
+                ..Findings::default()
+            }))
+        );
+    }
+
+    /// A file where the manifest has a link is bad, and a link that is
+    /// gone is missing: the link's kind is checked, not only its target.
+    #[test]
+    fn a_link_turned_into_a_file_is_bad_and_a_removed_one_missing() {
+        let (_dir, release, manifest) = release();
+        let bin = release.join("cpython/bin");
+        symlink("python3.12", bin.join("python")).expect("link");
+        write_release_manifest(&release, &manifest, me()).expect("written");
+        std::fs::remove_file(bin.join("python3")).expect("rm");
+        std::fs::write(bin.join("python3"), "elf").expect("file");
+        std::fs::remove_file(bin.join("python")).expect("rm");
+        let ReleaseCheck::Checked(found) =
+            check_release(&release, &manifest, me(), &token()).expect("checked")
+        else {
+            panic!("not checked");
+        };
+        assert_eq!(found.bad, [bin.join("python3")]);
+        assert_eq!(found.missing, [bin.join("python")]);
+        // The two regular files; neither changed link was read.
+        assert_eq!(found.checked, 2);
+    }
+
+    /// A manifest entry naming a path above the release, or with a digest
+    /// that isn't one, is bad and never opened: a damaged manifest can't
+    /// make root read outside the release.
+    #[test]
+    fn a_manifest_entry_outside_the_release_or_with_a_broken_digest_is_bad() {
+        let (dir, release, manifest) = release();
+        write_release_manifest(&release, &manifest, me()).expect("written");
+        // The same bytes as the entry names: read, it would count as good.
+        std::fs::write(dir.path().join("escape"), "elf").expect("escape");
+        let mut stored: ReleaseManifest =
+            serde_json::from_slice(&std::fs::read(&manifest).expect("read")).expect("parse");
+        let digest = stored.files["cpython/bin/python3.12"].sha256.clone();
+        stored.files.insert(
+            "../../escape".to_owned(),
+            FileEntry {
+                sha256: digest,
+                size: 3,
+            },
+        );
+        stored
+            .files
+            .get_mut("cpython/lib/python3.12/smtplib.py")
+            .expect("smtplib")
+            .sha256 = "not hex".to_owned();
+        stored
+            .links
+            .insert("../../escape-link".to_owned(), "python3.12".to_owned());
+        std::fs::write(&manifest, serde_json::to_vec(&stored).expect("json")).expect("write");
+        let ReleaseCheck::Checked(found) =
+            check_release(&release, &manifest, me(), &token()).expect("checked")
+        else {
+            panic!("not checked");
+        };
+        assert_eq!(
+            found.bad,
+            [
+                release.join("../../escape"),
+                release.join("../../escape-link"),
+                release.join("cpython/lib/python3.12/smtplib.py"),
+            ]
+        );
+        // The untouched file and link only.
+        assert_eq!(found.checked, 2);
+        assert_eq!(found.missing, Vec::<PathBuf>::new());
+    }
+
+    /// A manifest whose directory is a file, or that is a directory
+    /// itself, is refused with its path, not read.
+    #[test]
+    fn a_manifest_that_isnt_a_file_in_a_directory_is_refused() {
+        let (dir, release, _) = release();
+        let file_dir = dir.path().join("manifests");
+        std::fs::write(&file_dir, "not a directory").expect("file");
+        let manifest = file_dir.join("python-3-12-15-x.json");
+        match check_release(&release, &manifest, me(), &token()) {
+            Ok(ReleaseCheck::Untrusted(why)) => assert_eq!(
+                why,
+                format!(
+                    "{}: {}",
+                    file_dir.display(),
+                    io::Error::from(rustix::io::Errno::NOTDIR)
+                )
+            ),
+            other => panic!("used: {other:?}"),
+        }
+        std::fs::remove_file(&file_dir).expect("rm");
+        // Both 0755 whatever the umask: a trusted directory, then a
+        // directory where the manifest goes.
+        for made in [&file_dir, &manifest] {
+            std::os::unix::fs::DirBuilderExt::mode(&mut std::fs::DirBuilder::new(), 0o755)
+                .create(made)
+                .expect("a directory");
+            std::fs::set_permissions(made, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        }
+        match check_release(&release, &manifest, me(), &token()) {
+            Ok(ReleaseCheck::Untrusted(why)) => {
+                assert_eq!(why, format!("{}: not a regular file", manifest.display()));
+            }
+            other => panic!("used: {other:?}"),
+        }
+    }
+
+    /// A manifest that can't be written (its directory's place taken by a
+    /// file, or its own by a directory) is the write's error, naming the
+    /// manifest; no temporary file is left beside it.
+    #[test]
+    fn a_manifest_that_cant_be_written_names_it() {
+        let (dir, release, _) = release();
+        std::fs::write(dir.path().join("manifests"), "not a directory").expect("file");
+        let manifest = dir.path().join("manifests/python-3-12-15-x.json");
+        let named = |err: &WriteError| {
+            assert!(
+                matches!(err, WriteError::Write { path, .. } if *path == manifest),
+                "{err:?}"
+            );
+            assert!(
+                err.to_string().starts_with(&format!(
+                    "write Python release manifest {}: ",
+                    manifest.display()
+                )),
+                "{err}"
+            );
+        };
+        named(&write_release_manifest(&release, &manifest, me()).expect_err("not written"));
+        std::fs::remove_file(dir.path().join("manifests")).expect("rm");
+        std::fs::create_dir_all(manifest.join("taken")).expect("in the way");
+        named(&write_release_manifest(&release, &manifest, me()).expect_err("not renamed"));
+        let left: Vec<_> = std::fs::read_dir(dir.path().join("manifests"))
+            .expect("list")
+            .map(|entry| entry.expect("entry").file_name())
+            .collect();
+        assert_eq!(left, ["python-3-12-15-x.json"]);
+    }
+
     /// A release that isn't sb's (here: sb's owner taken as another uid,
     /// as after a swap by `/srv/python`'s owner) gets no manifest.
     #[test]

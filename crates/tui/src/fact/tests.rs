@@ -1168,6 +1168,63 @@ fn add_refuses_names_before_the_value() {
     assert!(f.page.pending.is_empty());
 }
 
+/// Edit needs a setting: on an app's heading it says so and opens
+/// nothing.
+#[test]
+fn edit_on_a_heading_says_to_pick_a_setting() {
+    let mut f = Fixture::new(&roles());
+    select(&mut f.page, "▾ Plex");
+    press(&mut f.page, KeyCode::Char('e'));
+    assert_eq!(f.page.status, "Pick a setting to edit");
+    assert!(matches!(f.page.popup, Popup::None));
+}
+
+/// Nothing is added to a copy staged to be deleted; Esc in the name box
+/// adds nothing either.
+#[test]
+fn add_to_a_deleted_copy_is_refused_and_esc_cancels_the_name() {
+    let mut f = Fixture::new(&roles());
+    select(&mut f.page, "    plex2");
+    press(&mut f.page, KeyCode::Char('d'));
+    select(&mut f.page, "plex2  will be deleted");
+    press(&mut f.page, KeyCode::Char('a'));
+    assert_eq!(f.page.status, "Keep it first: it is to be deleted");
+    assert!(matches!(f.page.popup, Popup::None));
+    select(&mut f.page, "claim-FAKE0000");
+    press(&mut f.page, KeyCode::Char('a'));
+    assert!(matches!(f.page.popup, Popup::AddKey { .. }));
+    type_into(&mut f.page, "new_key");
+    assert_eq!(press(&mut f.page, KeyCode::Esc), Flow::Redraw);
+    assert!(matches!(f.page.popup, Popup::None));
+    assert_eq!(f.page.pending.len(), 1, "only the deletion");
+}
+
+/// A key a question has no answer for leaves it up, unanswered: a stray
+/// key neither saves, discards nor closes the outcome.
+#[test]
+fn a_stray_key_leaves_a_question_up() {
+    let mut f = Fixture::new(&roles());
+    select(&mut f.page, "theme");
+    press(&mut f.page, KeyCode::Char('d'));
+    press(&mut f.page, KeyCode::Char('s'));
+    assert_eq!(press(&mut f.page, KeyCode::Char('x')), Flow::Unchanged);
+    assert!(matches!(f.page.popup, Popup::ConfirmSave));
+    press(&mut f.page, KeyCode::Esc);
+    press(&mut f.page, KeyCode::Char('q'));
+    assert_eq!(press(&mut f.page, KeyCode::Char('x')), Flow::Unchanged);
+    assert!(matches!(f.page.popup, Popup::ConfirmQuit));
+    press(&mut f.page, KeyCode::Esc);
+    assert!(f.file("homepage").expect("file").contains("theme = dark"));
+    press(&mut f.page, KeyCode::Char('s'));
+    press(&mut f.page, KeyCode::Char('y'));
+    f.settle();
+    assert!(matches!(f.page.popup, Popup::Outcome { .. }));
+    assert_eq!(press(&mut f.page, KeyCode::Char('x')), Flow::Unchanged);
+    assert!(matches!(f.page.popup, Popup::Outcome { .. }));
+    assert_eq!(press(&mut f.page, KeyCode::Enter), Flow::Redraw);
+    assert!(matches!(f.page.popup, Popup::None));
+}
+
 /// Add needs a copy: an app's heading with several copies says so; one
 /// with a single copy adds to it.
 #[test]
@@ -1434,6 +1491,26 @@ fn a_drift_reloads_on_r() {
     assert!(shows(&mut f.page, 100, 40, "port"));
 }
 
+/// The drift dialog lists a value of several lines on one, its first
+/// line and ` …`, and a file emptied on disk as `(no settings)`.
+#[test]
+fn a_drift_shows_a_long_value_cut_and_an_emptied_file() {
+    let mut f = Fixture::new(&roles());
+    select(&mut f.page, "theme");
+    press(&mut f.page, KeyCode::Char('d'));
+    std::fs::write(f.dir.path().join("homepage.ini"), "").expect("emptied");
+    press(&mut f.page, KeyCode::Char('s'));
+    press(&mut f.page, KeyCode::Enter);
+    f.wait_for_dialog();
+    assert!(matches!(f.page.popup, Popup::Drift { .. }));
+    let rows = screen(&drawn(&mut f.page, 100, 40)).join("\n");
+    assert!(rows.contains("motd = first line …"), "{rows}");
+    assert!(rows.contains("(no settings)"), "{rows}");
+    press(&mut f.page, KeyCode::Esc);
+    f.settle();
+    assert_eq!(f.page.pending.len(), 1);
+}
+
 /// Cancel at the drift keeps the change staged and writes nothing.
 #[test]
 fn a_drift_cancel_keeps_the_change() {
@@ -1446,6 +1523,11 @@ fn a_drift_cancel_keeps_the_change() {
     f.wait_for_dialog();
     assert!(shows(&mut f.page, 100, 40, "(the file is gone)"));
     press(&mut f.page, KeyCode::Down);
+    // The page keys scroll it and answer nothing.
+    for code in [KeyCode::PageDown, KeyCode::PageUp] {
+        assert_eq!(press(&mut f.page, code), Flow::Redraw, "{code:?}");
+        assert!(matches!(f.page.popup, Popup::Drift { .. }), "{code:?}");
+    }
     // `c` copies on the page: it doesn't cancel here (tui spec, "Keys").
     assert_eq!(press(&mut f.page, KeyCode::Char('c')), Flow::Unchanged);
     assert!(shows(&mut f.page, 100, 40, "Cancel (Esc)"));
@@ -1512,6 +1594,24 @@ fn the_page_s_keys_wait_while_saving() {
     f.page.saving.as_ref().expect("saving").stop();
     f.settle();
     drop(lock);
+}
+
+/// Until the save says anything, its dialog says it is saving, and a key
+/// (`q` too) does nothing: the save goes on to its outcome.
+#[test]
+fn the_saving_dialog_shows_until_the_save_speaks_and_takes_no_key() {
+    let mut f = Fixture::new(&roles());
+    select(&mut f.page, "theme");
+    press(&mut f.page, KeyCode::Char('d'));
+    press(&mut f.page, KeyCode::Char('s'));
+    press(&mut f.page, KeyCode::Char('y'));
+    assert!(matches!(f.page.popup, Popup::Saving));
+    assert!(shows(&mut f.page, 100, 40, "Saving the changes…"));
+    assert_eq!(press(&mut f.page, KeyCode::Char('q')), Flow::Unchanged);
+    assert!(matches!(f.page.popup, Popup::Saving));
+    f.settle();
+    assert!(matches!(f.page.popup, Popup::Outcome { .. }));
+    assert!(!f.file("homepage").expect("file").contains("theme"));
 }
 
 /// A stop (Ctrl-C, SIGTERM) during the save leaves the rest unattempted,
@@ -2122,6 +2222,31 @@ fn a_right_click_opens_the_row_s_menu() {
     // A right click below the rows opens nothing.
     right_click(&mut f.page, ratatui::layout::Position::new(5, 30));
     assert!(f.page.menu.is_none());
+}
+
+/// While the menu is open the wheel changes nothing (it would move the
+/// selection under it), and a click of another button, on an item too,
+/// closes it without doing the item.
+#[test]
+fn the_open_menu_ignores_the_wheel_and_another_button_closes_it() {
+    let mut f = Fixture::new(&roles());
+    let at = find(&mut f.page, "database_password");
+    right_click(&mut f.page, at);
+    assert!(f.page.menu.is_some());
+    let selected = f.page.selected();
+    let wheel = mouse_at(crossterm::event::MouseEventKind::ScrollDown, at);
+    assert_eq!(f.page.input(wheel), Flow::Unchanged);
+    assert!(f.page.menu.is_some());
+    assert_eq!(f.page.selected(), selected);
+    let delete = find(&mut f.page, "Delete d");
+    let middle = mouse_at(
+        crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Middle),
+        delete,
+    );
+    assert_eq!(f.page.input(middle), Flow::Redraw);
+    assert!(f.page.menu.is_none());
+    assert!(f.page.pending.is_empty());
+    assert!(matches!(f.page.popup, Popup::None));
 }
 
 /// `m` opens the menu on the selected row: Up and Down light an item,

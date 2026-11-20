@@ -939,3 +939,27 @@ async fn a_head_page_is_the_journals_first_entries() {
     let on = v.page(Request::Newer(head.newest.expect("an edge"))).await;
     assert_eq!(on.messages, names(5..10));
 }
+
+/// A jump near the end: the page around the entry reaches the journal's
+/// end, and the follow goes on from there, without reading the tail
+/// again, sending only what comes after.
+#[tokio::test]
+async fn a_page_around_an_entry_near_the_end_is_followed_from_its_end() {
+    let file = Growing::new();
+    file.grow(5);
+    let by = by_position(&file.journal(), 5);
+    let at = by
+        .iter()
+        .find(|(_, m)| m.as_str() == "m3")
+        .map(|(p, _)| p.clone())
+        .expect("m3");
+    let mut v = Viewer::on(file.journal(), every_entry(), small(10));
+    let around = v.page(Request::Around(at)).await;
+    assert_eq!(around.kind, PageKind::Around);
+    assert_eq!(around.messages, names(0..5));
+    assert!(!around.more_newer, "{around:?}");
+    v.handle.send(Request::Follow(true));
+    v.quiet().await;
+    file.grow(6);
+    assert_eq!(v.followed(1).await, ["m5"]);
+}

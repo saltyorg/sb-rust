@@ -825,3 +825,82 @@ async fn a_head_page_is_the_containers_first_lines() {
         other => panic!("{other:?}"),
     }
 }
+
+/// Home on a log that fits one page reaches its end: the follow goes on
+/// from its last line, sending only what comes after, without reading
+/// the tail again.
+#[tokio::test]
+async fn a_short_logs_head_page_is_followed_from_its_last_line() {
+    let fake = engine(HashMap::from([(ID.into(), log_of(3))]));
+    let mut v = Viewer::on(&fake, container(), small(50)).await;
+    let head = v.page(Request::Head).await;
+    assert_eq!(head.messages, all(0..3));
+    assert!(!head.more_newer, "{head:?}");
+    v.handle.send(Request::Follow(true));
+    fake.append(ID, entry(3));
+    assert_eq!(v.followed().await, ["line 3"]);
+}
+
+/// A jump near the end: the page around the entry reaches the log's end,
+/// and the follow goes on from its last line, sending only what comes
+/// after.
+#[tokio::test]
+async fn a_page_around_an_entry_near_the_end_is_followed_from_its_last_line() {
+    let fake = engine(HashMap::from([(ID.into(), log_of(60))]));
+    let mut v = Viewer::on(&fake, container(), small(50)).await;
+    let by = by_position(&mut v).await;
+    let at = by
+        .iter()
+        .find(|(_, m)| m.as_str() == "line 55")
+        .map(|(p, _)| p.clone())
+        .expect("line 55");
+    let around = v.page(Request::Around(at)).await;
+    assert_eq!(around.kind, PageKind::Around);
+    assert_eq!(around.messages, all(30..60));
+    assert!(around.more_older && !around.more_newer, "{around:?}");
+    v.handle.send(Request::Follow(true));
+    fake.append(ID, entry(60));
+    assert_eq!(v.followed().await, ["line 60"]);
+}
+
+/// A stopped search goes quiet: steps already on their way may come, but
+/// no end, and nothing once the side has seen the stop. The entries are
+/// 16 KiB, so the side's read yields to the source every 16 of them
+/// (sb-docker's `scan`), and the stop is taken then.
+#[tokio::test]
+async fn a_stopped_search_goes_quiet() {
+    let wide = |i: u32| {
+        let time = base() + jiff::SignedDuration::from_millis(i64::from(i) * 250);
+        FakeEntry::new(time, format!("line {i} {}\n", "x".repeat(16 * 1024)))
+    };
+    let log = FakeLog {
+        tty: false,
+        entries: (0..300).map(wide).collect(),
+    };
+    let fake = engine(HashMap::from([(ID.into(), log)]));
+    let settings = Settings {
+        search_step: 1,
+        ..small(50)
+    };
+    let mut v = Viewer::on(&fake, container(), settings).await;
+    let tail = v.page(Request::Tail).await;
+    v.handle.send(Request::Search(Search {
+        id: 6,
+        matcher: Matcher::new(|_: &Line| 0),
+        older: tail.oldest.clone(),
+        newer: None,
+    }));
+    assert!(matches!(v.next().await, Event::Found { search: 6, .. }));
+    v.handle.send(Request::StopSearch);
+    loop {
+        let got = tokio::time::timeout(Duration::from_millis(300), v.events.recv()).await;
+        match got {
+            Err(_) => break,
+            Ok(Some(Tagged {
+                event: Event::Found { end, .. },
+                ..
+            })) => assert_eq!(end, None),
+            Ok(other) => panic!("{other:?}"),
+        }
+    }
+}

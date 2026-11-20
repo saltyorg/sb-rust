@@ -649,6 +649,27 @@ mod tests {
         assert!(take(&with_dir, "sb install", &token(), |_| {}).is_err());
     }
 
+    /// The directory is made, but not its parent (`/run` isn't sb's to
+    /// make): a missing parent is the directory's error, naming it, and
+    /// nothing is created.
+    #[test]
+    fn a_missing_parent_is_not_made() {
+        let dir = tempfile::tempdir().expect("dir");
+        let lock = dir.path().join("run/sb");
+        let err = open(&lock).expect_err("refused");
+        assert!(
+            matches!(&err, LockError::Dir { path, source }
+                if *path == lock && source.kind() == io::ErrorKind::NotFound),
+            "{err:?}"
+        );
+        assert!(
+            err.to_string()
+                .starts_with(&format!("run lock directory {}: ", lock.display())),
+            "{err}"
+        );
+        assert!(!dir.path().join("run").exists());
+    }
+
     /// Refused as well: a file where the directory goes, and, as root, a
     /// directory or file of another user's.
     #[test]
