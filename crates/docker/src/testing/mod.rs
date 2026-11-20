@@ -39,8 +39,12 @@ pub fn inspects() -> Vec<Value> {
     serde_json::from_str(FIXTURES).unwrap_or_default()
 }
 
-/// A container's list entry as Docker would give it for its inspect: the
-/// ID, the name (left out when the inspect has none) and the state word.
+/// A container's list entry as Docker would give it for its inspect, as
+/// moby's list makes it (`daemon/container/view.go`): the ID, the name
+/// (left out when the inspect has none), the state word, the labels, one
+/// port entry per binding (its host port as `PublicPort`) and one for a
+/// port without any, and the health (`none` without a check; API 1.52 and
+/// later, so [`FakeEngine`] drops it for a request at an older version).
 #[must_use]
 pub fn summary(inspect: &Value) -> Value {
     let mut entry = json!({ "Id": inspect["Id"] });
@@ -50,6 +54,39 @@ pub fn summary(inspect: &Value) -> Value {
     if let Some(state) = inspect.pointer("/State/Status") {
         entry["State"] = state.clone();
     }
+    if let Some(labels) = inspect.pointer("/Config/Labels") {
+        entry["Labels"] = labels.clone();
+    }
+    let mut ports = Vec::new();
+    let map = inspect
+        .pointer("/NetworkSettings/Ports")
+        .and_then(Value::as_object);
+    for (key, bindings) in map.into_iter().flatten() {
+        let (port, typ) = key.split_once('/').unwrap_or((key, ""));
+        let port = json!({ "PrivatePort": port.parse::<u16>().unwrap_or(0), "Type": typ });
+        let bindings = bindings.as_array().map_or_default(Vec::as_slice);
+        if bindings.is_empty() {
+            ports.push(port.clone());
+        }
+        for binding in bindings {
+            let mut entry = port.clone();
+            entry["IP"] = binding.get("HostIp").cloned().unwrap_or(json!(""));
+            if let Some(host) = binding
+                .get("HostPort")
+                .and_then(Value::as_str)
+                .and_then(|host| host.parse::<u16>().ok())
+            {
+                entry["PublicPort"] = json!(host);
+            }
+            ports.push(entry);
+        }
+    }
+    entry["Ports"] = Value::Array(ports);
+    let health = inspect
+        .pointer("/State/Health/Status")
+        .cloned()
+        .unwrap_or_else(|| json!("none"));
+    entry["Health"] = json!({ "Status": health, "FailingStreak": 0 });
     entry
 }
 
@@ -497,12 +534,26 @@ fn list_answer(shared: &Shared, uri: &Uri, version: Option<&str>) -> Response {
     let all = uri
         .query()
         .is_some_and(|q| q.split('&').any(|p| p == "all=true" || p == "all=1"));
+    // Health is in the list from API 1.52 (dockerd leaves it out for an
+    // older request; an unversioned one is at the daemon's own).
+    let asked = version
+        .and_then(|v| v.strip_prefix('v'))
+        .and_then(|v| v.split_once('.'))
+        .and_then(|(a, b)| Some((a.parse::<u32>().ok()?, b.parse::<u32>().ok()?)))
+        .unwrap_or(shared.options.api_versions.1);
+    let health = asked >= (1, 52);
     let body = shared.options.list.clone().unwrap_or_else(|| {
         Value::Array(
             lock(&shared.inspects)
                 .iter()
                 .filter(|i| all || i.pointer("/State/Status") == Some(&json!("running")))
-                .map(summary)
+                .map(|inspect| {
+                    let mut entry = summary(inspect);
+                    if !health && let Some(entry) = entry.as_object_mut() {
+                        entry.remove("Health");
+                    }
+                    entry
+                })
                 .collect(),
         )
     });

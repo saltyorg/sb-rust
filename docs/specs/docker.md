@@ -110,10 +110,20 @@ logging levels end to end.
   them versioned, `/v1.53/` on a daemon that serves it and the daemon's
   own on an older one. A bollard upgrade re-checks what paths it sends
   and how a version would be chosen.
-- **Rows:** every container from the list endpoint (`all=true`), each
-  inspected by ID (as sb-go) for state, health, exit code, labels and
-  bindings, at most 16 at a time (`futures-util`'s `buffer_unordered`,
-  already in the tree through bollard); sorted by name.
+- **Rows:** every container from the list endpoint (`all=true`); sorted
+  by name. A running container's row comes from its list entry alone
+  where the list says its health (API 1.52 and later; maintainer,
+  2026-11-20): name, state, health, labels and the bindings from its
+  `Ports` (moby makes one entry per binding of the same map the inspect
+  shows), exit code 0 and not out of memory (moby clears both when a
+  container starts). Every other container, and every one on an older
+  API, is inspected by ID (as sb-go) for state, health, exit code,
+  labels and bindings, at most 16 at a time (`futures-util`'s
+  `buffer_unordered`, already in the tree through bollard). The table
+  and the JSON are the same either way; a host of running containers
+  costs one request instead of one each. The log picker, which shows
+  restart counts and times only the inspect has, inspects every
+  container.
 - **Columns** (headings centred and bold, port columns right-aligned):
 
   | Column | Content |
@@ -196,10 +206,11 @@ logging levels end to end.
   terminal as it was.
 - **Logging** (run log, capability-map decision 11; term-ui decision 9,
   verbose by default): the daemon address, the daemon's API version,
-  how many containers were listed and inspected, each failure with its
-  cause, and the time taken. bollard logs through the `log` crate, which
-  sb's tracing subscriber doesn't receive today; `tracing-log` (the
-  tokio-rs bridge) forwards it. sb's own crates log at DEBUG and
+  how many containers were listed, how many rows the list gave and how
+  many were inspected, each failure with its cause, and the time taken.
+  bollard logs through the `log` crate, which sb's tracing subscriber
+  doesn't receive today; `tracing-log` (the tokio-rs bridge) forwards
+  it. sb's own crates log at DEBUG and
   dependencies at WARN by default (carried from term-ui).
 
 ### Differences from sb-go (the complete list)
@@ -226,8 +237,10 @@ logging levels end to end.
 - **`DOCKER_HOST`:** no TLS or ssh; such a setting is an error (sb-go's
   client supports TLS).
 - **`DOCKER_API_VERSION`** is not read (sb-go pins its client to it).
-- **Requests:** inspected at most 16 at a time (sb-go: one after another);
-  bollard's 120 s request timeout (sb-go: none).
+- **Requests:** a running container's row from the list on API 1.52 and
+  later (sb-go inspects every container); the others inspected at most
+  16 at a time (sb-go: one after another); bollard's 120 s request
+  timeout (sb-go: none).
 - **Piped output:** sb's table is plain and at its natural width. sb-go's
   table library falls back to 80 columns when it can't read a terminal size
   (a pipe), so sb-go's piped table wraps at 80 columns, and it writes its

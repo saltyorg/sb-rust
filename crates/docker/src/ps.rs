@@ -10,7 +10,8 @@ use std::time::Duration;
 
 use bollard::models::{
     ContainerInspectResponse, ContainerState, ContainerStateStatusEnum as Status, ContainerSummary,
-    HealthStatusEnum as Health, PortMap,
+    ContainerSummaryHealthStatusEnum as ListHealth, ContainerSummaryStateEnum as ListState,
+    HealthStatusEnum as Health, PortMap, PortSummary,
 };
 use jiff::Timestamp;
 use sb_cli_core::theme::Role;
@@ -112,14 +113,13 @@ fn number(port: &str) -> u64 {
     port.parse::<u32>().map_or(u64::MAX, u64::from)
 }
 
-/// The container's host port bindings, from the inspect's `PortMap` (why
-/// not the list's typed `PortSummary`: sb-go reads them from the inspect,
-/// which `ps` makes for every container anyway): those with a host port, ordered by
-/// container port number, then protocol, then IPv4 before IPv6, then
-/// address, then host port (docker spec, Port Bindings).
+/// The container's host port bindings, from the inspect's `PortMap`:
+/// those with a host port, ordered by container port number, then
+/// protocol, then IPv4 before IPv6, then address, then host port (docker
+/// spec, Port Bindings).
 #[must_use]
 pub fn bindings(ports: &PortMap) -> Vec<Binding> {
-    let mut found: Vec<Binding> = ports
+    let found: Vec<Binding> = ports
         .iter()
         .flat_map(|(port, list)| {
             let (container_port, protocol) = port.split_once('/').unwrap_or((port, ""));
@@ -139,6 +139,37 @@ pub fn bindings(ports: &PortMap) -> Vec<Binding> {
             })
         })
         .collect();
+    in_order(found)
+}
+
+/// The same bindings from the list's `PortSummary` entries, which moby
+/// makes one per binding of the same `PortMap` (`daemon/container/view.go`):
+/// an entry without a host port (an exposed port, or a routed one, port
+/// 0) is left out, as the inspect's empty host port is; an empty address
+/// reads `0.0.0.0` as there.
+#[must_use]
+pub fn listed_bindings(ports: &[PortSummary]) -> Vec<Binding> {
+    let found: Vec<Binding> = ports
+        .iter()
+        .filter_map(|port| {
+            let host_port = port.public_port.filter(|p| *p != 0)?;
+            Some(Binding {
+                host_ip: port
+                    .ip
+                    .clone()
+                    .filter(|ip| !ip.is_empty())
+                    .unwrap_or_else(|| "0.0.0.0".into()),
+                host_port: host_port.to_string(),
+                container_port: port.private_port.to_string(),
+                protocol: port.typ.map_or_default(|typ| typ.to_string()),
+            })
+        })
+        .collect();
+    in_order(found)
+}
+
+/// `found` in the Port Bindings column's order.
+fn in_order(mut found: Vec<Binding>) -> Vec<Binding> {
     // `IpAddr`'s order puts every IPv4 address before any IPv6 one and
     // compares addresses numerically (one that doesn't parse sorts first;
     // Docker gives none); the raw strings break the last ties, so the order
@@ -273,6 +304,57 @@ impl Row {
             finished_at: state.finished_at.as_deref().and_then(docker_time),
             id,
         }
+    }
+
+    /// A running container's row from its list entry alone, where the
+    /// entry says its health (Engine API 1.52 and later; the caller checks
+    /// the version), with [`status`]'s text and role: the same row as
+    /// [`Row::new`]'s but for the restart count (0) and the times (none),
+    /// which only the inspect has. A running container's exit code is 0
+    /// and it wasn't killed for memory (moby's `setRunning` clears both).
+    /// `None` for any other container, or an entry without its health:
+    /// that one needs its inspect.
+    #[must_use]
+    pub fn from_summary(summary: &ContainerSummary) -> Option<Self> {
+        if summary.state != Some(ListState::RUNNING) {
+            return None;
+        }
+        let health = match summary.health.as_ref()?.status? {
+            ListHealth::HEALTHY => Health::HEALTHY,
+            ListHealth::STARTING => Health::STARTING,
+            ListHealth::UNHEALTHY => Health::UNHEALTHY,
+            ListHealth::NONE => Health::NONE,
+            ListHealth::EMPTY => Health::EMPTY,
+        };
+        let state = ContainerState {
+            status: Some(Status::RUNNING),
+            health: Some(bollard::models::Health {
+                status: Some(health),
+                ..bollard::models::Health::default()
+            }),
+            ..ContainerState::default()
+        };
+        let (status, role) = status(&state);
+        let id = summary.id.clone().unwrap_or_default();
+        let names = summary.names.as_deref().unwrap_or_default();
+        Some(Row {
+            name: display_name(&id, names),
+            state: Status::RUNNING.to_string(),
+            health: Some(health)
+                .filter(|h| !matches!(h, Health::NONE | Health::EMPTY))
+                .map(|h| h.to_string()),
+            exit_code: 0,
+            oom_killed: false,
+            status,
+            role,
+            traefik: summary.labels.as_ref().map_or_default(traefik_ports),
+            bindings: summary.ports.as_deref().map_or_default(listed_bindings),
+            restart_count: 0,
+            created: None,
+            started_at: None,
+            finished_at: None,
+            id,
+        })
     }
 }
 
@@ -587,6 +669,107 @@ mod tests {
         ]);
         ports.insert("9999/tcp".into(), None);
         assert_eq!(order(&ports), ["0.0.0.0:8080->80/tcp"]);
+    }
+
+    /// The list's ports give the inspect's bindings, in the same order:
+    /// each binding's entry (an empty address as `0.0.0.0`, IPv6 kept),
+    /// without the entries of a port with no host port (exposed only, or
+    /// routed with port 0). Built from the inspect's map as moby builds
+    /// the list's (`testing::summary`).
+    #[test]
+    fn listed_bindings_are_the_inspects() {
+        let mut ports = port_map(&[
+            ("32400/tcp", &[("0.0.0.0", "32400"), ("::", "32400")]),
+            (
+                "53/udp",
+                &[
+                    ("", "5353"),
+                    ("198.51.100.10", "53"),
+                    ("198.51.100.9", "53"),
+                ],
+            ),
+            ("53/tcp", &[("2001:db8::1", "53")]),
+            ("9000/tcp", &[("0.0.0.0", "")]),
+        ]);
+        ports.insert("1900/udp".into(), None);
+        let inspect = serde_json::json!({
+            "Id": "c1",
+            "NetworkSettings": { "Ports": serde_json::to_value(&ports).expect("ports") },
+        });
+        let summary: ContainerSummary =
+            serde_json::from_value(crate::testing::summary(&inspect)).expect("summary");
+        let listed = summary.ports.as_deref().expect("ports");
+        assert_eq!(listed.len(), 8);
+        assert_eq!(listed_bindings(listed), bindings(&ports));
+        assert_eq!(bindings(&ports).len(), 6);
+        let routed = PortSummary {
+            ip: Some("0.0.0.0".into()),
+            private_port: 80,
+            public_port: Some(0),
+            typ: None,
+        };
+        assert_eq!(listed_bindings(&[routed]), []);
+    }
+
+    /// A running container's row from its list entry is the inspect's
+    /// row, but for the restart count and the times, for every health the
+    /// list can say; any other state, and an entry without its health
+    /// (older API), needs the inspect.
+    #[test]
+    fn a_running_containers_row_comes_from_its_list_entry() {
+        let inspects = crate::testing::inspects();
+        let mut seen = 0;
+        for inspect in &inspects {
+            let summary: ContainerSummary =
+                serde_json::from_value(crate::testing::summary(inspect)).expect("summary");
+            let full: ContainerInspectResponse =
+                serde_json::from_value(inspect.clone()).expect("inspect");
+            let row = Row::from_summary(&summary);
+            if inspect.pointer("/State/Status") != Some(&serde_json::json!("running")) {
+                assert_eq!(row, None, "{inspect}");
+                continue;
+            }
+            seen += 1;
+            let mut expected = Row::new(&summary, &full);
+            expected.restart_count = 0;
+            expected.created = None;
+            expected.started_at = None;
+            expected.finished_at = None;
+            assert_eq!(row, Some(expected));
+            let mut older = summary.clone();
+            older.health = None;
+            assert_eq!(Row::from_summary(&older), None);
+        }
+        assert_eq!(seen, 3);
+        for (word, text, role) in [
+            ("healthy", "running (healthy)", Role::Ok),
+            ("starting", "running (starting)", Role::Warn),
+            ("unhealthy", "running (unhealthy)", Role::Problem),
+            ("none", "running", Role::Ok),
+            ("", "running", Role::Ok),
+        ] {
+            let summary: ContainerSummary = serde_json::from_value(serde_json::json!({
+                "Id": "0123456789abcdef",
+                "State": "running",
+                "Health": { "Status": word },
+            }))
+            .expect("summary");
+            let row = Row::from_summary(&summary).expect("a row");
+            assert_eq!((row.status.as_str(), row.role), (text, role), "{word}");
+            assert_eq!(row.name, "0123456789ab");
+            assert_eq!(
+                row.health.as_deref(),
+                Some(word).filter(|w| !matches!(*w, "none" | ""))
+            );
+            assert_eq!((row.exit_code, row.oom_killed), (0, false));
+        }
+        for state in ["restarting", "paused", "exited", "created", "dead"] {
+            let summary: ContainerSummary = serde_json::from_value(serde_json::json!({
+                "Id": "c1", "State": state, "Health": { "Status": "healthy" },
+            }))
+            .expect("summary");
+            assert_eq!(Row::from_summary(&summary), None, "{state}");
+        }
     }
 
     /// Container ports in numeric order, not text order.

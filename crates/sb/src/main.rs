@@ -1504,7 +1504,7 @@ fn docker_ps(json: bool, shutdown: &Shutdown) -> anyhow::Result<()> {
     let address = docker::address()?;
     let listing = block_on(shutdown.token().run_until_cancelled(async {
         let daemon = connect::connect(&address).await?;
-        connect::list(&daemon).await
+        connect::rows(&daemon).await
     }))?;
     let Some(listing) = listing else {
         anyhow::bail!("interrupted");

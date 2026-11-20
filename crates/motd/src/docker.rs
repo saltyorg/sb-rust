@@ -2,8 +2,9 @@
 //! Differences 10 and 11), where sb-go ran `systemctl is-active docker`,
 //! `docker ps` and `curl` (`motd/info.go:916-1047`, `:1187-1307`).
 //!
-//! - Both sections read one listing of sb-docker's (`connect::list`,
-//!   bollard), made once per run however many of the two are shown
+//! - Both sections read one listing of sb-docker's (`connect::rows`,
+//!   bollard: `sb docker ps`'s rows, a running container's from the list
+//!   alone), made once per run however many of the two are shown
 //!   (tokio's `OnceCell`,
 //!   <https://docs.rs/tokio/1.54.1/tokio/sync/struct.OnceCell.html>).
 //!   Each container's state and role are `ps::status`'s, the module's one
@@ -243,7 +244,7 @@ async fn list(settings: &Settings) -> Result<Listing, Down> {
             std::fs::metadata(path).map(drop)
         })
     })?;
-    sb_docker::connect::list(&daemon).await.map_err(|err| {
+    sb_docker::connect::rows(&daemon).await.map_err(|err| {
         tracing::warn!(error = %format!("{err:#}"), "docker containers not listed");
         Down::NoList
     })
@@ -958,11 +959,30 @@ mod tests {
     }
 
     /// A failed inspect is a container needing attention, by short ID.
+    /// Only a container that isn't running is inspected (on API 1.52 and
+    /// later); one running at an older API is too.
     #[tokio::test]
     async fn a_failed_inspect_needs_attention() {
+        // Stopped: a running container's row comes from the list, with
+        // no inspect to fail.
+        let mut failing = running(2, "sonarr");
+        failing["State"]["Status"] = json!("exited");
+        let id = failing["Id"].as_str().unwrap().to_string();
+        let engine = FakeEngine::start(Options {
+            inspects: vec![running(1, "plex"), failing],
+            failing: [id].into_iter().collect(),
+            ..Options::default()
+        })
+        .unwrap();
+        let containers = Containers::new(settings(&engine, "http://traefik.invalid"));
+        assert_eq!(
+            docker(&containers, &Paint::plain()).await.text,
+            "2 containers (1 running, 1 need attention)\n020202020202: inspect failed"
+        );
         let failing = running(2, "sonarr");
         let id = failing["Id"].as_str().unwrap().to_string();
         let engine = FakeEngine::start(Options {
+            api_versions: ((1, 40), (1, 51)),
             inspects: vec![running(1, "plex"), failing],
             failing: [id].into_iter().collect(),
             ..Options::default()
@@ -1577,7 +1597,10 @@ mod tests {
     /// Docker's value: the counts and each container needing attention.
     #[tokio::test]
     async fn dockers_value_counts_and_lists_attention() {
-        let failing = running(2, "sonarr");
+        // Stopped: a running container's row comes from the list, with
+        // no inspect to fail.
+        let mut failing = running(2, "sonarr");
+        failing["State"]["Status"] = json!("exited");
         let id = failing["Id"].as_str().unwrap().to_string();
         let engine = FakeEngine::start(Options {
             inspects: vec![running(1, "plex"), failing],

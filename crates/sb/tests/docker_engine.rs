@@ -79,13 +79,16 @@ fn plain_table(rows: &[sb_docker::ps::Row]) -> String {
     )
 }
 
-/// Removed between the list and its inspect: left out, exit 0.
+/// Removed between the list and its inspect: left out, exit 0. Below API
+/// 1.52 every container is inspected, so a running one can vanish (from
+/// 1.52 its row comes from the list, with no inspect).
 #[test]
 fn a_vanished_container_is_left_out() {
     if !root_gate::requested() {
         return;
     }
     let engine = fake(Options {
+        api_versions: ((1, 40), (1, 51)),
         vanished: [fixture_id("plex")].into(),
         ..Options::default()
     });
@@ -272,7 +275,9 @@ fn the_run_log_records_the_daemon_and_the_counts() {
     if !root_gate::requested() {
         return;
     }
-    let failing = [fixture_id("sonarr"), fixture_id("plex")];
+    // Two that aren't running: a running container's row comes from the
+    // list at this API, with no inspect to fail.
+    let failing = [fixture_id("sonarr"), fixture_id("lidarr")];
     let engine = fake(Options {
         api_versions: ((1, 40), (1, 55)),
         failing: failing.iter().cloned().collect(),
@@ -299,7 +304,10 @@ fn the_run_log_records_the_daemon_and_the_counts() {
         "{log}"
     );
     let listed = line("containers listed");
-    assert!(listed.contains("listed=6 inspected=4 failed=2"), "{log}");
+    assert!(
+        listed.contains("listed=6 from_list=3 inspected=1 failed=2"),
+        "{log}"
+    );
     assert!(listed.contains("elapsed_ms="), "{log}");
     // Each failed inspect has its own warning, with its cause.
     for id in &failing {

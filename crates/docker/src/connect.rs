@@ -1,7 +1,8 @@
 //! Talking to the daemon (docker spec, "Daemon", "API version", "Rows",
 //! "Errors"): which address `DOCKER_HOST` names, the connection, the API
 //! version its version call chooses for every request, and the list with
-//! an inspect per container.
+//! an inspect per container, or for `ps`'s rows only the containers whose
+//! row the list doesn't give.
 
 use anyhow::Context;
 use bollard::errors::Error;
@@ -281,6 +282,24 @@ pub struct Listing {
 /// How many inspects run at once (docker spec, "Rows").
 const INSPECTS_AT_ONCE: usize = 16;
 
+/// The first API version whose container list says each container's
+/// health (Engine API 1.52's `Health` in the list's summary; moby fills
+/// it for every container, `none` without a check).
+const LIST_HEALTH: ClientVersion = ClientVersion {
+    major_version: 1,
+    minor_version: 52,
+};
+
+/// What a listing is for: which containers are inspected.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Detail {
+    /// Every container, for the log picker's restart counts and times.
+    Full,
+    /// Only those whose row the list doesn't give ([`Row::from_summary`]),
+    /// for `ps`'s table and JSON and motd's lines.
+    Shown,
+}
+
 /// Every container (`all=true`), each inspected by ID, at most
 /// [`INSPECTS_AT_ONCE`] at a time
 /// (<https://docs.rs/futures-util/0.3.34/futures_util/stream/trait.StreamExt.html#method.buffer_unordered>);
@@ -302,11 +321,28 @@ const INSPECTS_AT_ONCE: usize = 16;
 #[inline(never)]
 pub fn list(daemon: &Daemon) -> futures_util::future::BoxFuture<'_, anyhow::Result<Listing>> {
     use futures_util::FutureExt as _;
-    listing(daemon).boxed()
+    listing(daemon, Detail::Full).boxed()
 }
 
-/// [`list`]'s listing.
-async fn listing(daemon: &Daemon) -> anyhow::Result<Listing> {
+/// [`list`] for what `sb docker ps` and motd show (docker spec, "Rows"):
+/// a running container's row comes from the list alone where the list
+/// says its health (API 1.52 and later), and only the others are
+/// inspected, so a host of running containers costs one request. Those
+/// rows carry no restart count and no times ([`Row::from_summary`]); the
+/// log picker, which shows them, uses [`list`]. Boxed and not inlined as
+/// [`list`] is.
+///
+/// # Errors
+///
+/// As [`list`].
+#[inline(never)]
+pub fn rows(daemon: &Daemon) -> futures_util::future::BoxFuture<'_, anyhow::Result<Listing>> {
+    use futures_util::FutureExt as _;
+    listing(daemon, Detail::Shown).boxed()
+}
+
+/// [`list`]'s and [`rows`]'s listing.
+async fn listing(daemon: &Daemon, detail: Detail) -> anyhow::Result<Listing> {
     let started = std::time::Instant::now();
     let docker = &daemon.docker;
     let options = ListContainersOptionsBuilder::default().all(true).build();
@@ -320,6 +356,20 @@ async fn listing(daemon: &Daemon) -> anyhow::Result<Listing> {
             )
         })?;
     let listed = summaries.len();
+    let mut rows = Vec::new();
+    let summaries = if detail == Detail::Shown && daemon.request_version >= LIST_HEALTH {
+        let mut rest = Vec::new();
+        for summary in summaries {
+            match Row::from_summary(&summary) {
+                Some(row) => rows.push(row),
+                None => rest.push(summary),
+            }
+        }
+        rest
+    } else {
+        summaries
+    };
+    let from_list = rows.len();
     let inspected: Vec<_> = stream::iter(summaries)
         .map(|summary| async move {
             let id = summary.id.clone().unwrap_or_default();
@@ -331,7 +381,6 @@ async fn listing(daemon: &Daemon) -> anyhow::Result<Listing> {
         .buffer_unordered(INSPECTS_AT_ONCE)
         .collect()
         .await;
-    let mut rows = Vec::new();
     let mut failures = Vec::new();
     for (summary, id, result) in inspected {
         match result {
@@ -359,7 +408,8 @@ async fn listing(daemon: &Daemon) -> anyhow::Result<Listing> {
     failures.sort_by(|a, b| a.short_id.cmp(&b.short_id));
     tracing::info!(
         listed,
-        inspected = rows.len(),
+        from_list,
+        inspected = rows.len() - from_list,
         failed = failures.len(),
         elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
         "containers listed"
@@ -470,6 +520,76 @@ mod tests {
             paths.iter().all(|p| p.starts_with("/v1.53/")),
             "unversioned paths (see the docker spec's API version bullet): {paths:?}"
         );
+    }
+
+    /// `rows` (sb docker ps, motd): the running containers' rows come
+    /// from the list, so only the others are inspected, and every row is
+    /// `list`'s but for the restart count and times, which neither shows:
+    /// the table and the JSON are the same.
+    #[tokio::test]
+    async fn rows_inspect_only_what_the_list_does_not_say() {
+        let engine = fake(Options::default());
+        let daemon = connect(&engine.host()).await.expect("connect");
+        let full = list(&daemon).await.expect("list");
+        let before = engine.paths().len();
+        let shown = rows(&daemon).await.expect("rows");
+        let paths = engine.paths()[before..].to_vec();
+        assert_eq!(paths[0], "/v1.53/containers/json?all=true&size=false");
+        let mut inspected: Vec<_> = paths[1..]
+            .iter()
+            .map(|p| p.trim_start_matches("/v1.53/containers/").to_string())
+            .collect();
+        inspected.sort();
+        // The exited, the created and the stateless one.
+        assert_eq!(inspected.len(), 3, "{paths:?}");
+        let running: Vec<&str> = full
+            .rows
+            .iter()
+            .filter(|r| r.state == "running")
+            .map(|r| r.id.as_str())
+            .collect();
+        assert!(
+            inspected
+                .iter()
+                .all(|p| !running.iter().any(|id| p.starts_with(id))),
+            "{paths:?}"
+        );
+        assert_eq!(names(&shown), names(&full));
+        assert_eq!(
+            crate::json::json(&shown.rows),
+            crate::json::json(&full.rows)
+        );
+        let theme = sb_cli_core::theme::Theme::resolve(
+            &sb_cli_core::theme::Palette::default(),
+            sb_cli_core::theme::Profile::TrueColor,
+        );
+        let table = |rows: &[Row]| crate::ps::table(rows).render(&theme, true, None);
+        assert_eq!(table(&shown.rows), table(&full.rows));
+        let without_times = |mut rows: Vec<Row>| {
+            for row in &mut rows {
+                row.restart_count = 0;
+                row.created = None;
+                row.started_at = None;
+                row.finished_at = None;
+            }
+            rows
+        };
+        assert_eq!(without_times(shown.rows), without_times(full.rows));
+    }
+
+    /// A daemon below API 1.52 has no health in its list: `rows` inspects
+    /// every container, as `list` does.
+    #[tokio::test]
+    async fn rows_inspect_every_container_below_api_1_52() {
+        let engine = fake(Options {
+            api_versions: ((1, 40), (1, 51)),
+            ..Options::default()
+        });
+        let daemon = connect(&engine.host()).await.expect("connect");
+        assert_eq!(daemon.request_version.to_string(), "1.51");
+        let listing = rows(&daemon).await.expect("rows");
+        assert_eq!(listing.rows.len(), 6);
+        assert_eq!(engine.paths().len(), 2 + 1 + 6, "{:?}", engine.paths());
     }
 
     /// The connection keeps bollard's 120 s timeout and records the

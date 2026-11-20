@@ -240,7 +240,7 @@ mount points.
 | Last login | `last -w -n 5` (decision 6), with sb-go's text `user at Day Mon D HH:MM until HH:MM (dur) from IP` | `last -n 5`, then `lastlog -u root`, then `who -u` |
 | Disk Usage | `procfs` mountinfo plus `rustix::fs::statvfs`, with df's rules (below) and the bar of decision 8 | `df -H -x … --output=target,pcent,size` |
 | Services | `sb_host::services(filters)` with motd.yml's `systemd` additions and display names (`motd/systemd.go`) | `host.GetFilteredServices` |
-| Docker | sb-docker's `connect::list` rows (decision 13) | `systemctl is-active docker`, `docker ps -a` |
+| Docker | sb-docker's `connect::rows`, `sb docker ps`'s rows (decision 13) | `systemctl is-active docker`, `docker ps -a` |
 | Traefik | the same listing's `traefik` row, then reqwest `GET http://traefik:8080/api/http/routers` with a 3 s connect timeout (decision 15) | `docker ps`, `curl` |
 | Certificates | Traefik's API: `GET /api/overview`'s `certificates` counts and `GET /api/certificates?sortBy=validUntil&per_page=1`'s one certificate, alongside the routers request (decision 27, below) | none (Difference 34) |
 | Download Queues | Sonarr, Radarr, Lidarr and Readarr `/api/v3/queue` (v1 for Lidarr and Readarr), 100 records per page until done, `X-Api-Key`; after a full page, the pages its total says are left four at once, counted in page order | golift.io/starr |
