@@ -316,9 +316,11 @@ pass; and confirms that their Cloudflare and Docker Hub credentials work.
   `validate_cloudflare_config`, `validate_dockerhub_config`;
   not `validate_rclone_remote` (decision 6).
 - **Cloudflare** (`validate_cloudflare_config`): with a global key,
-  `GET /user` first; then `GET /zones?name=<zone>` (the zone is
+  `GET /user`, and beside it `GET /zones?name=<zone>` (the zone is
   `user.domain`'s registrable domain under the public suffix list,
-  ICANN and private sections, as x/net's), and
+  ICANN and private sections, as x/net's), each answer taken in sb-go's
+  order: the key's failure is the one reported, whatever came back
+  first; with a token, the zone lookup alone. Then
   `GET /zones/<id>/settings/ssl`; SSL mode `flexible` or `off` is an
   error. Any zone-list or SSL-settings failure (refused, not found,
   network error, timeout) gives sb-go's guidance text for the credential
@@ -482,6 +484,13 @@ pass; and confirms that their Cloudflare and Docker Hub credentials work.
   only as a directory; nor is Go's last fallback, the build machine's
   `$GOROOT/lib/time/zoneinfo.zip`, which only a host with a Go
   installation at that path has (decision 7).
+- With a global key, `GET /user` and the zone lookup go at once, on two
+  connections (maintainer, 2026-11-20: at 100 ms per answer
+  validate-config takes 220 ms instead of 320 ms, for about 2 M more
+  instructions, the second connection's TLS handshake; sb-go and
+  cloudflare-go ask one after the other). The results, their
+  texts and the order they are reported in are sb-go's; a refused key
+  may now find the zone lookup sent too.
 - A delay Cloudflare names (`Retry-After-Ms`, `Retry-After` in seconds or
   as a date) waits at most 60 s (maintainer, 2026-11-05;
   cloudflare-go waits as long as the server says, so one answer could

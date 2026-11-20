@@ -1,8 +1,8 @@
 //! The Cloudflare check (config spec, "Cloudflare"; sb-go's
 //! `validateCloudflareCredentialsWithOptions` on cloudflare-go v7.13.1):
-//! a global key's `GET /user`, then the zone of `user.domain` (its
-//! registrable domain under the public suffix list) and its SSL/TLS mode,
-//! each request retried as cloudflare-go retries. sb-go's guidance follows
+//! a global key's `GET /user`, with it the zone of `user.domain` (its
+//! registrable domain under the public suffix list), then the zone's
+//! SSL/TLS mode, each request retried as cloudflare-go retries. sb-go's guidance follows
 //! any zone or SSL failure; the credentials never appear in what it
 //! reports.
 
@@ -305,21 +305,53 @@ pub async fn check(
     credentials: &Credentials,
     domain: &str,
 ) -> Result<(), String> {
-    if let Credentials::Global { .. } = credentials {
+    let zone = root_domain(domain);
+    // A global key's own check, and beside it the zone lookup (a listed
+    // difference, the maintainer's of 2026-11-20: sb-go asks one after
+    // the other), each answer taken in sb-go's order: the key's failure
+    // first, the zone's after a key that passed. `try_join!` ends at the
+    // key's failure, dropping the lookup, and never at the lookup's,
+    // which it holds until the key's answer
+    // (<https://docs.rs/tokio/1.54.1/tokio/macro.try_join.html>).
+    let user = async {
         check
             .get(credentials, &["user"], None)
             .await
-            .map_err(|cause| format!("cloudflare Global API key verification failed: {cause}"))?;
-    }
-    let zone = root_domain(domain)?;
+            .map_err(|cause| format!("cloudflare Global API key verification failed: {cause}"))
+    };
+    let looked_up = match (credentials, &zone) {
+        (Credentials::Global { .. }, Ok(zone)) => {
+            let zones = async {
+                Ok::<_, String>(
+                    check
+                        .get(credentials, &["zones"], Some(("name", zone)))
+                        .await,
+                )
+            };
+            let (_user, zones) = tokio::try_join!(user, zones)?;
+            Some(zones)
+        }
+        // A domain with no zone: the key's answer first, as sb-go.
+        (Credentials::Global { .. }, Err(_)) => {
+            user.await?;
+            None
+        }
+        (Credentials::Token(_), _) => None,
+    };
+    let zone = zone?;
     let shown = escape_controls(&zone);
     let guidance = |operation: &str, setting: &str, cause: String| {
         guidance(credentials, operation, setting, &shown, &cause)
     };
-    let zones = check
-        .get(credentials, &["zones"], Some(("name", &zone)))
-        .await
-        .map_err(|cause| guidance("Cloudflare zone lookup failed", "Zone", cause))?;
+    let zones = match looked_up {
+        Some(zones) => zones,
+        None => {
+            check
+                .get(credentials, &["zones"], Some(("name", &zone)))
+                .await
+        }
+    }
+    .map_err(|cause| guidance("Cloudflare zone lookup failed", "Zone", cause))?;
     let Some(id) = zones
         .get("result")
         .and_then(serde_json::Value::as_array)
@@ -503,8 +535,10 @@ mod tests {
         assert_eq!(seen[0].header("x-auth-key"), None);
     }
 
+    /// A global key's `GET /user` goes with the zone lookup, the SSL
+    /// lookup after both (the two at once arrive in either order).
     #[tokio::test]
-    async fn a_global_key_checks_the_user_first() {
+    async fn a_global_key_checks_the_user_with_the_zone() {
         let fake = Fake::start().expect("fake");
         fake.script(
             "/client/v4/user",
@@ -513,22 +547,141 @@ mod tests {
         healthy(&fake);
         assert_eq!(run(&fake, &global(), "example.com").await, Ok(()));
         let seen = fake.seen();
-        assert_eq!(seen[0].target, "/client/v4/user");
-        assert_eq!(seen[0].header("x-auth-key"), Some("not-a-real-key"));
-        assert_eq!(seen[0].header("x-auth-email"), Some("seed@example.com"));
-        assert_eq!(seen[0].header("authorization"), None);
+        let mut first: Vec<&str> = seen[..2].iter().map(|s| s.target.as_str()).collect();
+        first.sort_unstable();
+        assert_eq!(
+            first,
+            ["/client/v4/user", "/client/v4/zones?name=example.com"]
+        );
+        let user = seen
+            .iter()
+            .find(|s| s.target == "/client/v4/user")
+            .expect("user");
+        assert_eq!(user.header("x-auth-key"), Some("not-a-real-key"));
+        assert_eq!(user.header("x-auth-email"), Some("seed@example.com"));
+        assert_eq!(user.header("authorization"), None);
         assert_eq!(seen.len(), 3);
+        assert_eq!(seen[2].target, "/client/v4/zones/z1/settings/ssl");
     }
 
+    /// A refused key is the failure, whatever the zone lookup sent beside
+    /// it found; the SSL lookup isn't made.
     #[tokio::test]
     async fn a_refused_global_key_says_so() {
         let fake = Fake::start().expect("fake");
         fake.script("/client/v4/user", Answer::json(403, r#"{"success":false,"errors":[{"code":9103,"message":"Unknown X-Auth-Key or X-Auth-Email"}]}"#));
+        healthy(&fake);
         assert_eq!(
             run(&fake, &global(), "example.com").await,
             Err("cloudflare Global API key verification failed: HTTP 403 Forbidden: Unknown X-Auth-Key or X-Auth-Email (9103)".into())
         );
-        assert_eq!(fake.seen().len(), 1);
+        let seen = fake.seen();
+        assert!(
+            seen.iter().all(|s| s.target == "/client/v4/user"
+                || s.target == "/client/v4/zones?name=example.com"),
+            "{seen:?}"
+        );
+        assert_eq!(
+            seen[..]
+                .iter()
+                .filter(|s| s.target == "/client/v4/user")
+                .count(),
+            1
+        );
+    }
+
+    /// A global key with a domain that has no zone: the key's answer
+    /// first, then the domain's refusal, and no zone lookup (sb-go's
+    /// order).
+    #[tokio::test]
+    async fn a_global_key_with_no_zone_is_checked_first() {
+        let fake = Fake::start().expect("fake");
+        fake.script("/client/v4/user", Answer::json(403, DENIED));
+        assert_eq!(
+            run(&fake, &global(), "").await,
+            Err("cloudflare Global API key verification failed: HTTP 403 Forbidden: Unauthorized to access requested resource (9109)".into())
+        );
+        let fake = Fake::start().expect("fake");
+        fake.script("/client/v4/user", Answer::json(200, "{}"));
+        healthy(&fake);
+        assert_eq!(
+            run(&fake, &global(), "").await,
+            Err("empty domain name".into())
+        );
+        let seen = fake.seen();
+        let targets: Vec<&str> = seen.iter().map(|s| s.target.as_str()).collect();
+        assert_eq!(targets, ["/client/v4/user"]);
+    }
+
+    /// `check` with a global key while `/user`'s answer is held until the
+    /// zone lookup has been sent too, then let go: the zone's answer comes
+    /// first. Whether both were in flight at once, and the outcome.
+    async fn user_answering_last(fake: &Fake) -> (bool, Result<(), String>) {
+        let both_sent = async {
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+            let sent = loop {
+                let seen = fake.seen();
+                if seen.iter().any(|s| s.target == "/client/v4/user")
+                    && seen
+                        .iter()
+                        .any(|s| s.target.starts_with("/client/v4/zones?"))
+                {
+                    break true;
+                }
+                if tokio::time::Instant::now() > deadline {
+                    break false;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            };
+            fake.release();
+            sent
+        };
+        let credentials = global();
+        tokio::join!(both_sent, run(fake, &credentials, "example.com"))
+    }
+
+    /// The key's failure is the one reported, though the zone lookup's
+    /// failure came back first (sb-go's order: the key, then the zone).
+    #[tokio::test]
+    async fn a_refused_key_answering_last_is_still_the_failure() {
+        let fake = Fake::start().expect("fake");
+        fake.script(
+            "/client/v4/user",
+            Answer::json(403, r#"{"success":false,"errors":[{"code":9103,"message":"Unknown X-Auth-Key or X-Auth-Email"}]}"#).held(),
+        );
+        fake.script("/client/v4/zones", Answer::json(403, DENIED));
+        let (both_sent, result) = user_answering_last(&fake).await;
+        assert!(both_sent, "{:?}", fake.seen());
+        assert_eq!(
+            result,
+            Err("cloudflare Global API key verification failed: HTTP 403 Forbidden: Unknown X-Auth-Key or X-Auth-Email (9103)".into())
+        );
+    }
+
+    /// A key that passes, answering last: the zone lookup's failure is
+    /// then the one reported, and with a zone that passes the SSL lookup
+    /// follows only after the key's answer.
+    #[tokio::test]
+    async fn a_key_answering_last_lets_the_zone_answer_count() {
+        let fake = Fake::start().expect("fake");
+        fake.script("/client/v4/user", Answer::json(200, "{}").held());
+        fake.script("/client/v4/zones", Answer::json(200, NO_ZONES));
+        let (both_sent, result) = user_answering_last(&fake).await;
+        assert!(both_sent, "{:?}", fake.seen());
+        let err = result.expect_err("no zone");
+        assert!(
+            err.starts_with("Cloudflare zone lookup failed: zone example.com was not returned for these credentials\n  Fix the Global API Key configuration:"),
+            "{err}"
+        );
+        let fake = Fake::start().expect("fake");
+        fake.script("/client/v4/user", Answer::json(200, "{}").held());
+        healthy(&fake);
+        let (both_sent, result) = user_answering_last(&fake).await;
+        assert!(both_sent, "{:?}", fake.seen());
+        assert_eq!(result, Ok(()));
+        let seen = fake.seen();
+        assert_eq!(seen.len(), 3);
+        assert_eq!(seen[2].target, "/client/v4/zones/z1/settings/ssl");
     }
 
     #[tokio::test]

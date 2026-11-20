@@ -31,8 +31,10 @@ psl.workspace = true
 serde_json.workspace = true
 axum = { workspace = true, optional = true }
 tempfile = { workspace = true, optional = true }
-# The Cloudflare check's wait between attempts (reqwest runs on tokio).
-tokio = { workspace = true, features = ["time"] }
+# The Cloudflare check's wait between attempts (reqwest runs on tokio),
+# and its two requests at once (`try_join!`, in sb's build through
+# sb-exec already).
+tokio = { workspace = true, features = ["macros", "time"] }
 saphyr.workspace = true
 saphyr-parser.workspace = true
 thiserror.workspace = true
