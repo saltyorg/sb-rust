@@ -24,6 +24,9 @@ regex.workspace = true
 regex-syntax.workspace = true
 jiff.workspace = true
 reqwest.workspace = true
+# X25519MLKEM768 offered first (ADR-027's amendment): reqwest's rustls
+# leaves the feature off.
+rustls = { workspace = true, features = ["prefer-post-quantum"] }
 psl.workspace = true
 serde_json.workspace = true
 axum = { workspace = true, optional = true }

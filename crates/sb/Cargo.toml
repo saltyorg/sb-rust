@@ -88,6 +88,9 @@ vt100.workspace = true
 # asked of aws-lc-rs and read from the test binary's symbols.
 aws-lc-rs.workspace = true
 object.workspace = true
+# tests/key_exchange.rs: the provider reqwest uses offers X25519MLKEM768
+# first. Without features, so the test can't turn it on itself.
+rustls.workspace = true
 
 [lints]
 workspace = true

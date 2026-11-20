@@ -1216,6 +1216,10 @@ const stubs = (versions, arch) => {
   out.cross += 'printf \'%s\\n\' "${CROSS_CONTAINER_OPTS-unset}" >>"$STUB_LOG.cross-opts"\n';
   // With SIZE_BYTES set, the production binary is that many bytes (ADR-025).
   out.cross += 'if [ -n "${SIZE_BYTES:-}" ] && [ "$t" = x86_64-unknown-linux-gnu ]; then truncate -s "$SIZE_BYTES" "$CARGO_TARGET_DIR/$t/production/sb"; fi\n';
+  // sb's normal dependency graph (`cargo tree ... -e normal,features`):
+  // rustls's prefer-post-quantum on (ADR-027's amendment), unless NO_PQ is
+  // set.
+  out.cargo += 'if [ "$1" = tree ] && [ -z "${NO_PQ:-}" ]; then echo \'rustls feature "prefer-post-quantum"\'; fi\n';
   // The coverage run's lcov report (--output-path): a file under crates/
   // with COV_LF lines, COV_LH of them hit, COV_FNF functions and COV_FNH
   // hit (99% of each by default), then a prototype's file with nothing
@@ -2117,6 +2121,10 @@ test('check.sh full: the binary at its ratchet ceiling plus the tolerance passes
   assert.match(at.output, new RegExp('sb: ' + ceiling + ' bytes'), at.output);
   assert.match(at.output, new RegExp('at most ' + ceiling + ' bytes'), at.output);
   refuses(checkRun('full', { ...crateWork, env: { SIZE_BYTES: String(ceiling + 1) } }), 1, /above the ratchet/);
+});
+
+test('check.sh full: sb\'s normal build without rustls\'s prefer-post-quantum fails', () => {
+  refuses(checkRun('full', { ...crateWork, env: { NO_PQ: '1' } }), 1, /lacks rustls's prefer-post-quantum/);
 });
 
 test('check.sh: diffs are plain whatever git is configured to do', () => {

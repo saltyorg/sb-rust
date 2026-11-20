@@ -279,6 +279,21 @@ testing_feature_check() {
   fi
 }
 
+# sb's normal build turns on rustls's `prefer-post-quantum` (ADR-027's
+# amendment): X25519MLKEM768 first, with its key share. sb's
+# tests/key_exchange.rs checks the effect, but in a test build, whose
+# features include the dev-dependencies': one that turned rustls's
+# default features on would keep it green with the shipping crates'
+# lines gone. This reads the graph a release build resolves.
+post_quantum_feature_check() {
+  local tree
+  tree=$(cargo tree -p sb -e normal,features --locked --quiet --prefix none) || return 1
+  if ! grep -qx 'rustls feature "prefer-post-quantum"' <<<"$tree"; then
+    echo "check: sb's normal build lacks rustls's prefer-post-quantum feature" >&2
+    return 1
+  fi
+}
+
 fast() {
   step "crates: workspace lints and a deny.toml entry each"
   crate_check
@@ -1246,6 +1261,8 @@ full() {
   cargo deny --locked --manifest-path crates/sb/Cargo.toml check
   step "sb's normal build has no testing feature"
   testing_feature_check
+  step "sb's normal build offers post-quantum key exchange first"
+  post_quantum_feature_check
   # The ratchet's ceiling: today's size plus its tolerance (ADR-025).
   local size_ratchet=$((SIZE_RATCHET_MAX_BYTES + SIZE_RATCHET_MAX_BYTES * SIZE_TOLERANCE_MAX_PCT / 100))
   step "binary size <= ${size_ratchet} bytes (the ratchet's ${SIZE_RATCHET_MAX_BYTES} plus ${SIZE_TOLERANCE_MAX_PCT}%) and <= ${SIZE_MAX_BYTES} (production glibc, built on ubuntu:${RUNTIME_RELEASES[0]} through cross)"

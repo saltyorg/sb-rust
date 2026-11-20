@@ -3,6 +3,7 @@
 ## Status
 
 Accepted (maintainer, 2026-11-20: option A of the TLS cost comparison).
+Amended 2026-11-20: post-quantum key exchange offered first (below).
 
 ## Date
 
@@ -123,9 +124,68 @@ is acceptable for a short-lived TLS client are in
 - **Post-quantum key exchange stays,** but rustls's default order sends
   no ML-KEM key share, so Cloudflare, Docker Hub, the SVM proxy and
   Traefik ask for a retry first. rustls's `prefer-post-quantum` feature
-  is a separate question.
+  is a separate question. *Answered by the amendment below.*
 - **Revisit** when sb makes long-lived keys or signatures with aws-lc's
   generator, when upstream makes jitter a fallback only
   (https://github.com/aws/aws-lc/issues/3180), or if sb needs FIPS.
 - aws-lc#3818, an abort unrelated to this setting, is listed to watch in
   the capability map.
+
+## Amendments
+
+- **2026-11-20, post-quantum key exchange offered first** (the
+  maintainer's decision, from the measurements below).
+  - **Why:** reqwest's rustls has its `prefer-post-quantum` feature off
+    (rustls turns it on by default; reqwest disables rustls's defaults).
+    rustls then lists X25519MLKEM768 last and sends only an X25519 key
+    share, so every server that prefers the hybrid answers with a
+    HelloRetryRequest: a round trip more per connection.
+  - **The change:** each crate that builds a reqwest client (sb-config,
+    sb-docker, sb-motd, sb-ops, sb-release) depends on rustls with
+    `prefer-post-quantum`, next to its reqwest line
+    (https://docs.rs/rustls/0.23.46/rustls/#crate-features: it "merely
+    alters the order of `rustls::crypto::aws_lc_rs::DEFAULT_KX_GROUPS`").
+    The feature is set in each crate, so each one's own tests run with
+    what ships; the workspace entry has none, so sb's test can name
+    rustls without turning the feature on. No shared crate fits: the
+    ones all five use (sb-cli-core, sb-term-ui) have no HTTP, and aws-lc
+    would be compiled into every crate under them. In the `sb` crate
+    alone it would ship as well, but the five crates' own test builds
+    would then run without it.
+  - **What it sends:** X25519MLKEM768 first, with a key share for it and
+    one for X25519 (its classical half, at no extra cost), as sb-go
+    does. The ClientHello grows from about 260 to about 1,480 bytes.
+  - **Measured** on the production build (x86_64), against the TLS fakes
+    and the real endpoints:
+
+    | Server | ClientHellos per connection, before → after |
+    |---|---|
+    | api.cloudflare.com | 2 (retry) → 1 |
+    | hub.docker.com (Docker Hub's login) | 2 (retry) → 1 |
+    | svm.saltbox.dev (the SVM proxy) | 2 (retry) → 1 |
+    | Traefik 3.7.16 | 2 (retry) → 1 |
+    | github.com, api.github.com, registry-1.docker.io | 1 → 1 (X25519, from the second share) |
+
+    The retry costs one round trip to the server, so the saving grows
+    with the distance to it. Against Traefik on loopback, the time from
+    the first ClientHello to the last ServerHello fell from 3.5 to
+    1.9 ms (median of 15 connections). Against the local fakes, motd over https, validate-config's
+    credential checks and self-update's check moved by under 1% in
+    instructions: 0.1 to 0.3 M fewer against a server with ML-KEM (no
+    retry), 0.2 to 0.6 M more against one without (an unused ML-KEM key).
+    Wall times moved by at most 1 ms. Certificate checks and TLS 1.2
+    servers behave as before.
+  - **Costs:** the larger ClientHello takes two TCP segments, and
+    rustls's manual warns that some middleboxes mishandle large hellos.
+    Every endpoint above accepted it, and sb-go already sends a hello of
+    about the same size (1,510 to 1,530 bytes) to the same servers.
+    Servers without ML-KEM pay for a key that goes unused.
+  - **Pinned** twice:
+    - `crates/sb/tests/key_exchange.rs`: the provider reqwest builds on
+      (`rustls::crypto::aws_lc_rs::default_provider()`, as no process
+      default is installed) lists X25519MLKEM768 first and also offers
+      X25519. It fails with the feature off.
+    - `scripts/check.sh full`: sb's normal dependency graph, as a release
+      build resolves it, has rustls's `prefer-post-quantum`. A test build
+      includes the dev-dependencies' features, so a dev-dependency
+      turning rustls's defaults on would otherwise hide a drop.

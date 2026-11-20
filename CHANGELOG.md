@@ -109,6 +109,12 @@ you could trip over.
   before discarding local changes.
 - **Redirects are not followed** by motd's providers, the credential
   checks, the Docker controller or restore.
+- **TLS is rustls on aws-lc** in place of Go's crypto/tls. It verifies
+  certificates against the system's roots, as sb-go did, and offers
+  post-quantum key exchange first (X25519MLKEM768, with an X25519 key
+  share beside it), as sb-go does, so Cloudflare, Docker Hub and Traefik
+  answer in one round trip. Commands that open TLS connections start
+  faster: `sb motd` with https services in about half sb-go's time.
 - **Restore decrypts in memory** and writes atomically, so a wrong password
   can't damage files.
 - **Releases come from saltyorg/sb-rust.**

@@ -176,7 +176,71 @@ workflow, `build/Dockerfile` or `Cross.toml` sets the variable, and the
 cross builds' build-script output was checked by hand for both targets
 on 2026-11-20 (the warning above).
 
-## Not changed by it
+## X25519MLKEM768 offered first
+
+Verified 2026-11-20 with rustls 0.23.46, for ADR-027's amendment.
+
+**What sb sets:** rustls's `prefer-post-quantum` feature, in each crate
+that builds a reqwest client. reqwest 0.13.5 uses rustls without its
+default features, which leaves it off. The feature "merely alters the
+order of `rustls::crypto::aws_lc_rs::DEFAULT_KX_GROUPS`"
+(https://docs.rs/rustls/0.23.46/rustls/#crate-features).
+
+**What the ClientHello carries:**
+- **Off:** X25519, P-256, P-384, X25519MLKEM768, with a key share for
+  X25519 only. About 260 bytes.
+- **On:** X25519MLKEM768 first, with key shares for it and for X25519.
+  rustls adds the second share from the hybrid's classical half when
+  X25519 is also offered on its own (`client/hs.rs`). About 1,480 bytes,
+  two TCP segments. sb-go (Go 1.27.3) sends the same two shares in a
+  hello of about 1,510 to 1,530 bytes.
+
+**Method:**
+- Built the gate's x86_64 production binary with and without the
+  feature.
+- Read each ClientHello from `openssl s_server -trace` (OpenSSL 3.5.5).
+- Pointed `sb motd`'s Plex, SABnzbd and Sonarr instances at each real
+  endpoint as https URLs (paths that don't exist, no credentials), so
+  one client made the connections the credential checks and
+  self-update make. Captured them from a container with a network, five
+  runs each, with tcpdump; tshark read the hellos and the
+  HelloRetryRequests. GitHub and registry-1.docker.io are controls,
+  servers without ML-KEM.
+- Traefik 3.7.16 ran locally from its image.
+
+**Round trips:**
+
+| Server | Off | On |
+|---|---|---|
+| OpenSSL 3.5 with its default groups | retry, then X25519MLKEM768 | X25519MLKEM768, no retry |
+| api.cloudflare.com, hub.docker.com, svm.saltbox.dev (Cloudflare) | retry, then X25519MLKEM768 | X25519MLKEM768, no retry |
+| Traefik 3.7.16 (Go 1.26) | retry, then X25519MLKEM768 | X25519MLKEM768, no retry |
+| github.com, api.github.com, registry-1.docker.io | X25519, no retry | X25519 from the second share, no retry |
+| an OpenSSL server limited to P-256 | retry | retry |
+| an OpenSSL TLS 1.2 server | completes | completes |
+
+The retry costs one round trip to the server, so the saving grows with
+the distance to it. Against Traefik on loopback, the median time from
+the first ClientHello to the last ServerHello fell from 3.5 to 1.9 ms
+(15 connections each).
+
+**Cost on the local fakes** (`perf stat`, the same harness as above):
+- **Against an OpenSSL 3.5 server (ML-KEM preferred):** motd over https,
+  validate-config's credential checks and self-update's check took
+  0.1 to 0.3 M fewer instructions, with no retry.
+- **Against OpenSSL 3.0 (no ML-KEM):** 0.2 to 0.6 M more, for a key
+  that goes unused.
+- **Wall time:** within 1 ms either way.
+- **Unchanged:** the certificate checks (an untrusted issuer, a wrong
+  name, an expired certificate all refused as before).
+
+**Checked by** `crates/sb/tests/key_exchange.rs`: the provider reqwest
+builds its clients on (no process default is installed) lists
+X25519MLKEM768 first and offers X25519. `scripts/check.sh full` also
+reads sb's normal dependency graph for rustls's `prefer-post-quantum`,
+since a test build's features include the dev-dependencies'.
+
+## Not changed by the entropy setting
 
 aws-lc#3818 (https://github.com/aws/aws-lc/issues/3818, opened
 2026-11-18 against aws-lc-sys 0.46.0, open): a thread whose first

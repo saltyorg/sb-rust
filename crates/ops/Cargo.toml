@@ -101,6 +101,9 @@ tempfile.workspace = true
 # restore's fetch (ops spec, "Protocol"): one client, no redirects; tokio's
 # `select!` stops it on a first signal. bench's icanhazip and ipinfo.
 reqwest.workspace = true
+# X25519MLKEM768 offered first (ADR-027's amendment): reqwest's rustls
+# leaves the feature off.
+rustls = { workspace = true, features = ["prefer-post-quantum"] }
 # The body's cap: `Limited` fails a byte past it.
 http-body-util.workspace = true
 # restore's `select!`, and bench's time limits on the blocking pool's work.
