@@ -46,6 +46,13 @@ left out: benchmark.go and the journal log stream (Scope).
      `follow_links(false)` and `follow_root_links(false)`. walkdir follows
      a symlinked root by default. sb-go's WalkDir lstats the root and
      doesn't descend.
+     *Amended 2026-11-20 (performance round 3, ops finding 2):* the walk
+     is std's `read_dir` with each entry's `DirEntry::metadata` (on
+     glibc Linux a `statx` or `fstatat` relative to the directory already
+     open: std's source, not its docs; on musl an `lstat`), in walkdir's
+     order and with its errors, entry for entry (walkdir's `metadata` is
+     an `lstat` of the whole path: 28-40% more instructions over a venv).
+     walkdir stays the reference its tests compare against.
 4. **The service list's facts come from systemctl's JSON output**
    (proto-logs, maintainer-reviewed 2026-10-29), not sb-go's parsing of
    human-readable columns. Times are read with `--timestamp=utc`
@@ -543,6 +550,9 @@ what both do.
     (sb-host's own; the workspace entry is unchanged): the follow's wake
     wait, `journal::FollowWait` (journal spec, decision 12).
 - **walkdir 2.5:** new to the binary, already in the lockfile
+  (*amended 2026-11-20:* the ownership walk is std's now, assumption 3;
+  walkdir is a test dependency of sb-host, and in the binary through
+  python-env's manifest walk)
 - **nix 0.31,** `user` (*amended 2026-11-18, the maintainer*: was 0.28,
   the version portable-pty linked; see Ownership). Also the
   systemd-coredump user's uid for the journal's unit query (`journal::coredump_uid`, `look up user <u>: <cause>`)

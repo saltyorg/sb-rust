@@ -25,8 +25,6 @@ sb-journal.workspace = true
 # The systemd-coredump user's uid for `Query::unit`, and the ownership
 # user's ids (host spec, decision 2).
 nix.workspace = true
-# The recursive ownership walk (host spec, decision 2 and assumption 3).
-walkdir.workspace = true
 # The run log's records (the ownership counts).
 tracing.workspace = true
 # The blocking pool, through cli-core's helper that carries the span; and
@@ -63,6 +61,10 @@ sb-cli-core.workspace = true
 indicatif.workspace = true
 # The run log test's capture.
 tracing-subscriber.workspace = true
+# The apt sources tests' tree listing, and the reference the ownership
+# walk is checked against (walkdir's, which it replaced: host spec,
+# assumption 3).
+walkdir.workspace = true
 
 [lints]
 workspace = true

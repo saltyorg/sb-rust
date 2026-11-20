@@ -9,12 +9,12 @@
 //! one count of changed entries per root, never each path: a Saltbox
 //! checkout holds thousands.
 
+use std::fs::{FileType, Metadata};
 use std::io;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 use nix::unistd::User;
-use walkdir::WalkDir;
 
 /// A user's uid and primary gid.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,9 +83,8 @@ pub fn ensure_owner<P: AsRef<Path>>(user: &str, paths: &[P]) -> Result<(), Owner
 /// Give each of `roots`, and everything under it, to `user` and its
 /// primary group (sb-go's `EnsureRecursiveForExistingUser`).
 ///
-/// The walk is walkdir's, following no symlink, the root's included
-/// (`follow_links(false)`, `follow_root_links(false)`:
-/// <https://docs.rs/walkdir/2.5.0/walkdir/struct.WalkDir.html#method.follow_root_links>):
+/// The walk follows no symlink, the root's included, as walkdir's with
+/// `follow_links(false)` and `follow_root_links(false)` did (`Walk`):
 /// a symlinked root changes only the link, as sb-go's `filepath.WalkDir`
 /// does. A missing root is skipped, and an empty or unknown user skips
 /// everything. An entry that vanishes during the walk is skipped and the
@@ -196,49 +195,212 @@ fn ensure_tree(
         cause: Box::new(cause),
     };
     let mut changed = 0;
-    let walk = WalkDir::new(root)
-        .follow_links(false)
-        .follow_root_links(false);
-    for entry in walk {
-        // walkdir's metadata is `symlink_metadata` when links aren't
-        // followed (<https://docs.rs/walkdir/2.5.0/walkdir/struct.DirEntry.html#method.metadata>).
-        let metadata = entry.and_then(|entry| entry.metadata().map(|meta| (entry, meta)));
-        let (entry, metadata) = match metadata {
+    for found in Walk::new(root, MAX_OPEN) {
+        let found = match found {
             Ok(found) => found,
-            Err(error) => match inspect_failure(error) {
-                None => continue,
-                Some(failure) => return Err(wrap(failure)),
-            },
+            Err(OwnerError::Inspect { cause, .. }) if cause.kind() == io::ErrorKind::NotFound => {
+                continue;
+            }
+            Err(failure) => return Err(wrap(failure)),
         };
-        if metadata.uid() == ids.uid && metadata.gid() == ids.gid {
+        if found.metadata.uid() == ids.uid && found.metadata.gid() == ids.gid {
             continue;
         }
-        match lchown(entry.path(), ids) {
+        let path = found.at.path();
+        match lchown(&path, ids) {
             Ok(()) => changed += 1,
             Err(cause) if cause.kind() == io::ErrorKind::NotFound => {}
-            Err(cause) => {
-                return Err(wrap(OwnerError::Set {
-                    path: entry.path().to_path_buf(),
-                    cause,
-                }));
-            }
+            Err(cause) => return Err(wrap(OwnerError::Set { path, cause })),
         }
     }
     Ok(changed)
 }
 
-/// A walk error as sb-go's text, or `None` for an entry that isn't there
-/// (any more), which the walk skips.
-fn inspect_failure(error: walkdir::Error) -> Option<OwnerError> {
-    let path = error.path().map_or_default(Path::to_path_buf);
-    // Without followed links walkdir reports no loop, so every error
-    // carries an I/O error; `other` keeps the text if one ever doesn't.
-    let cause = match error.into_io_error() {
-        Some(cause) if cause.kind() == io::ErrorKind::NotFound => return None,
-        Some(cause) => cause,
-        None => io::Error::other("walk failed"),
-    };
-    Some(OwnerError::Inspect { path, cause })
+/// The most listings a walk keeps open at once. Past it the oldest open
+/// one is read to its end and closed, as walkdir's `max_open`
+/// (<https://docs.rs/walkdir/2.5.0/walkdir/struct.WalkDir.html#method.max_open>),
+/// whose 10 a venv's depth passes; 32 is more than any Saltbox tree
+/// needs. The entry being given holds its directory's handle too (std's
+/// entry keeps its listing's), so at most one more is open.
+const MAX_OPEN: usize = 32;
+
+/// The recursive walk of a root, walkdir 2.5's as `ensure_owner_recursive`
+/// used it until 2026-11-20 (`follow_links(false)`,
+/// `follow_root_links(false)`), entry for entry, in the same order, with
+/// the same errors: the root, then depth first in the order the
+/// directory lists, each directory's listing opened before the directory
+/// itself is given (walkdir's `handle_entry`). No link is followed, the
+/// root's included: a directory is descended into when its listed type
+/// (`DirEntry::file_type`, which doesn't follow a link) says it is one.
+///
+/// Why not walkdir: its `DirEntry::metadata` is an `lstat` of the whole
+/// path from `/` (walkdir 2.5.0, `src/dent.rs`), and it keeps no handle
+/// to std's entry. std's `DirEntry::metadata` never follows a link
+/// (<https://doc.rust-lang.org/std/fs/struct.DirEntry.html#method.metadata>),
+/// and on glibc Linux it is a `statx`, else an `fstatat`, relative to the
+/// directory already open (std 1.100.0, `library/std/src/sys/fs/unix.rs`,
+/// `DirEntry::metadata`); its docs promise only `symlink_metadata`'s
+/// answer, so UNVERIFIED beyond that source: on musl it is an `lstat` of
+/// the path, and the walk would cost what walkdir's did. Measured on the
+/// glibc build sb ships (ADR-020), over a 60,872-entry venv: 52% fewer
+/// user and 38% fewer kernel instructions, 310 ms to 217 ms (performance
+/// round 3, ops finding 2). An entry's path is only built when it is
+/// needed: a directory to open, an entry to change, an error to name.
+struct Walk {
+    /// The root, until it is given.
+    root: Option<PathBuf>,
+    /// The listings being walked, the deepest last.
+    stack: Vec<Listing>,
+    /// The first listing in `stack` that may still be open: those before
+    /// it are closed.
+    oldest_open: usize,
+    /// The most listings open at once.
+    max_open: usize,
+}
+
+/// A directory's entries still to give.
+enum Listing {
+    /// Read from its open handle, each entry looked up relative to it.
+    Open(std::fs::ReadDir),
+    /// Read to its end and closed to make room ([`MAX_OPEN`]): each
+    /// entry's path and listed type, looked up by its path.
+    Closed(std::vec::IntoIter<Result<(PathBuf, FileType), OwnerError>>),
+    /// The directory couldn't be opened: its error, given once.
+    Failed(Option<OwnerError>),
+}
+
+/// An entry the walk reached, its metadata not following a link.
+struct Found {
+    at: At,
+    metadata: Metadata,
+}
+
+/// Where a found entry is.
+enum At {
+    /// An entry of an open listing.
+    Entry(std::fs::DirEntry),
+    /// The root, or an entry of a closed listing.
+    Path(PathBuf),
+}
+
+impl At {
+    /// The entry's path: the root's, or its directory's joined with its
+    /// name.
+    fn path(&self) -> PathBuf {
+        match self {
+            At::Entry(entry) => entry.path(),
+            At::Path(path) => path.clone(),
+        }
+    }
+}
+
+/// `cause` for the entry at `path`.
+fn inspect(path: PathBuf, cause: io::Error) -> OwnerError {
+    OwnerError::Inspect { path, cause }
+}
+
+/// A listing's read error: walkdir's carries no path (`Error::from_io`),
+/// so its text names none.
+fn unread(cause: io::Error) -> OwnerError {
+    inspect(PathBuf::new(), cause)
+}
+
+impl Walk {
+    /// The walk of `root`, at most `max_open` listings open (at least
+    /// one, as walkdir's).
+    fn new(root: &Path, max_open: usize) -> Self {
+        Walk {
+            root: Some(root.to_path_buf()),
+            stack: Vec::new(),
+            oldest_open: 0,
+            max_open: max_open.max(1),
+        }
+    }
+
+    /// `dir`'s listing opened, deepest, after the oldest open one is
+    /// closed when `max_open` are.
+    fn push(&mut self, dir: &Path) {
+        if self.stack.len() - self.oldest_open == self.max_open {
+            let oldest = &mut self.stack[self.oldest_open];
+            if let Listing::Open(entries) = oldest {
+                let rest: Vec<_> = entries
+                    .map(|entry| {
+                        let entry = entry.map_err(unread)?;
+                        let path = entry.path();
+                        match entry.file_type() {
+                            Ok(kind) => Ok((path, kind)),
+                            Err(cause) => Err(inspect(path, cause)),
+                        }
+                    })
+                    .collect();
+                *oldest = Listing::Closed(rest.into_iter());
+            }
+            self.oldest_open += 1;
+        }
+        let listing = match std::fs::read_dir(dir) {
+            Ok(entries) => Listing::Open(entries),
+            Err(cause) => Listing::Failed(Some(inspect(dir.to_path_buf(), cause))),
+        };
+        self.stack.push(listing);
+    }
+
+    /// The deepest listing done.
+    fn pop(&mut self) {
+        self.stack.pop();
+        self.oldest_open = self.oldest_open.min(self.stack.len());
+    }
+}
+
+impl Iterator for Walk {
+    type Item = Result<Found, OwnerError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some(root) = self.root.take() {
+            let metadata = match root.symlink_metadata() {
+                Ok(metadata) => metadata,
+                Err(cause) => return Some(Err(inspect(root, cause))),
+            };
+            if metadata.is_dir() {
+                self.push(&root);
+            }
+            let at = At::Path(root);
+            return Some(Ok(Found { at, metadata }));
+        }
+        loop {
+            let next = match self.stack.last_mut()? {
+                Listing::Open(entries) => entries.next().map(|entry| {
+                    let entry = entry.map_err(unread)?;
+                    match entry.file_type() {
+                        Ok(kind) => Ok((At::Entry(entry), kind)),
+                        Err(cause) => Err(inspect(entry.path(), cause)),
+                    }
+                }),
+                Listing::Closed(entries) => entries
+                    .next()
+                    .map(|entry| entry.map(|(path, kind)| (At::Path(path), kind))),
+                Listing::Failed(failure) => failure.take().map(Err),
+            };
+            let Some(next) = next else {
+                self.pop();
+                continue;
+            };
+            let (at, kind) = match next {
+                Ok(found) => found,
+                Err(failure) => return Some(Err(failure)),
+            };
+            if kind.is_dir() {
+                self.push(&at.path());
+            }
+            let metadata = match &at {
+                At::Entry(entry) => entry.metadata(),
+                At::Path(path) => path.symlink_metadata(),
+            };
+            return Some(match metadata {
+                Ok(metadata) => Ok(Found { at, metadata }),
+                Err(cause) => Err(inspect(at.path(), cause)),
+            });
+        }
+    }
 }
 
 #[cfg(test)]
@@ -674,23 +836,229 @@ mod tests {
         );
     }
 
+    /// What a walk gave: each entry's path under the root and its type
+    /// (`d`, `f`, `l`: not following a link), or an error's text
+    /// (`inspect ownership of <path>: <cause>`), the root's path in both
+    /// as `ROOT`.
+    type Walked = Vec<Result<(String, char), String>>;
+
+    /// `path`'s record in [`Walked`], under `root`.
+    fn record(root: &Path, path: &Path, metadata: &Metadata) -> (String, char) {
+        let kind = metadata.file_type();
+        let kind = if kind.is_symlink() {
+            'l'
+        } else if kind.is_dir() {
+            'd'
+        } else {
+            'f'
+        };
+        let under = path.strip_prefix(root).expect("under the root");
+        (format!("ROOT/{}", under.display()), kind)
+    }
+
+    /// `text` with `root`'s path as `ROOT`.
+    fn rooted(root: &Path, text: &str) -> String {
+        text.replace(&root.display().to_string(), "ROOT")
+    }
+
+    /// walkdir 2.5's walk as `ensure_tree` used it until 2026-11-20
+    /// (`follow_links(false)`, `follow_root_links(false)`, then each
+    /// entry's `metadata`), its errors as that version's text, `after`
+    /// called with each entry given.
+    fn walkdir_reference(root: &Path, mut after: impl FnMut(&Path)) -> Walked {
+        let mut walked = Vec::new();
+        let walk = walkdir::WalkDir::new(root)
+            .follow_links(false)
+            .follow_root_links(false);
+        for entry in walk {
+            match entry.and_then(|entry| entry.metadata().map(|meta| (entry, meta))) {
+                Ok((entry, metadata)) => {
+                    walked.push(Ok(record(root, entry.path(), &metadata)));
+                    after(entry.path());
+                }
+                Err(error) => {
+                    let path = error.path().map_or_default(Path::to_path_buf);
+                    let cause = error.into_io_error().expect("an I/O error");
+                    let text = format!("inspect ownership of {}: {cause}", path.display());
+                    walked.push(Err(rooted(root, &text)));
+                }
+            }
+        }
+        walked
+    }
+
+    /// [`Walk`] over `root`, as [`walkdir_reference`] records it.
+    fn walked(root: &Path, max_open: usize, mut after: impl FnMut(&Path)) -> Walked {
+        let mut walked = Vec::new();
+        for found in Walk::new(root, max_open) {
+            match found {
+                Ok(found) => {
+                    let path = found.at.path();
+                    walked.push(Ok(record(root, &path, &found.metadata)));
+                    after(&path);
+                }
+                Err(error) => walked.push(Err(rooted(root, &error.to_string()))),
+            }
+        }
+        walked
+    }
+
+    /// How many directories a chain under the tree goes down: more than
+    /// [`MAX_OPEN`].
+    const DEEP: usize = MAX_OPEN + 8;
+
+    /// The entries [`varied_tree`] makes, the root's included: seven at
+    /// the top, four under `a`, the chain's directories and its file.
+    const TREE_ENTRIES: usize = 1 + 7 + 4 + DEEP + 1;
+
+    /// A tree with a bit of everything under `root`: nested directories,
+    /// files, an empty directory, symlinks to a directory, to a file and
+    /// to nothing, and a chain [`DEEP`] directories deep.
+    fn varied_tree(root: &Path) {
+        fs::create_dir_all(root.join("a/sub")).expect("a/sub");
+        for file in ["a/1", "a/2", "a/sub/x", "b"] {
+            fs::write(root.join(file), "x").expect("file");
+        }
+        fs::create_dir(root.join("empty")).expect("empty");
+        symlink(root.join("a"), root.join("link-dir")).expect("link-dir");
+        symlink(root.join("b"), root.join("link-file")).expect("link-file");
+        symlink(root.join("missing"), root.join("dangling")).expect("dangling");
+        let mut deep = root.join("deep");
+        for level in 0..DEEP {
+            deep.push(format!("d{level}"));
+        }
+        fs::create_dir_all(&deep).expect("deep");
+        fs::write(deep.join("bottom"), "x").expect("bottom");
+    }
+
     #[test]
-    fn a_walk_error_without_an_io_error_keeps_a_text() {
-        // Only a followed link can loop, and links aren't followed; the
-        // fallback is still checked through a looping walk.
+    fn the_walk_gives_what_walkdir_gave_in_its_order() {
         let dir = tempfile::tempdir().expect("tempdir");
-        symlink(dir.path(), dir.path().join("loop")).expect("loop");
-        let error = WalkDir::new(dir.path())
-            .follow_links(true)
-            .into_iter()
-            .find_map(Result::err)
-            .expect("loop error");
-        let failure = inspect_failure(error).expect("failure");
+        let root = dir.path().join("root");
+        fs::create_dir(&root).expect("root");
+        varied_tree(&root);
+        let reference = walkdir_reference(&root, |_| {});
+        assert_eq!(reference.len(), TREE_ENTRIES, "{reference:#?}");
+        assert!(reference.iter().all(Result::is_ok), "{reference:#?}");
+        for max_open in [0, 1, 2, MAX_OPEN] {
+            assert_eq!(
+                walked(&root, max_open, |_| {}),
+                reference,
+                "max_open {max_open}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_walk_gives_what_walkdir_gave_for_odd_roots() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = dir.path().join("target");
+        fs::create_dir(&target).expect("target");
+        fs::write(target.join("inner"), "x").expect("inner");
+        let file = dir.path().join("file");
+        fs::write(&file, "x").expect("file");
+        let link = dir.path().join("link");
+        symlink(&target, &link).expect("link");
+        for root in [
+            link,
+            file.clone(),
+            dir.path().join("missing"),
+            file.join("below"),
+        ] {
+            assert_eq!(
+                walked(&root, MAX_OPEN, |_| {}),
+                walkdir_reference(&root, |_| {}),
+                "{}",
+                root.display()
+            );
+        }
+    }
+
+    #[test]
+    fn the_walk_keeps_at_most_max_open_listings_open() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        varied_tree(dir.path());
+        for max_open in [1, 2, 3] {
+            let mut walk = Walk::new(dir.path(), max_open);
+            let mut given = 0;
+            while let Some(found) = walk.next() {
+                found.expect("found");
+                given += 1;
+                let open = walk
+                    .stack
+                    .iter()
+                    .filter(|listing| matches!(listing, Listing::Open(_)))
+                    .count();
+                assert!(open <= max_open, "{open} open of at most {max_open}");
+            }
+            assert_eq!(given, TREE_ENTRIES);
+        }
+    }
+
+    /// Two directories in a fresh `root`, in the order the directory
+    /// lists them.
+    fn two_directories(root: &Path) -> [PathBuf; 2] {
+        for name in ["p", "q"] {
+            fs::create_dir(root.join(name)).expect("dir");
+        }
+        let listed: Vec<PathBuf> = fs::read_dir(root)
+            .expect("list")
+            .map(|entry| entry.expect("entry").path())
+            .collect();
+        listed.try_into().expect("two entries")
+    }
+
+    /// The `after` that makes `later`, listed as a directory, a file
+    /// once `earlier` is given: its open then fails, `Not a directory`.
+    fn replace_after(earlier: PathBuf, later: PathBuf) -> impl FnMut(&Path) {
+        move |given| {
+            if given == earlier {
+                fs::remove_dir(&later).expect("remove");
+                fs::write(&later, "x").expect("file");
+            }
+        }
+    }
+
+    #[test]
+    fn a_directory_that_cannot_be_opened_fails_as_walkdirs_did() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (ours, theirs) = (dir.path().join("ours"), dir.path().join("theirs"));
+        let mut runs = Vec::new();
+        for root in [&ours, &theirs] {
+            fs::create_dir(root).expect("root");
+            runs.push(two_directories(root));
+        }
+        let [first, second] = runs[0].clone();
+        let walked = walked(&ours, MAX_OPEN, replace_after(first, second.clone()));
+        let [first, second] = runs[1].clone();
+        let reference = walkdir_reference(&theirs, replace_after(first, second.clone()));
+        assert_eq!(walked, reference);
+        let name = second.file_name().expect("name").to_string_lossy();
         assert_eq!(
-            failure.to_string(),
+            walked.last(),
+            Some(&Err(format!(
+                "inspect ownership of ROOT/{name}: Not a directory (os error 20)"
+            )))
+        );
+    }
+
+    #[test]
+    fn a_directory_that_cannot_be_opened_ends_the_tree_with_its_error() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let [first, second] = two_directories(root);
+        let mut replace = replace_after(first, second.clone());
+        let error = ensure_tree(root, OTHER, &mut |path: &Path, _| {
+            replace(path);
+            Ok(())
+        })
+        .expect_err("failed");
+        assert_eq!(
+            error.to_string(),
             format!(
-                "inspect ownership of {}: walk failed",
-                dir.path().join("loop").display()
+                "set recursive ownership of {}: inspect ownership of {}: Not a directory (os error 20)",
+                root.display(),
+                second.display()
             )
         );
     }
