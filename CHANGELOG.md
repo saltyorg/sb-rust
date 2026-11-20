@@ -115,7 +115,9 @@ you could trip over.
 - **Shell completion asks sb at each Tab** (clap_complete's stubs), as
   the calling user and without sudo, so it is quicker, and flag values
   such as `--color`'s complete. Hidden commands and flags are never
-  offered, as in sb-go, whatever you have typed.
+  offered, as in sb-go, whatever you have typed, and Tab adds nothing
+  where only flags would fit (`sb update <Tab>`): flags complete after
+  a `-`.
 
 ### Removed
 

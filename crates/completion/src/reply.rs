@@ -59,7 +59,10 @@ fn request(shell: Shell, mut args: Vec<OsString>, index: Option<String>) -> (Vec
 /// `candidates` without those for a hidden command or argument of the
 /// command being completed. A hidden candidate of another kind stays, as
 /// the engine keeps it: a shown command's hidden alias (`accounts.yml` for
-/// `edit accounts`), a dot file.
+/// `edit accounts`), a dot file. Then, on an empty word, none at all when
+/// only flags are left (spec, difference 6, the maintainer's rule): every
+/// shell would insert their common `--`, and sb-go offers flags only
+/// after a `-`.
 fn shown(
     cmd: &clap::Command,
     args: &[OsString],
@@ -67,10 +70,19 @@ fn shown(
     candidates: Vec<CompletionCandidate>,
 ) -> Vec<CompletionCandidate> {
     let completed = completed_command(cmd, args, index);
-    candidates
+    let shown: Vec<_> = candidates
         .into_iter()
         .filter(|candidate| !(candidate.is_hide_set() && for_hidden(completed, candidate)))
-        .collect()
+        .collect();
+    let empty_word = args.get(index).is_none_or(|word| word.is_empty());
+    let flag = |candidate: &CompletionCandidate| {
+        candidate.get_value().as_encoded_bytes().starts_with(b"-")
+    };
+    if empty_word && shown.iter().all(flag) {
+        Vec::new()
+    } else {
+        shown
+    }
 }
 
 /// The command the word at `index` belongs to, found as the engine finds
@@ -244,6 +256,20 @@ mod tests {
         assert_eq!(values(&["update", "--verb"]), Vec::<String>::new());
         // `-h` and `--help` are one item: the engine keeps the first.
         assert_eq!(values(&["update", "-"]), ["--keep", "-h"]);
+    }
+
+    /// On an empty word, a list of flags only is no list (spec,
+    /// difference 6): the shells would insert `--`. A typed `-`, and a
+    /// list with anything else, keep the flags.
+    #[test]
+    fn an_empty_word_with_only_flags_gets_nothing() {
+        assert_eq!(values(&["update", ""]), Vec::<String>::new());
+        assert_eq!(values(&["self-update", ""]), Vec::<String>::new());
+        assert_eq!(values(&["update", "--"]), ["--keep", "--help"]);
+        assert_eq!(values(&["mode", "--mode", ""]), ["a:b", "c"]);
+        let top = values(&[""]);
+        assert!(top.contains(&"update".to_owned()), "{top:?}");
+        assert!(top.contains(&"--help".to_owned()), "{top:?}");
     }
 
     #[test]

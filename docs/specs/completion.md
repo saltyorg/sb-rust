@@ -215,6 +215,18 @@ tests with a temporary root.
 6. On an empty word after `install` or a tag, the flags are offered as
    well as the tags (clap_complete's engine offers flags on an empty
    word; sb-go's only after a `-`). Found in module build M57.
+   *But where only flags would be offered on an empty word, nothing is
+   offered, as sb-go* (the maintainer, 2026-11-20): `sb update <Tab>`,
+   `sb version <Tab>`, `sb branch <Tab>`, `sb docker restart <Tab>`, and
+   `sb install <Tab>` with no, a corrupt or an empty tag cache. clap's
+   list there is all flags, so every shell inserted their common prefix,
+   `--`, for the user. The flags complete once a `-` is typed. Where
+   other candidates exist (subcommands, tags, values), the list is as
+   before, flags, `help`, `--color` and `--help` included. sb's reply
+   does it (decision 11). With no reply, bash falls back to file names
+   (clap's stub registers `-o bashdefault`), as it does for sb-go's
+   commands with no completion: a directory with one visible entry gets
+   that name inserted, not `--`.
 7. In bash, an open quote completes: `'plex, so<Tab>` becomes `'plex,
    sonarr'` (readline takes the quote off the word and closes it after
    the candidate); sb-go's bash script offered nothing there. zsh and
@@ -307,7 +319,8 @@ the test's directory.
   quote, a corrupt cache, an empty cache.
 - **sb's reply, unit:** the filter on a small tree (a hidden command,
   a hidden flag, a hidden global `-v`, a shown command's hidden alias,
-  a hidden command's shown flag) and each shell's reply, which is clap's
+  a hidden command's shown flag, an empty word with only flags and with
+  other candidates) and each shell's reply, which is clap's
   format byte for byte where nothing is hidden.
 - **Through the binary, no shell:** `SB_COMPLETE=bash sb -- sb install
   p` (and zsh, fish) with the stub's environment, output compared;
@@ -329,7 +342,8 @@ the test's directory.
   bash-completion, zsh and fish from apt; `sb completion install` as root,
   then a login shell per user driven in a PTY with Tab presses:
   commands, `install s<Tab>`, `plex,so<Tab>`, `sandbox-`, the earlier-word
-  rule; hidden commands and flags on a prefix. This is where the verification items below are settled.
+  rule; hidden commands and flags on a prefix; no `--` inserted on an
+  empty word with only flags. This is where the verification items below are settled.
 - Coverage and mutation as CONSTRAINTS.md.
 
 ## Verification items (facts to settle in slice 1, not questions)
@@ -435,11 +449,14 @@ the test's directory.
     open items ("review it before the `completion` module spec");
     B-ansible.md 7b.
 11. **sb filters the engine's candidates** (Tab completion, "Hidden
-    commands and flags are never offered"): a shell adapter of sb's own
+    commands and flags are never offered"; difference 6's empty word
+    with only flags): a shell adapter of sb's own
     (`EnvCompleter`, the extension point `CompleteEnv::shells` takes)
     calls clap's engine (`clap_complete::engine::complete`), drops the
     candidates for the hidden commands and arguments of the command
-    being completed, and writes the reply in the format clap's adapter
+    being completed, then every candidate when the current word is
+    empty and all that are left are flags, and writes the reply in the
+    format clap's adapter
     for that shell writes; registration stays clap's. Why not clap's
     adapters as they are: they offer hidden items on a prefix, and
     clap_complete 4.6.11 has no switch or hook for it (no option on
@@ -448,7 +465,7 @@ the test's directory.
     (`-v`, `--skip-git`, a hidden command's own flags). An option is
     proposed upstream (drafted for the maintainer, not posted). Source:
     this spec ("hidden ones left out"); the completion test report of
-    2026-11-20 (B1).
+    2026-11-20 (B1, B2); the maintainer, 2026-11-20 (B2).
 
 ## Known limits
 

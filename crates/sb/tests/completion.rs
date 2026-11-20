@@ -247,6 +247,50 @@ fn shown_items_and_aliases_still_complete() {
     );
 }
 
+/// On an empty word where only flags would be offered, nothing is
+/// (spec, difference 6, the maintainer's rule of 2026-11-20): the shells
+/// inserted `--`. A typed `-` gets the flags; subcommands, tags and
+/// values are offered as before, flags with them.
+#[test]
+fn an_empty_word_with_only_flags_gets_nothing() {
+    let tags = saltbox(TAGS, None);
+    let empty = saltbox(&[], None);
+    let corrupt = saltbox(&[], Some("{broken JSON"));
+    let missing = tempfile::tempdir().expect("temp dir");
+    let cases: &[(&Path, &[&str])] = &[
+        (tags.path(), &["update", ""]),
+        (tags.path(), &["version", ""]),
+        (tags.path(), &["branch", ""]),
+        (tags.path(), &["docker", "restart", ""]),
+        (tags.path(), &["update", "--skip-self-update", ""]),
+        (empty.path(), &["install", ""]),
+        (corrupt.path(), &["install", ""]),
+        (missing.path(), &["install", ""]),
+    ];
+    for shell in ["bash", "zsh", "fish"] {
+        for (root, words) in cases {
+            // `sb` is word 0.
+            let index = words.len();
+            assert_eq!(reply(shell, root, words, index), "", "{shell} {words:?}");
+            // zsh's stub passes no word for an empty one at the end.
+            if shell == "zsh" {
+                let typed = &words[..index - 1];
+                assert_eq!(reply(shell, root, typed, index), "", "{shell} {typed:?}");
+            }
+        }
+        let dash = reply(shell, tags.path(), &["update", "-"], 2);
+        assert!(dash.contains("--keep-branch"), "{shell}: {dash:?}");
+        let install = reply(shell, tags.path(), &["install", ""], 2);
+        assert!(install.starts_with("plex"), "{shell}: {install:?}");
+        assert!(install.contains("--no-cache"), "{shell}: {install:?}");
+        let docker = reply(shell, tags.path(), &["docker", ""], 2);
+        assert!(docker.starts_with("ps"), "{shell}: {docker:?}");
+        assert!(docker.contains("--color"), "{shell}: {docker:?}");
+        let values = reply(shell, tags.path(), &["update", "--migrations", ""], 3);
+        assert!(values.starts_with("run"), "{shell}: {values:?}");
+    }
+}
+
 /// Without `SB_COMPLETE`, or with it empty or `0`, sb runs as normal.
 #[test]
 fn an_unset_empty_or_zero_variable_runs_sb() {
