@@ -2,7 +2,8 @@
 
 sb writes every root run's record to one file, `/var/log/sb/sb.log`
 (directory root-only, 0700). sb never rotates or prunes it; Saltbox's
-logrotate does (cli-core spec, decision 11 in the capability map).
+logrotate does (cli-core spec, decision 11 in the capability map; the
+maintainer confirmed it on 2026-11-18).
 
 ## Proposed rule (for Saltbox's logrotate role)
 

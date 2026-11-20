@@ -117,7 +117,9 @@ Rust libraries in place of sb-go's internals.
       `/var/log/sb/sb.log`. Saltbox's logrotate, which Saltbox already
       manages, rotates and compresses it (maintainer, 2026-10-30; replaces
       daily files pruned by `max_log_files`). The rule:
-      docs/platform-notes/logrotate.md.
+      docs/platform-notes/logrotate.md. *Confirmed 2026-11-18 (the
+      maintainer): the decision stands. sb ships no rotation of its own;
+      the rule goes in Saltbox's logrotate role.*
     - **What is logged:**
       - one record per run, with a run id and the entry point (command, and
         whether the install script started it);
