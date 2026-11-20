@@ -33,8 +33,13 @@ pub const CHECK_TIMEOUT: Duration = Duration::from_secs(5);
 /// sb-go's limit for each request (its `http.Client` timeout).
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// sb-go's `dockerJobPollInterval`.
+/// sb-go's `dockerJobPollInterval`: the longest wait between two polls.
 pub const POLL_INTERVAL: Duration = Duration::from_secs(5);
+
+/// The wait before the second poll; each wait after it doubles, up to
+/// [`POLL_INTERVAL`] (docker spec, Differences from sb-go: sb-go waits
+/// 5 s from the first, so a job of a second was seen at 5 s).
+pub const FIRST_WAIT: Duration = Duration::from_millis(250);
 
 /// How long sb waits for a start job: the controller's own limit for one
 /// (its default job timeout, docs/platform-notes/docker-controller.md),
@@ -230,6 +235,7 @@ pub struct Controller {
     systemctl: PathBuf,
     check_timeout: Duration,
     request_timeout: Duration,
+    first_wait: Duration,
     poll_interval: Duration,
     body_limit: usize,
     start_limit: Duration,
@@ -265,6 +271,7 @@ impl Controller {
             systemctl: PathBuf::from("systemctl"),
             check_timeout: CHECK_TIMEOUT,
             request_timeout: REQUEST_TIMEOUT,
+            first_wait: FIRST_WAIT,
             poll_interval: POLL_INTERVAL,
             body_limit: BODY_LIMIT,
             start_limit: START_LIMIT,
@@ -321,10 +328,12 @@ impl Controller {
         self
     }
 
-    /// The wait's interval, and how long it waits for a job of either
-    /// action, with no grace after it, instead.
+    /// The wait's interval, every wait the same (the first too), and how
+    /// long it waits for a job of either action, with no grace after it,
+    /// instead.
     #[must_use]
     pub fn with_wait(mut self, interval: Duration, limit: Duration) -> Self {
+        self.first_wait = interval;
         self.poll_interval = interval;
         self.start_limit = limit;
         self.stop_limit = limit;

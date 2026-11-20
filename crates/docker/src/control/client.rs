@@ -65,8 +65,9 @@ impl Controller {
 
     /// Wait for `job` to end (sb-go's `waitForJobCompletion`, for as long
     /// as the controller gives the job and its ending:
-    /// [`Controller::window`]): its status asked at once, then every
-    /// `poll_interval` ([`wait_until`]). Cancelled
+    /// [`Controller::window`]): its status asked at once, then after
+    /// `first_wait`, each wait twice the last up to `poll_interval`
+    /// ([`wait_until`]). Cancelled
     /// by dropping the future (the step's token, `run_until_cancelled`:
     /// <https://docs.rs/tokio-util/0.7.20/tokio_util/sync/struct.CancellationToken.html#method.run_until_cancelled>).
     /// Each status goes to the run log.
@@ -80,7 +81,10 @@ impl Controller {
     pub async fn wait(&self, job: &Job) -> Result<(), ControlError> {
         let url = self.url(&["job_status", job.id()])?;
         let window = self.window(job.action());
-        wait_until(window, self.poll_interval, || self.status(url.clone(), job)).await
+        wait_until(window, self.first_wait, self.poll_interval, || {
+            self.status(url.clone(), job)
+        })
+        .await
     }
 
     /// One poll (sb-go's `getJobStatus`): the job's status, escaped for
@@ -178,7 +182,12 @@ pub(super) enum Polled {
 }
 
 /// The wait's schedule, over `poll` (one status each call): the first at
-/// once, then one `interval` after each answer, the last one when `limit`
+/// once, the second `first` after its answer, then each wait after an
+/// answer twice the one before, up to `interval` (250 ms, 500 ms, 1 s,
+/// 2 s, 4 s, then 5 s: a short job is seen soon after it ends, a long one
+/// asked about every 5 s as sb-go does; a failed poll's wait is `interval`
+/// and the ones after it too; `first` is above zero, or the waits would
+/// stay at zero), the last one when `limit`
 /// has passed since the wait began (the sleep before it cut short), so
 /// a job is asked about up to its limit and no longer (docker spec
 /// decision 12); no sleep after the last. A few failed polls in a row are
@@ -187,9 +196,15 @@ pub(super) enum Polled {
 /// Why not `tokio::time::interval`: its period runs from the tick, where
 /// sb-go's timer starts after each answer. Why not `tokio::time::timeout_at`
 /// around the loop: it would drop a poll in flight at the limit, where the
-/// last poll's own answer ends the wait.
+/// last poll's own answer ends the wait. Why not tower's
+/// `ExponentialBackoff` (in the tree under reqwest,
+/// <https://docs.rs/tower/0.5.3/tower/retry/backoff/index.html>) for the
+/// doubling: its `next_backoff` gives a `Sleep`, not a duration the
+/// deadline can cut, and its count is private, so a failed poll can't put
+/// the wait back to the full interval.
 pub(super) async fn wait_until<F, P>(
     limit: Duration,
+    first: Duration,
     interval: Duration,
     mut poll: F,
 ) -> Result<(), ControlError>
@@ -199,6 +214,7 @@ where
 {
     let deadline = tokio::time::Instant::now() + limit;
     let mut failed = 0;
+    let mut wait = first.min(interval);
     loop {
         let polled = poll().await;
         let now = tokio::time::Instant::now();
@@ -218,9 +234,13 @@ where
                 }
                 let error: &(dyn std::error::Error + 'static) = &err;
                 tracing::warn!(error, failed, "job status poll failed; asking again");
+                // The full interval after a failed poll, so a few in a
+                // row still span decision 10's 10 s.
+                wait = interval;
             }
         }
-        tokio::time::sleep(interval.min(deadline.saturating_duration_since(now))).await;
+        tokio::time::sleep(wait.min(deadline.saturating_duration_since(now))).await;
+        wait = wait.saturating_mul(2).min(interval);
     }
 }
 
@@ -336,7 +356,7 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
-    use crate::control::{POLL_INTERVAL, UNIT, UNIT_FILE};
+    use crate::control::{FIRST_WAIT, POLL_INTERVAL, UNIT, UNIT_FILE};
     use crate::testing::controller::{Answer, FakeController};
 
     const JOB: &str = r#"{"job_id":"job-1","status":"pending"}"#;
@@ -368,6 +388,7 @@ mod tests {
         assert_eq!(c.systemctl, PathBuf::from("systemctl"));
         assert_eq!(c.check_timeout, Duration::from_secs(5));
         assert_eq!(c.request_timeout, Duration::from_secs(10));
+        assert_eq!(c.first_wait, Duration::from_millis(250));
         assert_eq!(c.poll_interval, Duration::from_secs(5));
         assert_eq!(c.body_limit, 1 << 20);
         // The controller's own job limits (decision 12), not sb-go's 60
@@ -946,21 +967,100 @@ mod tests {
         assert_eq!(proxy.seen().len(), 1);
     }
 
+    /// The first waits are short and double up to the interval (docker
+    /// spec, Differences from sb-go): a poll at once, then after 250 ms,
+    /// 500 ms, 1 s, 2 s and 4 s, then every 5 s, the last at the limit.
+    /// So a job done in 0.3 s is seen at 0.75 s, where sb-go's first
+    /// sleep of 5 s showed it at 5 s. On tokio's paused clock.
+    #[tokio::test(start_paused = true)]
+    async fn the_first_waits_are_short_and_double_to_the_interval() {
+        let c = Controller::saltbox().expect("client");
+        let started = tokio::time::Instant::now();
+        let mut asked = Vec::new();
+        let ended = wait_until(
+            Duration::from_secs(30),
+            c.first_wait,
+            c.poll_interval,
+            || {
+                asked.push(started.elapsed().as_millis());
+                async { Ok(Polled::Waiting) }
+            },
+        )
+        .await;
+        assert_eq!(ended, Err(ControlError::Timeout));
+        assert_eq!(
+            asked,
+            [
+                0, 250, 750, 1750, 3750, 7750, 12_750, 17_750, 22_750, 27_750, 30_000
+            ]
+        );
+        let started = tokio::time::Instant::now();
+        let ended = wait_until(
+            c.window(Action::Stop),
+            c.first_wait,
+            c.poll_interval,
+            || {
+                let done = started.elapsed() >= Duration::from_millis(300);
+                async move {
+                    Ok(if done {
+                        Polled::Completed
+                    } else {
+                        Polled::Waiting
+                    })
+                }
+            },
+        )
+        .await;
+        assert_eq!(ended, Ok(()));
+        assert_eq!(started.elapsed(), Duration::from_millis(750));
+    }
+
+    /// A failed poll is asked again after the full interval, as before
+    /// the short first waits: three failing at once still take 10 s to
+    /// end the wait (decision 10), and a good answer after one goes on
+    /// with 5 s waits. On tokio's paused clock.
+    #[tokio::test(start_paused = true)]
+    async fn a_failed_poll_waits_the_full_interval() {
+        let started = tokio::time::Instant::now();
+        let mut asked = Vec::new();
+        let ended = wait_until(Duration::from_secs(60), FIRST_WAIT, POLL_INTERVAL, || {
+            asked.push(started.elapsed().as_millis());
+            async { Err::<Polled, _>(ControlError::StatusCheck(502)) }
+        })
+        .await;
+        assert_eq!(ended, Err(ControlError::StatusCheck(502)));
+        assert_eq!(asked, [0, 5000, 10_000]);
+        let started = tokio::time::Instant::now();
+        let mut asked = Vec::new();
+        let ended = wait_until(Duration::from_secs(12), FIRST_WAIT, POLL_INTERVAL, || {
+            asked.push(started.elapsed().as_millis());
+            let answer = if asked.len() == 2 {
+                Err(ControlError::StatusCheck(502))
+            } else {
+                Ok(Polled::Waiting)
+            };
+            async move { answer }
+        })
+        .await;
+        assert_eq!(ended, Err(ControlError::Timeout));
+        assert_eq!(asked, [0, 250, 5250, 10_250, 12_000]);
+    }
+
     /// A job the controller still runs is waited out to the controller's
     /// own limit for it and the grace for its ending (decision 12): 600 s
-    /// for a start and 300 s for a stop, then 15 s, polled every 5 s from
-    /// the first at once, so 124 and 64 polls, the last at the end, then
-    /// sb-go's timeout. On tokio's paused clock, so the minutes pass at
+    /// for a start and 300 s for a stop, then 15 s, polled at once, then
+    /// after the short first waits (7.75 s in all) every 5 s, so 128 and
+    /// 68 polls, the last at the end, then sb-go's timeout. On tokio's paused clock, so the minutes pass at
     /// once.
     #[tokio::test(start_paused = true)]
     async fn a_long_job_is_waited_out_to_the_controllers_limit() {
         let c = Controller::saltbox().expect("client");
-        for (action, polls) in [(Action::Start, 124), (Action::Stop, 64)] {
+        for (action, polls) in [(Action::Start, 128), (Action::Stop, 68)] {
             let window = c.window(action);
             assert_eq!(window, c.limit(action) + Duration::from_secs(15));
             let started = tokio::time::Instant::now();
             let mut asked = 0;
-            let ended = wait_until(window, POLL_INTERVAL, || {
+            let ended = wait_until(window, FIRST_WAIT, POLL_INTERVAL, || {
                 asked += 1;
                 async { Ok(Polled::Waiting) }
             })
@@ -972,7 +1072,7 @@ mod tests {
         // A start that takes nearly its 600 s still ends done, where
         // sb-go's 60 polls (about 5 minutes) gave up.
         let started = tokio::time::Instant::now();
-        let ended = wait_until(c.window(Action::Start), POLL_INTERVAL, || {
+        let ended = wait_until(c.window(Action::Start), FIRST_WAIT, POLL_INTERVAL, || {
             let at = started.elapsed();
             async move {
                 Ok(if at >= Duration::from_secs(595) {
@@ -983,8 +1083,9 @@ mod tests {
             }
         })
         .await;
+        // The first poll at or past 595 s: 7.75 s, then every 5 s.
         assert_eq!(ended, Ok(()));
-        assert_eq!(started.elapsed(), Duration::from_secs(595));
+        assert_eq!(started.elapsed(), Duration::from_millis(597_750));
     }
 
     /// The controller's own ending is seen: polls that take a second each
@@ -1004,14 +1105,19 @@ mod tests {
                 error: Some("context deadline exceeded".to_string()),
             }],
         };
-        let ended = wait_until(c.window(Action::Start), POLL_INTERVAL, || async {
-            tokio::time::sleep(Duration::from_secs(1)).await;
-            Ok(if started.elapsed() >= Duration::from_secs(606) {
-                Polled::Failed(cancelled())
-            } else {
-                Polled::Waiting
-            })
-        })
+        let ended = wait_until(
+            c.window(Action::Start),
+            FIRST_WAIT,
+            POLL_INTERVAL,
+            || async {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                Ok(if started.elapsed() >= Duration::from_secs(606) {
+                    Polled::Failed(cancelled())
+                } else {
+                    Polled::Waiting
+                })
+            },
+        )
         .await;
         assert_eq!(ended, Err(ControlError::JobFailed(cancelled())));
     }
@@ -1024,7 +1130,8 @@ mod tests {
         let limit = Duration::from_secs(60);
         let started = tokio::time::Instant::now();
         let mut asked = Vec::new();
-        let ended = wait_until(limit, POLL_INTERVAL, || {
+        // Every wait the interval, so the polls fall on its steps.
+        let ended = wait_until(limit, POLL_INTERVAL, POLL_INTERVAL, || {
             asked.push(started.elapsed().as_secs());
             async {
                 tokio::time::sleep(Duration::from_secs(4)).await;
@@ -1042,20 +1149,25 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn the_last_poll_at_the_limit_ends_the_wait_with_its_own_error() {
         let mut asked = 0;
-        let ended = wait_until(Duration::from_secs(10), POLL_INTERVAL, || {
-            asked += 1;
-            let answer = if asked == 3 {
-                Err(ControlError::StatusCheck(502))
-            } else {
-                Ok(Polled::Waiting)
-            };
-            async move { answer }
-        })
+        let ended = wait_until(
+            Duration::from_secs(10),
+            POLL_INTERVAL,
+            POLL_INTERVAL,
+            || {
+                asked += 1;
+                let answer = if asked == 3 {
+                    Err(ControlError::StatusCheck(502))
+                } else {
+                    Ok(Polled::Waiting)
+                };
+                async move { answer }
+            },
+        )
         .await;
         assert_eq!(ended, Err(ControlError::StatusCheck(502)));
         assert_eq!(asked, 3);
         let mut asked = 0;
-        let ended = wait_until(Duration::ZERO, POLL_INTERVAL, || {
+        let ended = wait_until(Duration::ZERO, FIRST_WAIT, POLL_INTERVAL, || {
             asked += 1;
             async { Ok(Polled::Waiting) }
         })

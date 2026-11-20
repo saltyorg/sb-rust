@@ -561,8 +561,9 @@ no `--ignore`); a failed stop starts nothing.
     failed with status code: N"; "decode Docker controller response:
     <cause>"; "docker controller response is missing job ID".
 - **Wait:** `GET <base>/job_status/<id>` (the ID one path segment,
-  escaped) at once, then every 5 s for as long as the controller gives
-  the job: its own limit, 600 s for a start and 300 s for a stop (its
+  escaped) at once, then after 250 ms, each wait twice the last up to
+  5 s (250 ms, 500 ms, 1 s, 2 s, 4 s, then every 5 s; each wait runs
+  from the last answer), for as long as the controller gives the job: its own limit, 600 s for a start and 300 s for a stop (its
   default job timeouts; decision 12), then 15 s more for its own ending.
   At its deadline the controller cancels the job and lists the containers
   again (up to 5 s) before the job reads `failed`, and sb's last poll
@@ -589,7 +590,8 @@ no `--ignore`); a failed stop starts nothing.
   - A failed poll (a transport error or timeout, reqwest's cause; "job
     status check failed with status code: N"; "decode job status
     response: <cause>"; "job status response is missing status") is
-    asked again after the usual 5 s; three failed polls in a row
+    asked again after the usual 5 s, however short the schedule's next
+    wait would be; three failed polls in a row
     (`FAILED_POLLS_IN_A_ROW`) end the wait with the last one's text
     (decision 10). Failed polls don't lengthen the wait: a failed poll
     that is the last before the limit ends it with its text.
@@ -655,6 +657,11 @@ no `--ignore`); a failed stop starts nothing.
 - The wait lasts as long as the controller's own limit for the job,
   600 s for a start and 300 s for a stop (decision 12); sb-go gives up
   after 60 polls, about 5 minutes.
+- The first waits between polls are short and double up to sb-go's 5 s
+  (250 ms, 500 ms, 1 s, 2 s, 4 s; maintainer, 2026-11-20): a stop that
+  takes 0.3 s ends at 0.75 s, a restart of two such jobs at about 1.5 s,
+  where sb-go's first wait of 5 s made them 5 s and 10 s. It costs at
+  most four more polls per job.
 - sb's runner look and failure block, not sb-go's spinner and its outer
   `error: ...` wrapping; the texts above are the innermost cause.
 - `SB_DOCKER_CONTROLLER_URL` and `SB_DOCKER_CONTROLLER_UNIT` replace the
@@ -751,7 +758,8 @@ overrides.
 3. Every request and wait answer and failure above has a test.
    `Controller::saltbox()`'s values are pinned (5 s check, 10 s request,
    5 s interval, 1 MiB, the 600 s and 300 s limits, the first poll at
-   once).
+   once and the second after 250 ms); the schedule is tested on tokio's
+   paused clock.
 4. `--ignore` reaches only the stop, encoded; restart stops before it
    starts and starts nothing after a failed stop.
 5. No proxy is used for the controller with `HTTP_PROXY`, `http_proxy`
@@ -839,12 +847,13 @@ and what sb would do with it. None is a requirement: sb keeps working
 against today's API.
 
 - **Streamed per-container progress or events:** today sb polls
-  `job_status` every 5 s and sees only `pending`, `running` and the final
-  answer, so a 10-minute start shows one spinner with no sign of which
-  container it is on. A stream of per-container events (Server-Sent
+  `job_status` (every 5 s once past its short first waits) and sees
+  only `pending`, `running` and the final answer, so a 10-minute start
+  shows one spinner with no sign of which container it is on. A stream of per-container events (Server-Sent
   Events or chunked JSON lines: "plex: starting", "plex: healthy",
   "radarr: blocked by plex") would let sb show each container as a
-  sub-step of the wait, with no polling and no 5 s lag on the end.
+  sub-step of the wait, with no polling and no lag of up to 5 s on the
+  end.
 - **Outcomes for a job that never ran:** v1.0.8's `outcomes`, `started`,
   `stopped` and `skipped` already cover every job that ran, done or
   failed: sb names a failed job's containers from them (decision 11),
