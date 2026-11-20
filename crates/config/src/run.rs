@@ -445,6 +445,32 @@ fn shown(file: File) -> String {
 /// [`FileError`]: the file isn't there, or it or its schema can't be read
 /// or loaded.
 pub fn check_file(settings: &Settings, file: File) -> Result<Checked, FileError> {
+    check_file_parsed(settings, file, None)
+}
+
+/// A text as [`parse_and_check`] parses it: through the pre-pass and,
+/// where the caller's stack holds its tree (`yaml::SHALLOW`), loaded.
+pub(crate) struct Parse {
+    pub(crate) prepared: Result<yaml::Prepared, Vec<Issue>>,
+    /// `parse::load`'s answer; none when the tree is deeper.
+    pub(crate) loaded: Option<Result<saphyr::MarkedYamlOwned, Vec<Issue>>>,
+}
+
+/// A file's text and its [`Parse`]: motd.yml's migration hands its parse
+/// of a file it keeps to the file's check ([`check_file_parsed`]), which
+/// reads the file again and uses it when the text is the same.
+pub(crate) struct Parsed {
+    pub(crate) text: String,
+    pub(crate) parse: Parse,
+}
+
+/// [`check_file`], with `parsed` used instead of a parse of its own when
+/// its text is the file's.
+fn check_file_parsed(
+    settings: &Settings,
+    file: File,
+    parsed: Option<Parsed>,
+) -> Result<Checked, FileError> {
     let path = settings.root.join(file.path);
     let read = if file.capped {
         read_small
@@ -480,7 +506,16 @@ pub fn check_file(settings: &Settings, file: File) -> Result<Checked, FileError>
         }
         None => None,
     };
-    let checked = parse_and_check(settings, file, &text, rules.as_ref())?;
+    let checked = match parsed {
+        Some(parsed) if parsed.text == text => check_parsed(
+            settings,
+            file,
+            parsed.parse.prepared,
+            parsed.parse.loaded,
+            rules.as_ref(),
+        )?,
+        _ => parse_and_check(settings, file, &text, rules.as_ref())?,
+    };
     tracing::info!(
         file = file.path,
         issues = checked.report.issues.len(),
@@ -500,6 +535,18 @@ pub(crate) fn parse_and_check(
     text: &str,
     rules: Option<&schema::Rules>,
 ) -> Result<Checked, FileError> {
+    check_parsed(settings, file, parse::prepare(file.path, text), None, rules)
+}
+
+/// [`parse_and_check`] from the text's pre-pass, `prepared`, and its
+/// load when made already.
+fn check_parsed(
+    settings: &Settings,
+    file: File,
+    prepared: Result<yaml::Prepared, Vec<Issue>>,
+    loaded: Option<Result<saphyr::MarkedYamlOwned, Vec<Issue>>>,
+    rules: Option<&schema::Rules>,
+) -> Result<Checked, FileError> {
     let only = |issues: Vec<Issue>| Checked {
         report: Report {
             issues,
@@ -507,13 +554,16 @@ pub(crate) fn parse_and_check(
         },
         tree: None,
     };
-    let prepared = match parse::prepare(file.path, text) {
+    let prepared = match prepared {
         Ok(prepared) => prepared,
         Err(issues) => return Ok(only(issues)),
     };
     let validators = Saltbox::with_zoneinfo(settings.zoneinfo.clone());
     let checked = yaml::with_stack(prepared.depth(), || {
-        let root = parse::load(file.path, &prepared)?;
+        let root = match loaded {
+            Some(loaded) => loaded?,
+            None => parse::load(file.path, &prepared)?,
+        };
         let Some(rules) = rules else {
             return Ok(None);
         };
@@ -552,7 +602,7 @@ pub async fn validate_file(
     file: File,
     checks: Checks,
 ) -> anyhow::Result<()> {
-    validate_checked(step, settings, file, checks, None).await
+    validate_checked(step, settings, file, checks, None, None).await
 }
 
 /// [`validate_file`], its outcome recorded in `results` when given.
@@ -562,6 +612,7 @@ async fn validate_checked(
     file: File,
     checks: Checks,
     results: Option<&RefCell<Results>>,
+    parsed: Option<Parsed>,
 ) -> anyhow::Result<()> {
     let record = |result: FileResult| {
         if let Some(results) = results {
@@ -575,7 +626,7 @@ async fn validate_checked(
         issues: Vec::new(),
         warnings: Vec::new(),
     };
-    let checked = match check_file(settings, file) {
+    let checked = match check_file_parsed(settings, file, parsed) {
         Ok(checked) => checked,
         Err(skipped @ FileError::Skipped(_)) => {
             record(ended(Outcome::Skipped, Some(skipped.to_string())));
@@ -683,8 +734,9 @@ async fn validate_file_into(
     backups: &Path,
     results: Option<&RefCell<Results>>,
 ) -> anyhow::Result<()> {
+    let mut parsed = None;
     if file.path == crate::migrate::MOTD.path {
-        match crate::migrate::motd(settings, backups) {
+        match crate::migrate::motd(settings, backups, &mut parsed) {
             Ok(Some(backup)) => step.info(format!(
                 "Migrated motd.yml to the current format (backup: {})",
                 escape_controls(&backup.display().to_string())
@@ -696,7 +748,7 @@ async fn validate_file_into(
             }
         }
     }
-    validate_checked(step, settings, file, checks, results).await
+    validate_checked(step, settings, file, checks, results, parsed).await
 }
 
 /// A check under `step`, ended early when the step is cancelled (Ctrl-C,
@@ -1806,6 +1858,50 @@ mod tests {
         assert_eq!(broken.issue_count(), 1, "{:?}", broken.report.issues);
         assert!(broken.report.warnings.is_empty() && broken.report.requests.is_empty());
         assert_eq!(fake.seen(), [] as [crate::testing::Seen; 0]);
+    }
+
+    /// motd.yml's check uses the migration's parse of the same text, and
+    /// parses the file itself when the text differs: either way the
+    /// check is the file's.
+    #[test]
+    fn check_file_uses_a_parse_of_the_same_text_only() {
+        let root = saltbox_root("valid").expect("root");
+        let fake = Fake::start().expect("fake");
+        let settings = settings_on(root.path(), &fake);
+        let motd = file("motd.yml");
+        let parsed_of = |text: &str| {
+            let prepared = parse::prepare(motd.path, text);
+            let loaded = prepared
+                .as_ref()
+                .ok()
+                .map(|prepared| parse::load(motd.path, prepared));
+            Parsed {
+                text: text.to_string(),
+                parse: Parse { prepared, loaded },
+            }
+        };
+        let issues = |checked: &Checked| format!("{:?}", checked.report.issues);
+        write(
+            root.path(),
+            "motd.yml",
+            "colors:\n  text:\n    label: nope\n",
+        );
+        let own = check_file(&settings, motd).expect("checked");
+        assert_eq!(own.issue_count(), 1, "{}", issues(&own));
+        let text = std::fs::read_to_string(root.path().join("motd.yml")).expect("read");
+        let same = check_file_parsed(&settings, motd, Some(parsed_of(&text))).expect("checked");
+        assert_eq!(issues(&same), issues(&own));
+        assert!(same.tree.is_some());
+        // A parse of another text is set aside, a broken one included.
+        let other = check_file_parsed(&settings, motd, Some(parsed_of("a: [\n"))).expect("checked");
+        assert_eq!(issues(&other), issues(&own));
+        let other = check_file_parsed(&settings, motd, Some(parsed_of("{}\n"))).expect("checked");
+        assert_eq!(issues(&other), issues(&own));
+        // A parse without its load (a deep tree's) is loaded here.
+        let mut unloaded = parsed_of(&text);
+        unloaded.parse.loaded = None;
+        let unloaded = check_file_parsed(&settings, motd, Some(unloaded)).expect("checked");
+        assert_eq!(issues(&unloaded), issues(&own));
     }
 
     /// `file` through `validate_file` with `checks`, under its own

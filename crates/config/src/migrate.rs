@@ -45,7 +45,7 @@ use rustix::io::Errno;
 use sb_cli_core::config::{MAX_FILE_BYTES, yaml};
 
 use crate::issue::escape_controls;
-use crate::run::{self, FILES, File, Settings};
+use crate::run::{self, FILES, File, Parse, Parsed, Settings};
 use crate::tree::{self, Data, Node};
 use crate::{parse, schema};
 
@@ -110,31 +110,44 @@ pub(crate) enum Plan {
 /// 2026-11-18: about 3 M instructions, 13% of validate-config). The
 /// decision is [`plan_checked`]'s: a file it would take further has such
 /// a section in the plain tree too, whose shape the secret paths don't
-/// change (they only redact an issue's text).
+/// change (they only redact an issue's text). For a current file, the
+/// parse the decision made comes too, for the file's check.
 #[must_use]
-pub(crate) fn plan(settings: &Settings, text: &str) -> Plan {
-    if !lists_apps(text) {
-        return Plan::Current;
+pub(crate) fn plan(settings: &Settings, text: &str) -> (Plan, Option<Parse>) {
+    let (lists, parse) = lists_apps(text);
+    if !lists {
+        return (Plan::Current, Some(parse));
     }
-    plan_checked(settings, text)
+    (plan_checked(settings, text), None)
 }
 
 /// Whether `text` parses into a tree with an app section holding a
 /// non-empty list, the old format's mark: [`run::parse_and_check`]'s
 /// steps without a schema, on the YAML reader's stack (`yaml::with_stack`),
 /// where the tree is dropped too. A file that doesn't parse, or whose
-/// reader can't start, has none, as `plan_checked` reads it.
-fn lists_apps(text: &str) -> bool {
-    let Ok(prepared) = parse::prepare(MOTD.path, text) else {
-        return false;
+/// reader can't start, has none, as `plan_checked` reads it. Its pre-pass
+/// and load come back for the check, the load only where the caller's
+/// stack holds its tree.
+fn lists_apps(text: &str) -> (bool, Parse) {
+    let prepared = parse::prepare(MOTD.path, text);
+    let lists = |root: &saphyr::MarkedYamlOwned| {
+        tree::build(MOTD.path, root, &|_| false).is_ok_and(|tree| !old_sections(&tree).is_empty())
     };
-    yaml::with_stack(prepared.depth(), || {
-        parse::load(MOTD.path, &prepared)
-            .ok()
-            .and_then(|root| tree::build(MOTD.path, &root, &|_| false).ok())
-            .is_some_and(|tree| !old_sections(&tree).is_empty())
-    })
-    .unwrap_or(false)
+    let (lists, loaded) = match &prepared {
+        Err(_) => (false, None),
+        Ok(prepared) if prepared.depth() <= yaml::SHALLOW => {
+            let loaded = parse::load(MOTD.path, prepared);
+            (loaded.as_ref().is_ok_and(lists), Some(loaded))
+        }
+        Ok(prepared) => {
+            let lists = yaml::with_stack(prepared.depth(), || {
+                parse::load(MOTD.path, prepared).is_ok_and(|root| lists(&root))
+            })
+            .unwrap_or(false);
+            (lists, None)
+        }
+    };
+    (lists, Parse { prepared, loaded })
 }
 
 /// The plan for `text` with every check: the older schema's, and the
@@ -313,18 +326,23 @@ fn same_values(old: &Node, new: &Node, sections: &[&str]) -> bool {
 /// the original copied into `backups`, then the new text written in its
 /// place atomically, with the original's owner and mode. The backup's
 /// path when it was migrated; none when there is no file, it isn't a
-/// regular file, or the plan keeps it (the reason logged).
+/// regular file, or the plan keeps it (the reason logged). A file in the
+/// current format leaves its text and parse in `parsed`, for its check.
 ///
 /// # Errors
 ///
 /// The text shown when the file was to be migrated and the backup or the
 /// write failed, or the file changed meanwhile; the original is then
 /// unchanged.
-pub fn motd(settings: &Settings, backups: &Path) -> Result<Option<PathBuf>, String> {
+pub(crate) fn motd(
+    settings: &Settings,
+    backups: &Path,
+    parsed: &mut Option<Parsed>,
+) -> Result<Option<PathBuf>, String> {
     let stamp = jiff::Timestamp::now()
         .strftime("%Y%m%dT%H%M%SZ")
         .to_string();
-    motd_stamped(settings, backups, &stamp)
+    motd_stamped(settings, backups, &stamp, parsed)
 }
 
 /// [`motd`] with the backup's stamp given (the tests').
@@ -332,6 +350,7 @@ fn motd_stamped(
     settings: &Settings,
     backups: &Path,
     stamp: &str,
+    parsed: &mut Option<Parsed>,
 ) -> Result<Option<PathBuf>, String> {
     // The Saltbox root as one handle, not followed through a link: every
     // step on motd.yml goes through it, so the folder can't be swapped
@@ -349,12 +368,18 @@ fn motd_stamped(
         return Ok(None);
     };
     let new_text = match plan(settings, &original.text) {
-        Plan::Current => return Ok(None),
-        Plan::Kept(why) => {
+        (Plan::Current, current) => {
+            *parsed = current.map(|parse| Parsed {
+                text: original.text,
+                parse,
+            });
+            return Ok(None);
+        }
+        (Plan::Kept(why), _) => {
             tracing::info!(why, "motd.yml in the older format, not migrated");
             return Ok(None);
         }
-        Plan::Migrate(new_text) => new_text,
+        (Plan::Migrate(new_text), _) => new_text,
     };
     let backup = back_up(&original, backups, stamp)?;
     let path = settings.root.join(MOTD.path);
@@ -648,9 +673,52 @@ mod tests {
         }
     }
 
+    /// A current motd.yml's text and parse go to its check; a migrated
+    /// one's don't (its check reads the new text), nor do a file's that
+    /// the plan keeps in the older format.
+    #[test]
+    fn a_current_files_parse_goes_to_its_check() {
+        let current = "plex:\n  enabled: true\n  instances:\n    - name: Plex\n      url: http://plex:32400\n      token: t\n";
+        let root = root(current);
+        let backups = root.path().join("backups");
+        let mut parsed = None;
+        assert_eq!(
+            motd_stamped(&settings(root.path()), &backups, "s", &mut parsed),
+            Ok(None)
+        );
+        let parsed = parsed.expect("handed on");
+        assert_eq!(parsed.text, current);
+        assert!(matches!(parsed.parse.loaded, Some(Ok(_))));
+        // Block mappings: saphyr's flow level stops at 255.
+        let mut deep = String::new();
+        for level in 0..=yaml::SHALLOW {
+            deep.push_str(&" ".repeat(level));
+            deep.push_str("k:\n");
+        }
+        let root = self::root(&deep);
+        let mut parsed = None;
+        assert_eq!(
+            motd_stamped(&settings(root.path()), &backups, "s", &mut parsed),
+            Ok(None)
+        );
+        let parsed = parsed.expect("handed on");
+        assert!(parsed.parse.prepared.is_ok() && parsed.parse.loaded.is_none());
+        for kept in [T1, "plex:\n  - name: Plex\n"] {
+            let root = self::root(kept);
+            let mut parsed = None;
+            let _ = motd_stamped(
+                &settings(root.path()),
+                &root.path().join("backups"),
+                "s",
+                &mut parsed,
+            );
+            assert!(parsed.is_none(), "{kept:?}");
+        }
+    }
+
     fn plan_of(motd: &str) -> Plan {
         let root = root(motd);
-        plan(&settings(root.path()), motd)
+        plan(&settings(root.path()), motd).0
     }
 
     /// A file as Saltbox's list-era template wrote it (lists with url and
@@ -755,7 +823,7 @@ mod tests {
         .expect("schema");
         let old = "plex:\n  - name: Plex\n    url: http://plex:32400\n    token: t\n";
         assert_eq!(
-            plan(&settings(root.path()), old),
+            plan(&settings(root.path()), old).0,
             Plan::Kept("the rewritten file doesn't pass the current schema")
         );
         fs::write(
@@ -764,7 +832,7 @@ mod tests {
         )
         .expect("schema");
         assert_eq!(
-            plan(&settings(root.path()), old),
+            plan(&settings(root.path()), old).0,
             Plan::Kept("the current schema doesn't load")
         );
         // A document indented as a whole: its keys aren't at column 1.
@@ -831,12 +899,12 @@ mod tests {
         let settings = settings(root.path());
         for text in texts {
             assert_eq!(
-                plan(&settings, text),
+                plan(&settings, text).0,
                 plan_checked(&settings, text),
                 "{text:?}"
             );
             assert_eq!(
-                lists_apps(text),
+                lists_apps(text).0,
                 plan_checked(&settings, text) != Plan::Current,
                 "{text:?}"
             );
@@ -884,8 +952,8 @@ mod tests {
         assert_eq!(default_backups(), PathBuf::new());
         assert_eq!(BACKUPS, "/opt/saltbox/backups");
         let root = root(T1);
-        let err =
-            motd_stamped(&settings(root.path()), &default_backups(), "s").expect_err("no folder");
+        let err = motd_stamped(&settings(root.path()), &default_backups(), "s", &mut None)
+            .expect_err("no folder");
         assert!(err.ends_with("no parent folder"), "{err}");
         assert_eq!(
             fs::read_to_string(root.path().join("motd.yml")).expect("read"),
@@ -894,7 +962,7 @@ mod tests {
         let mut host = settings(root.path());
         host.root = PathBuf::from("/srv/git/saltbox");
         assert_eq!(
-            motd_stamped(&host, &root.path().join("backups"), "s"),
+            motd_stamped(&host, &root.path().join("backups"), "s", &mut None),
             Ok(None)
         );
     }
@@ -951,9 +1019,14 @@ mod tests {
         };
         let inode = fs::metadata(&path).expect("meta").ino();
         let backups = root.path().join("opt/saltbox/backups");
-        let backup = motd_stamped(&settings(root.path()), &backups, "20261115T120000Z")
-            .expect("migrated")
-            .expect("a backup");
+        let backup = motd_stamped(
+            &settings(root.path()),
+            &backups,
+            "20261115T120000Z",
+            &mut None,
+        )
+        .expect("migrated")
+        .expect("a backup");
         assert_eq!(backup, backups.join("motd.yml.20261115T120000Z"));
         assert_eq!(fs::read_to_string(&backup).expect("backup"), T1);
         let saltbox = root.path().join("opt/saltbox");
@@ -989,7 +1062,7 @@ mod tests {
         left.sort();
         assert_eq!(left, ["motd.yml", "opt", "schema"]);
         // Now current: a second run changes nothing.
-        assert_eq!(motd(&settings(root.path()), &backups), Ok(None));
+        assert_eq!(motd(&settings(root.path()), &backups, &mut None), Ok(None));
         assert_eq!(fs::read_dir(&backups).expect("list").count(), 1);
     }
 
@@ -1001,7 +1074,7 @@ mod tests {
         let path = root.path().join("motd.yml");
         fs::set_permissions(&path, fs::Permissions::from_mode(0o4640)).expect("chmod");
         let backups = root.path().join("backups");
-        let backup = motd_stamped(&settings(root.path()), &backups, "s")
+        let backup = motd_stamped(&settings(root.path()), &backups, "s", &mut None)
             .expect("migrated")
             .expect("a backup");
         for made in [&backup, &path] {
@@ -1021,24 +1094,24 @@ mod tests {
         let backups = root.path().join("backups");
         let settings = settings(root.path());
         fs::remove_file(&path).expect("remove");
-        assert_eq!(motd(&settings, &backups), Ok(None));
+        assert_eq!(motd(&settings, &backups, &mut None), Ok(None));
         // An old-format file of the test's own, told apart from motd.yml.
         let elsewhere = root.path().join("elsewhere.yml");
         let other = format!("{T1}# elsewhere\n");
         fs::write(&elsewhere, &other).expect("write");
         std::os::unix::fs::symlink(&elsewhere, &path).expect("link");
-        assert_eq!(motd(&settings, &backups), Ok(None));
+        assert_eq!(motd(&settings, &backups, &mut None), Ok(None));
         fs::remove_file(&path).expect("remove");
         fs::write(&path, "plex:\n  - name: Plex\n").expect("write");
-        assert_eq!(motd(&settings, &backups), Ok(None));
+        assert_eq!(motd(&settings, &backups, &mut None), Ok(None));
         fs::write(&path, vec![b'#'; MAX_FILE_BYTES + 1]).expect("write");
-        assert_eq!(motd(&settings, &backups), Ok(None));
+        assert_eq!(motd(&settings, &backups, &mut None), Ok(None));
         fs::write(&path, b"plex: \xff\n").expect("write");
-        assert_eq!(motd(&settings, &backups), Ok(None));
+        assert_eq!(motd(&settings, &backups, &mut None), Ok(None));
         assert!(!backups.exists());
         fs::write(&path, T1).expect("write");
         fs::write(&backups, "").expect("a file in the way");
-        let err = motd(&settings, &backups).expect_err("not a folder");
+        let err = motd(&settings, &backups, &mut None).expect_err("not a folder");
         assert!(
             err.ends_with("backups: a link or not a folder, or a link on its path; not followed"),
             "{err}"
@@ -1047,7 +1120,7 @@ mod tests {
         let target = root.path().join("target");
         fs::create_dir(&target).expect("dir");
         std::os::unix::fs::symlink(&target, &backups).expect("link");
-        let err = motd(&settings, &backups).expect_err("a link");
+        let err = motd(&settings, &backups, &mut None).expect_err("a link");
         assert!(
             err.ends_with("backups: a link or not a folder, or a link on its path; not followed"),
             "{err}"
@@ -1056,12 +1129,12 @@ mod tests {
         fs::remove_file(&backups).expect("remove");
         fs::create_dir(&backups).expect("dir");
         fs::set_permissions(&backups, fs::Permissions::from_mode(0o777)).expect("chmod");
-        let err = motd(&settings, &backups).expect_err("writable by others");
+        let err = motd(&settings, &backups, &mut None).expect_err("writable by others");
         assert!(err.contains("writable by others; not used"), "{err}");
         fs::set_permissions(&backups, fs::Permissions::from_mode(0o755)).expect("chmod");
         if as_root(&path) {
             std::os::unix::fs::chown(&backups, Some(4321), None).expect("chown");
-            let err = motd(&settings, &backups).expect_err("someone else's");
+            let err = motd(&settings, &backups, &mut None).expect_err("someone else's");
             assert!(
                 err.contains("not owned by root or motd.yml's owner"),
                 "{err}"
@@ -1072,7 +1145,7 @@ mod tests {
         // The backup's name already taken, by a link to a file in the
         // test's folder: refused, the link's target untouched.
         std::os::unix::fs::symlink(&elsewhere, backups.join("motd.yml.taken")).expect("link");
-        let err = motd_stamped(&settings, &backups, "taken").expect_err("taken");
+        let err = motd_stamped(&settings, &backups, "taken", &mut None).expect_err("taken");
         assert!(err.contains("File exists"), "{err}");
         assert_eq!(fs::read_to_string(&path).expect("read"), T1);
         assert_eq!(fs::read_to_string(&elsewhere).expect("read"), other);
@@ -1152,12 +1225,14 @@ mod tests {
         let backups = saltbox.path().join("backups");
         fs::create_dir(&backups).expect("dir");
         targets.push(link(&backups.join("motd.yml.b"), "backup"));
-        let err = motd_stamped(&settings(saltbox.path()), &backups, "b").expect_err("refused");
+        let err =
+            motd_stamped(&settings(saltbox.path()), &backups, "b", &mut None).expect_err("refused");
         assert!(err.contains("File exists"), "{err}");
         // The backups folder.
         let elsewhere = saltbox.path().join("elsewhere");
         targets.push(link(&elsewhere, "folder"));
-        let err = motd_stamped(&settings(saltbox.path()), &elsewhere, "c").expect_err("refused");
+        let err = motd_stamped(&settings(saltbox.path()), &elsewhere, "c", &mut None)
+            .expect_err("refused");
         assert!(
             err.ends_with("a link or not a folder, or a link on its path; not followed"),
             "{err}"
@@ -1171,7 +1246,7 @@ mod tests {
         fs::remove_file(other.path().join("motd.yml")).expect("remove");
         targets.push(link(&other.path().join("motd.yml"), "motd.yml"));
         assert_eq!(
-            motd_stamped(&settings(other.path()), &backups, "d"),
+            motd_stamped(&settings(other.path()), &backups, "d", &mut None),
             Ok(None)
         );
         // The Saltbox root.
@@ -1179,22 +1254,30 @@ mod tests {
         targets.push(link(&linked, "saltbox"));
         let mut through_link = settings(saltbox.path());
         through_link.root.clone_from(&linked);
-        assert_eq!(motd_stamped(&through_link, &backups, "e"), Ok(None));
+        assert_eq!(
+            motd_stamped(&through_link, &backups, "e", &mut None),
+            Ok(None)
+        );
         // A link above the backups folder, and above the Saltbox root, to
         // a real folder of the test's own: refused, nothing made there.
         let real = place.path().join("real");
         fs::create_dir(&real).expect("dir");
         let up = place.path().join("up");
         std::os::unix::fs::symlink(&real, &up).expect("link");
-        let err =
-            motd_stamped(&settings(saltbox.path()), &up.join("backups"), "f").expect_err("refused");
+        let err = motd_stamped(
+            &settings(saltbox.path()),
+            &up.join("backups"),
+            "f",
+            &mut None,
+        )
+        .expect_err("refused");
         assert!(err.contains("a link on its path; not followed"), "{err}");
         let copy = real.join("saltbox");
         fs::create_dir(&copy).expect("dir");
         fs::write(copy.join("motd.yml"), T1).expect("write");
         let mut above = settings(saltbox.path());
         above.root = up.join("saltbox");
-        assert_eq!(motd_stamped(&above, &backups, "g"), Ok(None));
+        assert_eq!(motd_stamped(&above, &backups, "g", &mut None), Ok(None));
         let mut made: Vec<String> = fs::read_dir(&real)
             .expect("list")
             .map(|entry| {
@@ -1229,7 +1312,7 @@ mod tests {
         let backups = place.path().join("backups");
         let mut through_link = settings(target.path());
         through_link.root.clone_from(&linked);
-        assert_eq!(motd(&through_link, &backups), Ok(None));
+        assert_eq!(motd(&through_link, &backups, &mut None), Ok(None));
         assert_eq!(
             fs::read_to_string(target.path().join("motd.yml")).expect("read"),
             T1
@@ -1237,7 +1320,7 @@ mod tests {
         assert!(!backups.exists());
         let root = root(T1);
         fs::hard_link(root.path().join("motd.yml"), root.path().join("other.yml")).expect("link");
-        assert_eq!(motd(&settings(root.path()), &backups), Ok(None));
+        assert_eq!(motd(&settings(root.path()), &backups, &mut None), Ok(None));
         assert_eq!(
             fs::read_to_string(root.path().join("motd.yml")).expect("read"),
             T1
