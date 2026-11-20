@@ -375,7 +375,15 @@ To discuss with the maintainer once every module is done, not before:
   figures came from older hardware.
 - **Release channels and the repository** (decided 2026-11-18, [release
   spec](release.md), "Release channels"). Releases come from
-  saltyorg/sb-rust from 1.0.0, with `1.0.0-rc.N` prereleases.
+  saltyorg/sb-rust from 1.0.0, with `1.0.0-rc.N` prereleases for
+  testing (release spec, decision 14).
+  - sb's self-update and the install script fetch from sb-rust. sb-go
+    gets a final release whose self-update fetches sb-rust's newest
+    release, once sb-rust is declared production-ready: sb-go's change.
+  - CI (GitHub Actions in saltyorg/sb-rust) runs `check.sh task` on
+    every push and pull request on 22.04, 24.04 and 26.04. A release
+    tag runs `check.sh full` and the by-hand container suites, then
+    builds and publishes.
   - The channel is baked in at build time (`SB_CHANNEL`: `release`,
     `beta` or `none`), with `--channel` to switch once.
   - amd64 and arm64 binaries are published, each as a plain and a

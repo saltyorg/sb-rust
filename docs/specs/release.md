@@ -654,7 +654,15 @@ No test reaches the network or replaces an installed sb.
     maintainer, 2026-11-18, settling D-Q3): `SB_CHANNEL`
     `release|beta|none`, unset `none`; `release` follows stable releases
     and the plain asset, `beta` every release and the `_beta` asset;
-    `--channel` switches once ("Release channels").
+    `--channel` switches once ("Release channels"). Versions start at
+    `1.0.0`, with `1.0.0-rc.N` prereleases for testing. sb's self-update
+    and install.sh fetch from saltyorg/sb-rust (assumption 2); sb-go
+    gets a final release that fetches sb-rust's newest release once
+    sb-rust is declared production-ready (Known limits). CI in
+    saltyorg/sb-rust runs `check.sh task` on every push and pull request
+    on 22.04, 24.04 and 26.04; a release tag runs `check.sh full` and
+    the by-hand container suites, then builds and publishes ("Release
+    channels", CI).
 15. **term-ui's confirm is built here** (term-ui decision 1).
 
 ## Known limits
