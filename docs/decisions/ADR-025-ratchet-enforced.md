@@ -128,3 +128,21 @@ every run:
   `check.sh full`. Raising a floor or lowering the ceiling, as a change
   makes room, is a tightening and needs no ADR. Lowering a floor,
   raising the ceiling, or widening a tolerance needs one.
+
+## Amendments
+
+- **2026-11-20, the size ceiling lowered** (the maintainer's decision of
+  2026-11-20: cut size at no runtime cost, then lower the ratchet).
+  - **Why:** main's production binary had grown to 21,712,352 bytes,
+    18,496 above the ceiling, inside the 5% tolerance.
+  - **The cut:** bollard's and hyper's client compiled in sb-docker
+    alone (ADR-026's amendment) took the binary to 21,031,072 bytes,
+    with no command's instruction count higher.
+  - **The new ceiling:** 21,031,072 bytes, measured as `check.sh full`
+    measures it: the production glibc build through cross in
+    `build/Dockerfile`'s image, then `stat`.
+  - **What fails:** the gate now fails past 22,082,625 bytes, the new
+    ceiling plus 5%. The tolerance and the hard ceiling (45,711,520
+    bytes) are unchanged.
+  - **Needs no ADR:** this is a tightening, recorded here so the
+    ceiling's history stays in one place.

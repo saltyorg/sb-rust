@@ -97,7 +97,7 @@ SIZE_MAX_BYTES=45711520 # production glibc binary, at most sb-go's size
 PROJECT_LINES_MIN=98.40     # % of the lines under crates/ covered
 PROJECT_FUNCTIONS_MIN=97.66 # % of the functions under crates/ covered
 PROJECT_COVERAGE_TOLERANCE_MAX=0.5 # percentage points below a coverage floor
-SIZE_RATCHET_MAX_BYTES=21693856 # production glibc binary
+SIZE_RATCHET_MAX_BYTES=21031072 # production glibc binary
 SIZE_TOLERANCE_MAX_PCT=5    # % above the size ratchet
 # The releases the production binary must run on: the host spec's runtime
 # list, sb-host's SUPPORTED_RUNTIME_RELEASES. The oldest is the image's

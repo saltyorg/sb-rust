@@ -360,7 +360,8 @@ To discuss with the maintainer once every module is done, not before:
   every command in place, they are now enforced by `check.sh full` at the
   finished tree's figures: line coverage over `crates/` at least 98.40%
   and function coverage at least 97.66%, each with 0.5 points of
-  tolerance, and the production binary at most 21,693,856 bytes, with 5%.
+  tolerance, and the production binary at most 21,693,856 bytes, with 5%
+  (lowered to 21,031,072 bytes on 2026-11-20, ADR-025's amendment).
   The `sb --help` row is gone; the 10 ms budget and the size ceiling
   stay. Last measured on the
   finished tree, main at c5b79ca (2026-11-18, every module task merged,
