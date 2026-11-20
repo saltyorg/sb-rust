@@ -202,7 +202,32 @@ pub fn apply(cmd: Command, theme: &Theme, colour: bool, width: usize) -> Command
         colour,
         width,
     };
-    apply_at(cmd, &path, &[], &look)
+    apply_at(cmd, &path, &[], &look, None)
+}
+
+/// [`apply`] for the root and the commands on `shown` alone, outermost
+/// first (an alias is followed, as clap's `help` follows it): a line that shows one
+/// command's help needs only that command's layout and its parents' (the
+/// root's at least), not every command's (about half of `sb --help`'s
+/// instructions: performance research, round 3, core item 5). Every
+/// other command keeps clap's own help, so the caller must know whose
+/// help clap shows (cli-core's `colour::Early::path`); a name that isn't
+/// a subcommand ends the walk.
+#[must_use]
+pub fn apply_to(
+    cmd: Command,
+    theme: &Theme,
+    colour: bool,
+    width: usize,
+    shown: &[String],
+) -> Command {
+    let path = cmd.get_name().to_string();
+    let look = Look {
+        theme,
+        colour,
+        width,
+    };
+    apply_at(cmd, &path, &[], &look, Some(shown))
 }
 
 /// How help is drawn: the theme, whether in colour, and the width its
@@ -221,7 +246,15 @@ struct Look<'a> {
 /// line is left.
 const LEAD: &str = "\n\n";
 
-fn apply_at(cmd: Command, path: &str, inherited: &[Arg], look: &Look<'_>) -> Command {
+/// `cmd`'s help laid out at `path`, then each subcommand's, or only the
+/// next one `shown` names (and its own, down the line) when given.
+fn apply_at(
+    cmd: Command,
+    path: &str,
+    inherited: &[Arg],
+    look: &Look<'_>,
+    shown: Option<&[String]>,
+) -> Command {
     let refs: Vec<&Arg> = inherited.iter().collect();
     // A command with no about starts at its USAGE heading's blank line:
     // still one blank line, as fang's.
@@ -247,10 +280,25 @@ fn apply_at(cmd: Command, path: &str, inherited: &[Arg], look: &Look<'_>) -> Com
     // 4.6.7 `Command::mut_subcommand`), so walking them in order keeps
     // their order: sb's parse renders errors (`[subcommands: …]`, its
     // suggestions) from the tree without this layout, and they must read
-    // the same.
+    // the same. Changing one alone moves it to the end: only a line that
+    // shows help does that, and help is rendered before the move.
+    if let Some(shown) = shown {
+        // By its own name: `sb help` takes an alias too, as clap's does.
+        let next = shown.split_first().and_then(|(next, rest)| {
+            cmd.find_subcommand(next)
+                .map(|sub| (sub.get_name().to_owned(), rest))
+        });
+        if let Some((name, rest)) = next {
+            let sub_path = format!("{path} {name}");
+            cmd = cmd.mut_subcommand(&name, |sub| {
+                apply_at(sub, &sub_path, &below, look, Some(rest))
+            });
+        }
+        return cmd;
+    }
     for name in names {
         let sub_path = format!("{path} {name}");
-        cmd = cmd.mut_subcommand(&name, |sub| apply_at(sub, &sub_path, &below, look));
+        cmd = cmd.mut_subcommand(&name, |sub| apply_at(sub, &sub_path, &below, look, None));
     }
     cmd
 }

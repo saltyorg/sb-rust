@@ -67,6 +67,34 @@ pub struct Early {
     /// line uses none of them. The caller can read its command from them
     /// rather than build the tree and parse the line again.
     pub matches: Option<clap::ArgMatches>,
+    /// On a line that asks for help, the commands it names, outermost
+    /// first (by their names, not the aliases given), when the pre-pass
+    /// can tell whose help clap shows: its parse succeeded, or stopped at
+    /// a command shown alone, or saw a help flag before its error. `sb
+    /// help <commands>` names the commands after `help`. None: lay out
+    /// every command's help (a group's own `help` subcommand, `-h` after
+    /// a typo).
+    pub path: Option<Vec<String>>,
+}
+
+/// The subcommands `matches` holds, outermost first; after the
+/// pre-pass's plain `help` subcommand, the words given to it, as clap's
+/// own `help` reads them.
+fn named(matches: &clap::ArgMatches) -> Vec<String> {
+    let mut path = Vec::new();
+    let mut at = matches;
+    while let Some((name, sub)) = at.subcommand() {
+        if name == "help" && path.is_empty() {
+            return sub
+                .try_get_many::<String>("command")
+                .ok()
+                .flatten()
+                .map_or_default(|names| names.cloned().collect());
+        }
+        path.push(name.to_owned());
+        at = sub;
+    }
+    path
 }
 
 /// [`early_choice`]'s pre-pass, also saying whether the line asks for
@@ -113,26 +141,35 @@ where
             || matches.subcommand_name() == Some("help")
     };
     match pre_pass.clone().try_get_matches_from(&args) {
-        Ok(matches) => Early {
-            help: asks_help(&matches),
-            color: from_command_line(&matches).unwrap_or_default(),
-            matches: Some(matches),
-        },
+        Ok(matches) => {
+            let help = asks_help(&matches);
+            Early {
+                help,
+                color: from_command_line(&matches).unwrap_or_default(),
+                path: help.then(|| named(&matches)),
+                matches: Some(matches),
+            }
+        }
         Err(err) => {
             let partial = pre_pass
                 .ignore_errors(true)
                 .try_get_matches_from(&args)
                 .ok();
+            let alone =
+                err.kind() == clap::error::ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand;
+            let flagged = partial.as_ref().is_some_and(asks_help);
             Early {
-                // A subcommand's own `help` subcommand, and a command
-                // shown alone, still stop the pre-pass with help; a help
-                // flag before the error (`sb --help`, which lacks a
-                // command) is in the partial parse.
-                help: matches!(
-                    err.kind(),
-                    clap::error::ErrorKind::DisplayHelp
-                        | clap::error::ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
-                ) || partial.as_ref().is_some_and(asks_help),
+                // A command shown alone still stops the pre-pass with
+                // help (and clap's own help would, should it answer); a
+                // help flag before the error (`sb --help`, which lacks a
+                // command) is in the partial parse. A group's own `help`
+                // (`sb docker help`) reads as none here: the real parse
+                // answers it, with every command laid out.
+                help: alone || err.kind() == clap::error::ErrorKind::DisplayHelp || flagged,
+                // Whose help, where the partial parse knows it: the
+                // command shown alone, or the one the help flag was given
+                // to, clap acting on the flag where it meets it.
+                path: partial.as_ref().filter(|_| alone || flagged).map(named),
                 color: partial
                     .as_ref()
                     .and_then(from_command_line)
@@ -250,6 +287,29 @@ mod tests {
         for args in [&["bogus"][..], &["version", "--bogus"], &[]] {
             assert!(read(args).matches.is_none(), "{args:?}");
         }
+    }
+
+    /// Whose help a help line shows: the commands named, after `help`
+    /// too; the root's for `-h` before a mistake; none known after one,
+    /// nor on a line that asks for no help.
+    #[test]
+    fn the_pre_pass_names_whose_help_is_shown() {
+        let path = |args: &[&str]| {
+            let all = std::iter::once("sb").chain(args.iter().copied());
+            early_read(Cli::command(), all).path
+        };
+        let names =
+            |names: &[&str]| Some(names.iter().map(ToString::to_string).collect::<Vec<_>>());
+        assert_eq!(path(&["version", "--help"]), names(&["version"]));
+        assert_eq!(path(&["help", "version"]), names(&["version"]));
+        assert_eq!(path(&["help"]), names(&[]));
+        assert_eq!(path(&["-h"]), names(&[]));
+        assert_eq!(path(&[]), names(&[]));
+        assert_eq!(path(&["-h", "bogus"]), names(&[]));
+        assert_eq!(path(&["version", "-h", "--bogus"]), names(&["version"]));
+        assert_eq!(path(&["bogus", "-h"]), None);
+        assert_eq!(path(&["version"]), None);
+        assert_eq!(path(&["version", "--bogus"]), None);
     }
 
     fn choice(args: &[&str]) -> ColorChoice {

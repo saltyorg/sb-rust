@@ -831,7 +831,7 @@ fn start() -> RunEnd {
     // run hands over to a root run through sudo, which then reads its own
     // settings and warns about those: a run about to relaunch leaves the
     // startup warnings to it.
-    let parsed = reused.map_or_else(|| parse(profile, early.help), Ok);
+    let parsed = reused.map_or_else(|| parse(profile, early.help, early.path.as_deref()), Ok);
     let support = allow_unsupported_release(
         sb_host::check_support(),
         parsed
@@ -1002,15 +1002,22 @@ fn config_override(value: Option<std::ffi::OsString>) -> Option<std::path::PathB
 /// command that runs would still lay out their help.
 ///
 /// A line whose colour pre-pass parsed and asks for no help isn't parsed
-/// here at all ([`reuse`]).
-fn parse(profile: theme::Profile, help: bool) -> Result<Cli, clap::Error> {
-    parse_from(profile, help, std::env::args_os())
+/// here at all ([`reuse`]). On a line that asks for help, only the
+/// commands it names get the layout (`shown`, from the pre-pass:
+/// `help::apply_to`) when the pre-pass can tell them, else every command.
+fn parse(
+    profile: theme::Profile,
+    help: bool,
+    shown: Option<&[String]>,
+) -> Result<Cli, clap::Error> {
+    parse_from(profile, help, shown, std::env::args_os())
 }
 
 /// [`parse`] of `args` (sb's command line).
 fn parse_from(
     profile: theme::Profile,
     help: bool,
+    shown: Option<&[String]>,
     args: impl IntoIterator<Item = std::ffi::OsString>,
 ) -> Result<Cli, clap::Error> {
     use clap::error::ErrorKind;
@@ -1034,8 +1041,14 @@ fn parse_from(
     // usage block's padding rows, and its width where its lines wrap.
     let colour =
         profile != theme::Profile::Ascii && sb_term_ui::colour_on(sb_term_ui::Stream::Stdout);
-    let matches =
-        help::apply(tree(), theme::current(), colour, help::width()).try_get_matches_from(&args)?;
+    let (theme, width) = (theme::current(), help::width());
+    // The commands the line names, when it asked for help: a line the
+    // pre-pass didn't read as help gets every command's layout.
+    let laid_out = match shown.filter(|_| help) {
+        Some(shown) => help::apply_to(tree(), theme, colour, width, shown),
+        None => help::apply(tree(), theme, colour, width),
+    };
+    let matches = laid_out.try_get_matches_from(&args)?;
     cli_from(&matches)
 }
 
@@ -1675,7 +1688,7 @@ mod tests {
     fn help_the_pre_pass_missed_is_still_sbs() {
         let rendered = |help: bool| {
             let args = ["sb", "docker", "--help"].map(std::ffi::OsString::from);
-            match parse_from(theme::Profile::Ascii, help, args) {
+            match parse_from(theme::Profile::Ascii, help, None, args) {
                 Err(err) => (err.kind(), err.render().to_string()),
                 Ok(_) => panic!("help is no command"),
             }
@@ -1861,6 +1874,7 @@ mod tests {
             color: colour::Color::default(),
             help: false,
             matches: Some(matches),
+            path: None,
         }
     }
 
@@ -1929,6 +1943,93 @@ mod tests {
         let mut help = early(&["version"]);
         help.help = true;
         assert!(reuse(&mut help).is_none());
+    }
+
+    /// Help laid out for the commands on the line alone reads as help
+    /// laid out for every command, byte for byte: for each command's
+    /// `--help`, `-h` and `help <command>`, a group alone, and the help
+    /// and error lines that mix help with a mistake, in each profile.
+    #[test]
+    fn help_for_the_shown_commands_reads_as_help_for_all() {
+        fn paths(cmd: &clap::Command, path: &[String], out: &mut Vec<Vec<String>>) {
+            out.push(path.to_vec());
+            for sub in cmd.get_subcommands() {
+                let mut path = path.to_vec();
+                path.push(sub.get_name().to_owned());
+                paths(sub, &path, out);
+            }
+        }
+        let mut all = Vec::new();
+        paths(&real_tree(theme::Profile::Ascii), &[], &mut all);
+        let mut lines: Vec<Vec<String>> = Vec::new();
+        for path in &all {
+            for form in [&["--help"][..], &["-h"], &[]] {
+                lines.push([path.clone(), form.iter().map(|w| (*w).to_owned()).collect()].concat());
+            }
+            lines.push([vec!["help".to_owned()], path.clone()].concat());
+        }
+        for line in [
+            "--color bogus -h",
+            "-h --color bogus",
+            "list -h --bogus",
+            "list --bogus -h",
+            "bogus -h",
+            "-h bogus",
+            "--color never docker",
+            "help --color=never",
+            "edit help",
+            "docker help",
+            "-vh",
+            "install -vh",
+            "list help",
+            "docker ps -h",
+            "help edit accounts",
+            "help bogus",
+            "help help",
+            "edit accounts.yml -h",
+            "help edit accounts.yml",
+            // The help flag before a command the line goes on to name,
+            // and an error whose suggestions follow the commands' order.
+            "-h docker ps",
+            "docker -h ps",
+            "reinstall- reinstall-venv -h",
+            "-h reinstall- reinstall-venv",
+            "docker ps --help --json",
+            "help docker ps",
+            "install --help sonarr",
+            "install sonarr -- -h",
+        ] {
+            lines.push(line.split(' ').map(ToOwned::to_owned).collect());
+        }
+        let mut laid_out = 0;
+        for line in &lines {
+            let args: Vec<std::ffi::OsString> = std::iter::once("sb".into())
+                .chain(line.iter().map(Into::into))
+                .collect();
+            let early = colour::early_read(verbose::with_flags(Cli::command()), &args);
+            laid_out += usize::from(early.path.is_some());
+            for profile in [theme::Profile::Ascii, theme::Profile::TrueColor] {
+                let shown = |path: Option<&[String]>| match parse_from(
+                    profile,
+                    early.help,
+                    path,
+                    args.clone(),
+                ) {
+                    Ok(_) => None,
+                    Err(err) => Some((err.kind(), err.render().ansi().to_string())),
+                };
+                assert_eq!(
+                    shown(early.path.as_deref()),
+                    shown(None),
+                    "{line:?} {profile:?}"
+                );
+            }
+        }
+        assert!(
+            laid_out > all.len() * 3,
+            "lines laid out in part: {laid_out} of {}",
+            lines.len()
+        );
     }
 
     /// The colour pre-pass reads which lines ask for help, for `parse`:
