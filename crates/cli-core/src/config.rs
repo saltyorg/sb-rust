@@ -304,7 +304,31 @@ pub fn escape_controls(text: &str) -> String {
 /// character until Rust 1.100, which escapes every grapheme extender
 /// (<https://github.com/rust-lang/rust/pull/158303>), so an NFD file name
 /// would show as `Ame\u{301}lie`; cli-core's contract keeps it readable.
+///
+/// A text of printable ASCII that holds nothing to escape comes back as it
+/// is, without a look at each character's Unicode properties (an ICU4X
+/// set lookup per character, about 200 instructions: `sb list` escapes
+/// every tag); no ASCII character is a combining mark
+/// ([`shown_as_it_is`]).
 pub(crate) fn escape(text: &str, quotes_as_they_are: bool) -> String {
+    if text
+        .bytes()
+        .all(|byte| shown_as_it_is(byte, quotes_as_they_are))
+    {
+        return text.to_owned();
+    }
+    escape_each(text, quotes_as_they_are)
+}
+
+/// Whether `byte` is a character [`escape_each`] shows as itself whatever
+/// comes before it: printable ASCII but for the quotes and the backslash
+/// `char::escape_debug` escapes, and those too with `quotes_as_they_are`.
+fn shown_as_it_is(byte: u8, quotes_as_they_are: bool) -> bool {
+    matches!(byte, b' '..=b'~') && (quotes_as_they_are || !matches!(byte, b'\'' | b'"' | b'\\'))
+}
+
+/// [`escape`], character by character.
+fn escape_each(text: &str, quotes_as_they_are: bool) -> String {
     let mut out = String::with_capacity(text.len());
     // Whether the last character went out as itself, a base a mark keeps.
     let mut base = false;
@@ -1072,6 +1096,51 @@ mod tests {
                 "{c:?} {category:?}"
             );
         }
+    }
+
+    /// Printable ASCII but for the quotes and the backslash (and those
+    /// too with `quotes_as_they_are`) is exactly what the character by
+    /// character escape shows as it is: the fast path's test, for each
+    /// byte below 128 in both modes.
+    #[test]
+    fn the_ascii_fast_path_takes_what_is_shown_as_it_is() {
+        for byte in 0..=0x7f_u8 {
+            let text = char::from(byte).to_string();
+            for quotes_as_they_are in [false, true] {
+                assert_eq!(
+                    shown_as_it_is(byte, quotes_as_they_are),
+                    escape_each(&text, quotes_as_they_are) == text,
+                    "{byte:#04x} {quotes_as_they_are}"
+                );
+            }
+        }
+    }
+
+    /// A text of printable ASCII escapes as it did character by
+    /// character, the quotes and the backslash included, in both modes;
+    /// one character outside it sends the whole text through that path.
+    #[test]
+    fn ascii_text_escapes_as_each_character_does() {
+        let printable: String = (b' '..=b'~').map(char::from).collect();
+        for text in [
+            printable.as_str(),
+            "plex",
+            "sandbox-plex,sonarr",
+            "it's \"quoted\" \\ here",
+            "tab\there",
+            "e\u{301}",
+            "",
+        ] {
+            for quotes_as_they_are in [false, true] {
+                assert_eq!(
+                    escape(text, quotes_as_they_are),
+                    escape_each(text, quotes_as_they_are),
+                    "{text:?} {quotes_as_they_are}"
+                );
+            }
+        }
+        assert_eq!(escape_controls("it's"), "it\\'s");
+        assert_eq!(escape("a\"b", true), "a\"b");
     }
 
     /// Invisible direction marks could reorder a warning line on screen.
