@@ -42,9 +42,22 @@ pub fn completer(command: fn() -> clap::Command) -> ArgValueCompleter {
         let appdata = config::appdata_path(&config::inventory_path(&root));
         candidates(&cached(&root, &appdata), &earlier, current)
             .into_iter()
-            .map(CompletionCandidate::new)
+            .map(candidate)
             .collect()
     })
+}
+
+/// The group every tag candidate is in. sb's reply never shows a group
+/// (`reply`, which sorts the candidates by value).
+const GROUP: &str = "tags";
+
+/// `tag` as a candidate in [`GROUP`]: clap's engine gives a candidate
+/// without a group the argument's display text, formatted anew for each
+/// one (`clap_complete` 4.6.11 `engine/complete.rs`, `complete_arg_value`;
+/// <https://docs.rs/clap_complete/4.6.11/clap_complete/engine/struct.CompletionCandidate.html#method.tag>),
+/// about 3,000 instructions a tag.
+fn candidate(tag: String) -> CompletionCandidate {
+    CompletionCandidate::new(tag).tag(Some(GROUP.into()))
 }
 
 /// The words of the command line before the one being completed: the
@@ -348,6 +361,20 @@ mod tests {
         ("missing tags", &[], &[], "plex,", &[]),
         ("unmatched prefix", &["sonarr", "plex"], &[], "unknown", &[]),
     ];
+
+    /// Each candidate is a tag in sb's own group, so clap's engine
+    /// doesn't format the argument's display text into each one; its
+    /// value is the tag.
+    #[test]
+    fn each_candidate_comes_grouped() {
+        let candidate = candidate("plex".to_owned());
+        assert_eq!(candidate.get_value(), "plex");
+        assert_eq!(
+            candidate.get_tag().map(ToString::to_string).as_deref(),
+            Some(GROUP)
+        );
+        assert_eq!(candidate.get_help(), None);
+    }
 
     /// sb-go's cases, [`TAG_CASES`].
     #[test]
