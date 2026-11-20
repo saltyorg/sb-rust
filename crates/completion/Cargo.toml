@@ -30,6 +30,9 @@ tempfile.workspace = true
 regex.workspace = true
 # sb-go's markers found in a file (`bytes.Contains` there).
 memchr.workspace = true
+# bash's descriptions measured and padded in display columns
+# (`describe`), as term-ui does.
+console.workspace = true
 # The refresh's steps for ops' update and setup (`refresh`), and their
 # bodies' errors.
 sb-term-ui.workspace = true

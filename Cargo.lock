@@ -3540,6 +3540,7 @@ dependencies = [
  "anyhow",
  "clap",
  "clap_complete",
+ "console",
  "indicatif",
  "memchr",
  "regex",

@@ -254,6 +254,148 @@ zsh_dump_rebuild() {
 }
 zsh_dump_rebuild
 
+# bash's descriptions (spec, "Descriptions in bash"): listed only when
+# readline lists, never inserted. Each case is a fresh login shell with
+# its own ~/.inputrc (after /etc/inputrc), a fixed prompt and the tmux
+# window's width; the keys are sent one by one, the screen saved after
+# the last, then Ctrl-X saves the line (under ble.sh, the screen's prompt
+# line is read instead: ble.sh owns the editing).
+cp "$home/.bashrc" "$home/.bashrc.base"
+had_inputrc=no
+[ ! -e "$home/.inputrc" ] || { had_inputrc=yes; cp "$home/.inputrc" "$home/.inputrc.base"; }
+# settle: up to 5 s for the screen to stay the same for 0.3 s.
+settle() {
+  local prev cur stable=0
+  prev=$(tmux capture-pane -p -t t 2>/dev/null)
+  for _ in $(seq 100); do
+    sleep 0.05
+    cur=$(tmux capture-pane -p -t t 2>/dev/null)
+    if [ "$cur" = "$prev" ]; then
+      stable=$((stable + 1))
+      [ "$stable" -ge 6 ] && return 0
+    else
+      stable=0
+      prev=$cur
+    fi
+  done
+  return 1
+}
+# listing LABEL WIDTH INPUTRC BLESH TEXT KEY...: sets $screen and $line.
+listing() {
+  local label=$1 width=$2 inputrc=$3 blesh=$4 text=$5
+  shift 5
+  rm -f "$home/captured"
+  # shellcheck disable=SC2016 # readline's own $include, literal
+  printf '$include /etc/inputrc\n%b' "$inputrc" >"$home/.inputrc"
+  {
+    # shellcheck disable=SC2016 # bash expands them, in the user's shell
+    [ "$blesh" = no ] || echo '[[ $- == *i* ]] && source /usr/local/share/blesh/ble.sh --noattach'
+    cat "$home/.bashrc.base"
+    echo "PS1='PROMPT> '"
+    # shellcheck disable=SC2016 # bash expands it, in the user's shell
+    [ "$blesh" = no ] || echo '[[ ${BLE_VERSION-} ]] && ble-attach'
+  } >"$home/.bashrc"
+  chown sbuser:sbuser "$home/.inputrc" "$home/.bashrc"
+  tmux kill-server 2>/dev/null || true
+  tmux new-session -d -s t -x "$width" -y 40 "su - sbuser -s /bin/bash"
+  wait_for sh -c 'tmux capture-pane -p -t t | grep -q "^PROMPT>"' || true
+  settle || true
+  tmux send-keys -t t -l "$text"
+  settle || true
+  local k
+  for k in "$@"; do
+    tmux send-keys -t t "$k"
+    settle || true
+  done
+  screen=$(tmux capture-pane -p -t t)
+  printf '%s\n' "$screen" >"/out/screen-bash-$label.txt"
+  if [ "$blesh" = no ]; then
+    tmux send-keys -t t C-x
+    wait_for captured_lines 1 || true
+    line=$(sed -n 1p "$home/captured" 2>/dev/null | sed 's/[[:space:]]*$//')
+  else
+    line=$(printf '%s\n' "$screen" | grep '^PROMPT>' | tail -n 1 | sed 's/[[:space:]]*$//')
+  fi
+  tmux kill-server 2>/dev/null || true
+}
+# check LABEL CONDITION...: PASS or FAIL with the screen.
+check() {
+  local label=$1
+  shift
+  if "$@"; then
+    echo "PASS: bash-$label"
+  else
+    echo "FAIL: bash-$label: [$line] $(tr '\n' '|' <"/out/screen-bash-$label.txt")"
+    failures=$((failures + 1))
+  fi
+}
+has() { grep -qF -- "$1" <<<"$screen"; }
+line_is() { [ "$line" = "$1" ]; }
+no_paren_line() { [[ $line != *"("* ]]; }
+# fits WIDTH: no screen line wider than WIDTH less one; the ellipsis is
+# one column (and three bytes, which mawk's length counts).
+fits() { ! awk -v w="$1" 'length > w - 1 { bad = 1 } END { exit !bad }' <<<"${screen//…/.}"; }
+
+start_desc='start  (Start Docker containers managed by Saltbox)'
+stop_desc='stop   (Stop Docker containers managed by Saltbox)'
+# The second Tab lists, with descriptions; the line keeps the name.
+listing list 80 '' no 'sb docker s' Tab Tab Tab
+check list has "$start_desc"
+check list-stop has "$stop_desc"
+check list-line line_is 'sb docker st'
+# A single match inserts the name, with no description anywhere.
+listing single 80 '' no 'sb up' Tab
+check single line_is 'sb update'
+check single-screen bash -c '! grep -qF "(Update" "/out/screen-bash-single.txt"'
+# menu-complete cycles through the names alone.
+listing menu 80 'TAB: menu-complete\n' no 'sb docker s' Tab
+check menu line_is 'sb docker start'
+listing menu-2 80 'TAB: menu-complete\n' no 'sb docker s' Tab Tab
+check menu-2 line_is 'sb docker stop'
+# show-all-if-ambiguous lists with descriptions on the first Tab and
+# extends the word to the common prefix only.
+listing saa 80 'set show-all-if-ambiguous on\n' no 'sb docker s' Tab
+check saa has "$start_desc"
+check saa-line line_is 'sb docker st'
+# A narrow terminal: at 40 columns update's flags get no room for 20
+# columns of description (the longest name is 18), so names; at 60 the
+# descriptions are cut to fit 59 columns.
+listing narrow 40 '' no 'sb update --' Tab Tab
+check narrow has '--skip-self-update'
+check narrow-plain bash -c '! grep -qF "  (" "/out/screen-bash-narrow.txt"'
+listing narrow-60 60 '' no 'sb update --' Tab Tab
+check narrow-60 has '--skip-self-update  (Skip CLI self-update check)'
+check narrow-60-cut has '…)'
+check narrow-60-fits fits 60
+# install's tags have no help: a grid of names, flags with them.
+listing install 80 '' no 'sb install ' Tab Tab
+check install has 'plex'
+check install-plain bash -c '! grep -qF "  (" "/out/screen-bash-install.txt"'
+# ble.sh calls completion with COMP_TYPE 9: names, never a description in
+# the line (cobra's rule put them there).
+# Pinned: the commit the bash-descriptions research measured, so a ble.sh
+# change can't turn these cases either way.
+blesh_commit=152942758f567e51fd17bdc7b3783d27b3c476aa
+apt-get install -y -qq git make gawk ca-certificates >>/out/packages.log 2>&1
+if git clone -q https://github.com/akinomyoga/ble.sh.git /tmp/ble.sh >/out/blesh.log 2>&1 &&
+  git -C /tmp/ble.sh checkout -q "$blesh_commit" >>/out/blesh.log 2>&1 &&
+  git -C /tmp/ble.sh submodule update -q --init --recursive >>/out/blesh.log 2>&1 &&
+  make -C /tmp/ble.sh install PREFIX=/usr/local >>/out/blesh.log 2>&1; then
+  note "ble.sh $(git -C /tmp/ble.sh rev-parse --short HEAD)"
+  listing blesh 80 '' yes 'sb docker s' Tab Tab Tab
+  check blesh no_paren_line
+  check blesh-line bash -c "grep -q '^PROMPT> sb docker st' /out/screen-bash-blesh.txt"
+  listing blesh-single 80 '' yes 'sb up' Tab
+  check blesh-single bash -c "grep -q '^PROMPT> sb update' /out/screen-bash-blesh-single.txt"
+  check blesh-single-paren no_paren_line
+else
+  echo "FAIL: bash-blesh: ble.sh didn't build (/out/blesh.log)"
+  failures=$((failures + 1))
+fi
+cp "$home/.bashrc.base" "$home/.bashrc"
+if [ "$had_inputrc" = yes ]; then cp "$home/.inputrc.base" "$home/.inputrc"; else rm -f "$home/.inputrc"; fi
+chown sbuser:sbuser "$home/.bashrc"
+
 # sb install <Tab> with no, a corrupt and an empty tag cache: only flags
 # would fit, so nothing is inserted (spec, difference 6).
 cp /srv/git/saltbox/cache.json /out/cache.json

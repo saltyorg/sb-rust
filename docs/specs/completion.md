@@ -111,6 +111,25 @@ completion files in place.
   `write_complete` succeeds), and its errors and panics go to stderr. A
   foreign program at sb's path that prints to stdout and fails can
   still put a word into a zsh list.
+- **Descriptions in bash** (the maintainer, 2026-11-20; decision 13),
+  as sb-go's bash lists show them: `name  (description)`, names padded
+  to the longest, each line cut to the terminal's width less one column
+  with `…`. Only when readline is about to list: bash's `COMP_TYPE` `?`
+  (63, the second Tab or `M-?`), `!` (33, `show-all-if-ambiguous`) or
+  `@` (64, `show-all-if-unmodified`)
+  (https://www.gnu.org/software/bash/manual/html_node/Bash-Variables.html#index-COMP_005fTYPE);
+  never on a call that inserts (Tab, 9; menu-complete, `%`, 37;
+  insert-completions), so a description can't reach the line, whatever
+  the editor (ble.sh calls completion with 9 and inserts COMPREPLY).
+  Only when there is more than one candidate and every one has a help
+  text, so `sb install <Tab><Tab>` (tags without help, and flags) stays
+  a grid of names; and only when at least 20 columns of description
+  fit, else plain names. The stub passes `$COLUMNS` (bash keeps it
+  current with `checkwinsize`, on by default, and on SIGWINCH) as
+  `_SB_COMPLETE_COLUMNS`; without it, plain names. No switch turns
+  them off (sb-go's `SB_COMPLETION_DESCRIPTIONS` is ignored; difference
+  9). Names, padding and cutting are measured in display columns
+  (console's `measure_text_width` and `pad_str`, term-ui's `fit`).
 - **Tags for `sb install`:** an `ArgValueCompleter` on install's tags
   positional (`num_args(1..)`), with sb-go's rules
   (cmd/tag_completion.go):
@@ -262,6 +281,16 @@ tests with a temporary root.
    file with this binary's, or fails on a name collision; sb leaves the
    other executable's file (a retired one is preserved as live). No
    Saltbox name ends in `.bash`. Module build M59.
+9. bash's descriptions follow sb's rule, not cobra's (decision 13):
+   only on a listing call, only when every candidate has help, dropped
+   below 20 columns of description, and with no off switch (sb-go's
+   cobra script describes on every Tab but menu-complete and
+   insert-completions, describes the candidates that have help, keeps
+   unpadded descriptions down to 8 columns, and honours
+   `SB_COMPLETION_DESCRIPTIONS=false`). Under ble.sh, sb's lists are
+   names (ble.sh reads cobra's scripts through an adapter of its own,
+   and a description given on `COMP_TYPE` 9 went into the line). The
+   maintainer, 2026-11-20.
 
 ### Scope
 
@@ -341,6 +370,10 @@ the test's directory.
   research's list: commas, kept prefix and whitespace, earlier words,
   duplicates, `sandbox-`, mod tags absent, control characters, a leading
   quote, a corrupt cache, an empty cache.
+- **bash's descriptions, unit:** the listing types and the others, one
+  candidate, a candidate without help, the width (padding, the cut with
+  `…`, the 20-column floor, no width given), wide characters; the bash
+  stub's `COLUMNS` line against clap's exact stub text.
 - **sb's reply, unit:** the filter on a small tree (a hidden command,
   a hidden flag, a hidden global `-v`, a shown command's hidden alias,
   a hidden command's shown flag, an empty word with only flags and with
@@ -367,7 +400,9 @@ the test's directory.
   bash-completion, zsh and fish from apt; `sb completion install` as root,
   then a login shell per user driven in a PTY with Tab presses:
   commands, `install s<Tab>`, `plex,so<Tab>`, `sandbox-`, the earlier-word
-  rule; hidden commands and flags on a prefix; no `--` inserted on an
+  rule; bash's descriptions (listing, a single match, menu-complete
+  cycling, `show-all-if-ambiguous`, a narrow terminal, `sb install
+  <Tab><Tab>`'s grid, ble.sh's plain names); hidden commands and flags on a prefix; no `--` inserted on an
   empty word with only flags; a missing, unexecutable and failing
   `/usr/local/bin/sb`. This is where the verification items below are settled.
 - Coverage and mutation as CONSTRAINTS.md.
@@ -503,6 +538,20 @@ the test's directory.
     completion test report of 2026-11-20 (B3, B4); sb-go's scripts are
     silent there.
 
+13. **bash shows descriptions, formatted by sb** (Tab completion,
+    "Descriptions in bash"; the maintainer's decisions of 2026-11-20 on
+    the bash-descriptions research): sb's bash reply (decision 11)
+    writes `name  (description)` entries on a listing `COMP_TYPE`, and
+    the stub passes `$COLUMNS`. Why not clap's bash adapter: it drops
+    the help it has (`env/shells.rs`, `Bash::write_complete` writes only
+    the value) and ignores the `COMP_TYPE` it parses; clap_complete has
+    no option for descriptions in bash. Why not cobra's rule (describe on
+    every Tab but `%` and `*`, formatted in the shell): under ble.sh,
+    which calls completion with `COMP_TYPE` 9 and inserts what it gets,
+    it put the descriptions into the line, and the shell-side loops cost
+    14-22 ms a Tab against 4-5 ms. The research's prototypes measured
+    the listing rule clean in 11 readline profiles and ble.sh on 22.04,
+    24.04 and 26.04.
 ## Known limits
 
 - The candidate menu shows the whole comma list (`plex,sonarr,

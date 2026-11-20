@@ -117,8 +117,13 @@ you could trip over.
   such as `--color`'s complete. Hidden commands and flags are never
   offered, as in sb-go, whatever you have typed, and Tab adds nothing
   where only flags would fit (`sb update <Tab>`; bash may list file
-  names there): flags complete after a `-`. Lists are alphabetical in every shell, as sb-go's. A missing
-  or broken sb prints nothing at Tab.
+  names there): flags complete after a `-`. Lists are alphabetical in
+  every shell, as sb-go's. A missing or broken sb prints nothing at
+  Tab. bash lists show each command's and flag's description, as
+  sb-go's, cut to the terminal's width (names only in narrow
+  terminals, in lists where some have none, such as install's tags,
+  and under ble.sh); `SB_COMPLETION_DESCRIPTIONS` no longer turns them
+  off.
 
 ### Removed
 

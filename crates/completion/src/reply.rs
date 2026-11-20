@@ -18,7 +18,7 @@ use std::path::Path;
 
 use clap_complete::engine::CompletionCandidate;
 
-use crate::Shell;
+use crate::{Shell, describe};
 
 /// Write the reply to the request `args` (the words after `--`, `sb`
 /// first) from `shell`'s stub to `buf`: the index and separator from the
@@ -38,7 +38,44 @@ pub(crate) fn write(
     let (args, index) = request(shell, args, var("_CLAP_COMPLETE_INDEX"));
     let candidates = clap_complete::engine::complete(cmd, args.clone(), index, current_dir)?;
     let shown = shown(cmd, &args, index, candidates);
-    format(shell, &shown, var("_CLAP_IFS").as_deref(), buf)
+    let stub = Stub {
+        ifs: var("_CLAP_IFS"),
+        comp_type: var("_CLAP_COMPLETE_COMP_TYPE"),
+        columns: var(describe::COLUMNS_VAR),
+    };
+    respond(shell, &shown, &stub, buf)
+}
+
+/// What the stub passed besides the words: the separator, and bash's
+/// `COMP_TYPE` and width (only bash's stub passes those two).
+#[derive(Debug, Default)]
+struct Stub {
+    ifs: Option<String>,
+    comp_type: Option<String>,
+    columns: Option<String>,
+}
+
+/// `candidates` written for `shell`: bash's descriptions on a listing
+/// call with the width known (spec, "Descriptions in bash"; the module
+/// `describe`), else clap's format ([`format`]).
+fn respond(
+    shell: Shell,
+    candidates: &[CompletionCandidate],
+    stub: &Stub,
+    buf: &mut dyn Write,
+) -> std::io::Result<()> {
+    let ifs = stub.ifs.as_deref();
+    if shell == Shell::Bash && describe::listing(stub.comp_type.as_deref()) {
+        let columns = stub
+            .columns
+            .as_deref()
+            .and_then(|columns| columns.parse().ok());
+        if let Some(entries) = columns.and_then(|columns| describe::described(candidates, columns))
+        {
+            return write!(buf, "{}", entries.join(ifs.unwrap_or("\n")));
+        }
+    }
+    format(shell, candidates, ifs, buf)
 }
 
 /// The words and the current word's index as clap's adapter for `shell`
@@ -396,6 +433,45 @@ mod tests {
                 assert_eq!(entries(&ours), entries(&theirs), "{shell:?} {words:?}");
             }
         }
+    }
+
+    /// Only bash describes: zsh and fish carry the help in their own
+    /// format, whatever the variables say; bash describes only on a
+    /// listing call with a width.
+    #[test]
+    fn only_bash_describes_and_only_when_listing() {
+        let candidates = [
+            CompletionCandidate::new("start").help(Some("Start it".into())),
+            CompletionCandidate::new("stop").help(Some("Stop it".into())),
+        ];
+        let text = |shell, comp_type: &str, columns: Option<&str>| {
+            let stub = Stub {
+                ifs: Some("|".to_owned()),
+                comp_type: Some(comp_type.to_owned()),
+                columns: columns.map(ToOwned::to_owned),
+            };
+            let mut buf = Vec::new();
+            respond(shell, &candidates, &stub, &mut buf).expect("memory");
+            String::from_utf8(buf).expect("UTF-8")
+        };
+        assert_eq!(
+            text(Shell::Bash, "63", Some("80")),
+            "start  (Start it)|stop   (Stop it)"
+        );
+        assert_eq!(text(Shell::Bash, "9", Some("80")), "start|stop");
+        assert_eq!(text(Shell::Bash, "63", None), "start|stop");
+        assert_eq!(text(Shell::Bash, "63", Some("wide")), "start|stop");
+        assert_eq!(
+            text(Shell::Zsh, "63", Some("80")),
+            "start:Start it|stop:Stop it"
+        );
+        assert_eq!(
+            text(Shell::Fish, "63", Some("80")),
+            "start\tStart it\nstop\tStop it\n"
+        );
+        let mut buf = Vec::new();
+        respond(Shell::Bash, &candidates, &Stub::default(), &mut buf).expect("memory");
+        assert_eq!(buf, b"start\nstop");
     }
 
     /// The separator and the escaping, written out.

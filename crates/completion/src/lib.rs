@@ -6,6 +6,7 @@
 //! The engine is `clap_complete`'s `unstable-dynamic`, pinned exactly
 //! (ADR-001): every use of it is in this crate.
 
+mod describe;
 pub mod install;
 mod reply;
 pub mod tags;
@@ -244,7 +245,7 @@ impl Shell {
     /// `bin_name`), but each goes where clap puts it.
     fn patch(self, stub: String, name: &str, bin: &str) -> String {
         match self {
-            Self::Bash => quiet_bash(stub),
+            Self::Bash => bash_columns(quiet_bash(stub)),
             Self::Fish => quiet_fish(stub),
             Self::Zsh => {
                 // clap's function is named from `name`, its `compdef`
@@ -277,6 +278,30 @@ const BASH_CALL: &str = " -- \"${words[@]}\" \\\n";
 fn quiet_bash(stub: String) -> String {
     if stub.matches(BASH_CALL).count() == 1 {
         stub.replacen(BASH_CALL, " -- \"${words[@]}\" 2>/dev/null \\\n", 1)
+    } else {
+        stub
+    }
+}
+
+/// The last of the variables clap's bash stub sets for the completer
+/// (`clap_complete` 4.6.11, `env/shells.rs`), a line of its own.
+const BASH_SPACE: &str = "        _CLAP_COMPLETE_SPACE=\"$_CLAP_COMPLETE_SPACE\" \\\n";
+
+/// clap's bash stub passing `$COLUMNS` too, for bash's descriptions
+/// (spec, decision 13; [`describe::COLUMNS_VAR`]): clap's stub passes the
+/// `COMP_TYPE` but not the width. `${COLUMNS-}`: empty when unset, and
+/// sb then lists names. bash keeps `COLUMNS` current in an interactive
+/// shell (`checkwinsize`, on by default since bash 5.0, and SIGWINCH;
+/// bash(1), "COLUMNS"), and cobra's bash script reads the width the same
+/// way (`$COLUMNS`, `bash_completionsV2.go`, v1.10.2). Why not ask the
+/// terminal from sb (crossterm's `terminal::size`): the completer's
+/// stdout is the stub's command substitution, so it would open
+/// `/dev/tty`, and where the ioctl fails crossterm starts `tput`, a
+/// process on every Tab. Only a stub with that line once is patched.
+fn bash_columns(stub: String) -> String {
+    if stub.matches(BASH_SPACE).count() == 1 {
+        let columns = format!("        {}=\"${{COLUMNS-}}\" \\\n", describe::COLUMNS_VAR);
+        stub.replacen(BASH_SPACE, &format!("{BASH_SPACE}{columns}"), 1)
     } else {
         stub
     }
@@ -432,9 +457,10 @@ mod tests {
         }
     }
 
-    /// clap 4.6.11's bash stub, whole, with sb's one change: the
-    /// completer's stderr discarded (spec, decision 12). A clap release
-    /// that changes the stub fails here, not silently on a host.
+    /// clap 4.6.11's bash stub, whole, with sb's two changes: the
+    /// completer's stderr discarded (spec, decision 12) and `$COLUMNS`
+    /// passed for the descriptions (decision 13). A clap release that
+    /// changes the stub fails here, not silently on a host.
     #[test]
     fn the_bash_stub_discards_the_completers_stderr() {
         let bash =
@@ -458,6 +484,7 @@ _clap_complete_sb() {
         _CLAP_COMPLETE_INDEX="$_CLAP_COMPLETE_INDEX" \
         _CLAP_COMPLETE_COMP_TYPE="$_CLAP_COMPLETE_COMP_TYPE" \
         _CLAP_COMPLETE_SPACE="$_CLAP_COMPLETE_SPACE" \
+        _SB_COMPLETE_COLUMNS="${COLUMNS-}" \
         SB_COMPLETE="bash" \
         "/usr/local/bin/sb" -- "${words[@]}" 2>/dev/null \
     ) )
@@ -493,6 +520,9 @@ fi
     /// tests above fail): never half patched.
     #[test]
     fn a_stub_the_patches_dont_match_is_kept() {
+        assert_eq!(bash_columns("no line\n".to_owned()), "no line\n");
+        let twice = format!("{BASH_SPACE}{BASH_SPACE}");
+        assert_eq!(bash_columns(twice.clone()), twice);
         assert_eq!(quiet_bash("no call here\n".to_owned()), "no call here\n");
         let twice = format!("{BASH_CALL}{BASH_CALL}");
         assert_eq!(quiet_bash(twice.clone()), twice);

@@ -337,6 +337,138 @@ fn every_list_is_alphabetical() {
     assert_eq!(top[..3], ["--color", "--help", "announcements"], "{top:?}");
 }
 
+/// A bash request as the stub makes it on `COMP_TYPE` `comp_type`, with
+/// `$COLUMNS` `columns` (none when `None`); bash's reply, its entries split
+/// at the stub's separator.
+fn bash_reply(root: &Path, words: &[&str], comp_type: &str, columns: Option<&str>) -> Vec<String> {
+    let logs = tempfile::tempdir().expect("temp dir");
+    let mut sb = common::sb();
+    sb.env("SB_COMPLETE", "bash")
+        .env("SB_SALTBOX_DIR", root)
+        .env("SB_LOG_DIR", logs.path())
+        .env("_CLAP_COMPLETE_INDEX", words.len().to_string())
+        .env("_CLAP_COMPLETE_COMP_TYPE", comp_type)
+        .env("_CLAP_IFS", "\u{b}")
+        .args(["--", "sb"])
+        .args(words);
+    match columns {
+        Some(columns) => sb.env("_SB_COMPLETE_COLUMNS", columns),
+        None => sb.env_remove("_SB_COMPLETE_COLUMNS"),
+    };
+    let output = sb.output().expect("run sb");
+    assert!(output.status.success(), "{words:?}: {output:?}");
+    assert!(output.stderr.is_empty(), "{words:?}: {output:?}");
+    String::from_utf8(output.stdout)
+        .expect("UTF-8")
+        .split('\u{b}')
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+/// bash lists show descriptions on a listing call (spec, "Descriptions in
+/// bash"): `?` (63), `!` (33) and `@` (64), padded to the longest name and
+/// cut to the width less one column. A Tab that inserts (9),
+/// menu-complete (37), one candidate, a candidate without help, a narrow
+/// terminal or no width get the names only.
+#[test]
+fn bash_lists_show_descriptions() {
+    let root = saltbox(TAGS, None);
+    let docker = ["docker", "s"];
+    for comp_type in ["63", "33", "64"] {
+        assert_eq!(
+            bash_reply(root.path(), &docker, comp_type, Some("80")),
+            [
+                "start  (Start Docker containers managed by Saltbox)",
+                "stop   (Stop Docker containers managed by Saltbox)",
+            ],
+            "{comp_type}"
+        );
+    }
+    for comp_type in ["9", "37", "42", ""] {
+        assert_eq!(
+            bash_reply(root.path(), &docker, comp_type, Some("80")),
+            ["start", "stop"],
+            "{comp_type}"
+        );
+    }
+    // One candidate, no width, a width too narrow for 20 columns of
+    // description: names.
+    assert_eq!(
+        bash_reply(root.path(), &["up"], "63", Some("80")),
+        ["update"]
+    );
+    assert_eq!(
+        bash_reply(root.path(), &docker, "63", None),
+        ["start", "stop"]
+    );
+    assert_eq!(
+        bash_reply(root.path(), &docker, "63", Some("x")),
+        ["start", "stop"]
+    );
+    assert_eq!(
+        bash_reply(root.path(), &docker, "63", Some("29")),
+        ["start", "stop"]
+    );
+    // 31 columns: 30 for the line, the name and its four, 21 left.
+    assert_eq!(
+        bash_reply(root.path(), &docker, "63", Some("31")),
+        [
+            "start  (Start Docker contain…)",
+            "stop   (Stop Docker containe…)"
+        ]
+    );
+    // Tags have no help: the grid of names stays.
+    let install = bash_reply(root.path(), &["install", ""], "63", Some("80"));
+    assert!(
+        install.iter().all(|entry| !entry.contains('(')),
+        "{install:?}"
+    );
+    assert!(install.contains(&"plex".to_owned()), "{install:?}");
+    // Every line fits the width less one, and keeps its name first.
+    let top = bash_reply(root.path(), &[""], "63", Some("60"));
+    assert!(top.len() > 10, "{top:?}");
+    for entry in &top {
+        assert!(entry.chars().count() <= 59, "{entry:?}");
+        assert!(entry.contains("  ("), "{entry:?}");
+    }
+    assert!(top.iter().any(|entry| entry.ends_with("…)")), "{top:?}");
+}
+
+/// No described entry is a pattern bash would expand: clap's stub fills
+/// COMPREPLY from an unquoted `$( )`, so a `*`, `?` or `[`, or an extglob
+/// opener (bash-completion turns extglob on), in a description would be
+/// matched against file names (and dropped with nullglob, or fail the
+/// completion with failglob). Every command's and its subcommands' lists.
+#[test]
+fn no_description_is_a_glob() {
+    let root = saltbox(TAGS, None);
+    let top = bash_reply(root.path(), &[""], "63", Some("300"));
+    let commands: Vec<String> = top
+        .iter()
+        .filter_map(|entry| entry.split_whitespace().next())
+        .filter(|name| !name.starts_with('-'))
+        .map(ToOwned::to_owned)
+        .collect();
+    assert!(commands.len() > 10, "{top:?}");
+    let mut entries = top;
+    for command in &commands {
+        for word in ["", "-", "--"] {
+            entries.extend(bash_reply(root.path(), &[command, word], "63", Some("300")));
+        }
+    }
+    let described: Vec<&String> = entries
+        .iter()
+        .filter(|entry| entry.contains("  ("))
+        .collect();
+    assert!(described.len() > 50, "{described:?}");
+    for entry in described {
+        assert!(!entry.contains(['*', '?', '[', ']']), "{entry}");
+        for opener in ["?(", "*(", "+(", "@(", "!("] {
+            assert!(!entry.contains(opener), "{entry}");
+        }
+    }
+}
+
 /// Without `SB_COMPLETE`, or with it empty or `0`, sb runs as normal.
 #[test]
 fn an_unset_empty_or_zero_variable_runs_sb() {
