@@ -98,7 +98,10 @@ not a directory` (cmd/update.go:391-400).
      @{u}`. The upstream is checked again before that last reset, in case
      the checkout changed since step 3; it fails with the same text.
   5. "Updating git submodules": `git submodule update --progress --init
-     --recursive` (a remote op).
+     --recursive` (a remote op). *Amended 2026-11-20 (the maintainer,
+     performance round 3):* only when the checkout has a `.gitmodules`
+     after the reset; without one the step is drawn and runs nothing
+     (difference 15).
   6. "Setting repository ownership": host's
      `ensure_owner_recursive(owner, [path])` (host spec, "Ownership").
      `owner` is the Saltbox user, or root for setup's clone, as sb-go.
@@ -236,6 +239,16 @@ Every fetch, clone and submodule update goes through one wrapper
     would throw away before anything changes, so the commands can ask;
     sb-go discarded local commits, tracked changes and untracked files
     without a word.
+15. *Added 2026-11-20 (the maintainer, performance round 3):*
+    `fetch_and_reset` runs `git submodule update` only when the checkout
+    has a `.gitmodules` after the reset; sb-go always ran it. Saltbox and
+    Sandbox have none, and git's `submodule` is a shell script: 19
+    programs and 23-28 ms per checkout on Ubuntu 22.04 and 24.04, 46-54 ms
+    per update. Anything but a plain "not there" (a `.gitmodules` that
+    can't be inspected, a symlink) runs it as before. A checkout with
+    submodule entries in its index but no `.gitmodules`, which git's own
+    update fails on, now passes the step unnoticed. `clone` and
+    `init_from_remote` (setup) still always run it.
 
 ### Scope
 
@@ -341,7 +354,10 @@ No test touches a Saltbox checkout or the network.
     file still there).
   - a detached HEAD with `Reset`: succeeds; a local branch without an
     upstream kept: the "no upstream" error.
-  - a submodule added upstream is initialised.
+  - a submodule added upstream is initialised, through git's
+    `submodule update`; without a `.gitmodules` that update isn't run
+    (a stand-in git recording its arguments), the step still drawn
+    (2026-11-20, difference 15).
   - `head()` before and after differs; `current_branch()` on detached is
     `HEAD`.
   - `discards` (2026-11-19): a clean clone has none; a local commit, a

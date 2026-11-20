@@ -238,6 +238,33 @@ fn recording_git(dir: &Path) -> PathBuf {
     path
 }
 
+/// A git in `dir` that appends its arguments to `args.log`, then runs
+/// the real git allowing `file://` submodules, as [`recording_git`].
+fn arguments_git(dir: &Path) -> PathBuf {
+    let path = dir.join("git");
+    std::fs::write(
+        &path,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\n\
+             exec git -c protocol.file.allow=always \"$@\"\n",
+            dir.join("args.log").display()
+        ),
+    )
+    .expect("write");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    path
+}
+
+/// The `submodule` runs [`arguments_git`] in `dir` recorded.
+fn submodule_runs(dir: &Path) -> Vec<String> {
+    std::fs::read_to_string(dir.join("args.log"))
+        .expect("args")
+        .lines()
+        .filter(|line| line.starts_with("submodule"))
+        .map(str::to_string)
+        .collect()
+}
+
 fn token() -> CancellationToken {
     CancellationToken::new()
 }
@@ -750,10 +777,35 @@ async fn a_submodule_added_upstream_is_initialised() {
     git(&fixture.work, &["commit", "--quiet", "-m", "submodule"]);
     git(&fixture.work, &["push", "--quiet", "origin", "master"]);
     let bin = tempfile::tempdir().expect("bin");
-    let repo = fixture.repo().with_git(recording_git(bin.path()));
+    let repo = fixture.repo().with_git(arguments_git(bin.path()));
     let ran = update(&repo, "master").await;
     assert_eq!(ran.error, None, "{}", ran.screen);
     assert!(fixture.checkout.join("roles/module/inside.txt").exists());
+    // With a `.gitmodules`, git's submodule update runs as it always did.
+    assert_eq!(
+        submodule_runs(bin.path()),
+        ["submodule update --progress --init --recursive"]
+    );
+}
+
+#[tokio::test]
+async fn without_a_gitmodules_the_submodule_update_is_not_run() {
+    let _spawns = SPAWNS.lock().await;
+    let fixture = Fixture::new();
+    let moved = fixture.advance("master", "next.txt");
+    let bin = tempfile::tempdir().expect("bin");
+    let repo = fixture.repo().with_git(arguments_git(bin.path()));
+    let ran = update(&repo, "master").await;
+    assert_eq!(ran.error, None, "{}", ran.screen);
+    assert!(!fixture.checkout.join(".gitmodules").exists());
+    assert_eq!(fixture.head(), moved);
+    // The step is still drawn; git's submodule never ran.
+    assert!(
+        ran.screen.contains("Updating git submodules"),
+        "{}",
+        ran.screen
+    );
+    assert_eq!(submodule_runs(bin.path()), Vec::<String>::new());
 }
 
 #[tokio::test]

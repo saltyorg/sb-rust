@@ -94,7 +94,8 @@ impl Repo {
     /// 4. "Resetting repository to `branch`": clean, reset to `HEAD`
     ///    (decision 7), `checkout <branch> --`, clean, reset to `@{u}`;
     ///    never `clean -x`, so ignored files (Saltbox's config) stay;
-    /// 5. "Updating git submodules";
+    /// 5. "Updating git submodules", when the checkout has a
+    ///    `.gitmodules` (difference 15);
     /// 6. "Setting repository ownership": host's
     ///    `ensure_owner_recursive(owner, [path])`.
     ///
@@ -138,6 +139,16 @@ impl Repo {
         .await?;
         let submodules = "Updating git submodules";
         step.step(Labels::new(submodules, submodules), async |step| {
+            // Without a `.gitmodules` git has no submodule to update, and
+            // its `submodule` is a shell script: 20 programs, 23-25 ms per
+            // checkout with git 2.34 and 2.43 (measured 2026-11-20;
+            // difference 15). Anything but a plain "not there" runs it.
+            if let Err(err) = self.path.join(".gitmodules").symlink_metadata()
+                && err.kind() == std::io::ErrorKind::NotFound
+            {
+                tracing::info!(repo = %self.name, "no .gitmodules: submodule update not run");
+                return Ok(());
+            }
             self.remote(
                 step,
                 &["submodule", "update", "--progress", "--init", "--recursive"],
