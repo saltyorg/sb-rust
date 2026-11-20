@@ -93,3 +93,53 @@ The same on all three releases.
    cache of 300 Saltbox and 100 Sandbox tags, release build,
    `hyperfine -N --warmup 5 --runs 50`: about 4 ms mean, as `sb version`
    on the same machine; the budget is 10 ms (CONSTRAINTS.md, Startup).
+
+## bash's descriptions and zsh's failing completer (2026-11-20)
+
+Verified for the completion spec's decisions 13 and 14.
+
+**Software:** sb's release build with `clap_complete` 4.6.11, the three
+releases' shells as in the table above, and ble.sh at commit
+152942758f567e51fd17bdc7b3783d27b3c476aa, built from its repository in
+each container.
+
+**Method:** `crates/completion/tests/shells.sh` on 22.04, 24.04 and
+26.04. For the bash cases each is a new login shell in tmux, with its
+own `~/.inputrc` (after `$include /etc/inputrc`) and window width; the
+keys are sent one by one, the screen saved after the last, and the line
+saved by the capture key (under ble.sh, read from the screen's prompt
+line). The per-Tab cost is the stub's completion function alone, 20
+runs, three rounds, in a 24.04 container with one CPU, as a user, with
+a cache of 251 Saltbox and 48 Sandbox tags.
+
+**Results, the same on all three releases:**
+
+1. **Listing:** `sb docker s`, Tab three times, extends the word to
+   `st` and then lists `start  (Start Docker containers managed by
+   Saltbox)` and `stop   (Stop Docker ...)`; the line stays `sb docker
+   st`. readline calls the completion function with `COMP_TYPE` 63 for
+   the listing Tab.
+2. **show-all-if-ambiguous:** the first Tab (`COMP_TYPE` 33) extends the
+   word to the common prefix and lists with descriptions: padded entries
+   of different names share exactly the names' common prefix.
+3. **No insertion of a description:** a single match (`sb up`) inserts
+   `update`; `TAB: menu-complete` (`COMP_TYPE` 37) cycles `start`, then
+   `stop`. Under ble.sh, which calls completion with `COMP_TYPE` 9, the
+   line holds names only (`sb docker st...`, `sb update`).
+4. **Width:** at 40 columns update's flags (the longest name is 18)
+   leave less than 20 columns of description, so names; at 60 columns
+   the entries are padded and cut with `…` within 59 columns. bash
+   passes a current `$COLUMNS` to the stub.
+5. **Mixed lists:** `sb install <Tab><Tab>` (tags without help, flags
+   with it) shows the grid of names.
+6. **zsh with a failing completer** (a script printing `Error: something
+   broke` and exiting 1 at the path a name's file calls): `saltbox
+   install <Tab>` leaves the line as it is; with clap's stub alone it
+   inserted `Error`. zsh's `typeset` docs give the rule the patch uses:
+   a declaration's status doesn't carry a command substitution's, a
+   plain assignment's does.
+7. **Cost per Tab:** 305 candidates (`sb install `), 5.6-6.1 ms with
+   descriptions built in against 5.6-6.0 ms before (no list there has
+   help on every candidate, so none is described); 21 described
+   top-level entries on `COMP_TYPE` 63, 4.9-5.1 ms, against 4.9-5.1 ms
+   for the names.

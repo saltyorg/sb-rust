@@ -105,12 +105,12 @@ completion files in place.
   stub already drops a reply on a non-zero exit. A missing or broken sb
   then completes nothing (bash falls back to file names, through
   `-o bashdefault`), silently, as sb-go's scripts did. clap's zsh stub
-  uses the completer's stdout whatever its status (zsh's `local` hides
-  it); that is left as clap's, since sb writes to stdout only once a
-  reply is complete (`CompleteEnv::complete` writes the buffer after
-  `write_complete` succeeds), and its errors and panics go to stderr. A
-  foreign program at sb's path that prints to stdout and fails can
-  still put a word into a zsh list.
+  used the completer's stdout whatever its status (its `local` hides
+  it), so a program at sb's path that prints to stdout and fails put a
+  word into a zsh list (`Error` on an empty word); sb's zsh stub
+  declares the array apart and returns when the assignment, whose
+  status is the substitution's, fails (the maintainer, 2026-11-20;
+  decision 14).
 - **Descriptions in bash** (the maintainer, 2026-11-20; decision 13),
   as sb-go's bash lists show them: `name  (description)`, names padded
   to the longest, each line cut to the terminal's width less one column
@@ -373,7 +373,8 @@ the test's directory.
 - **bash's descriptions, unit:** the listing types and the others, one
   candidate, a candidate without help, the width (padding, the cut with
   `…`, the 20-column floor, no width given), wide characters; the bash
-  stub's `COLUMNS` line against clap's exact stub text.
+  stub's `COLUMNS` line and zsh's status check against clap's exact
+  stub text.
 - **sb's reply, unit:** the filter on a small tree (a hidden command,
   a hidden flag, a hidden global `-v`, a shown command's hidden alias,
   a hidden command's shown flag, an empty word with only flags and with
@@ -402,7 +403,8 @@ the test's directory.
   commands, `install s<Tab>`, `plex,so<Tab>`, `sandbox-`, the earlier-word
   rule; bash's descriptions (listing, a single match, menu-complete
   cycling, `show-all-if-ambiguous`, a narrow terminal, `sb install
-  <Tab><Tab>`'s grid, ble.sh's plain names); hidden commands and flags on a prefix; no `--` inserted on an
+  <Tab><Tab>`'s grid, ble.sh's plain names); zsh with a failing
+  completer; hidden commands and flags on a prefix; no `--` inserted on an
   empty word with only flags; a missing, unexecutable and failing
   `/usr/local/bin/sb`. This is where the verification items below are settled.
 - Coverage and mutation as CONSTRAINTS.md.
@@ -552,6 +554,12 @@ the test's directory.
     14-22 ms a Tab against 4-5 ms. The research's prototypes measured
     the listing rule clean in 11 readline profiles and ble.sh on 22.04,
     24.04 and 26.04.
+14. **zsh's stub uses a reply only when the completer exits 0**
+    (Tab completion, "A failing sb prints nothing at Tab"): the patch
+    declares the array apart from its assignment and returns when the
+    assignment fails, matched against clap's exact text as decision 12.
+    Source: the maintainer, 2026-11-20 (the zsh case of B4).
+
 ## Known limits
 
 - The candidate menu shows the whole comma list (`plex,sonarr,

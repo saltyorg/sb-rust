@@ -248,6 +248,7 @@ impl Shell {
             Self::Bash => bash_columns(quiet_bash(stub)),
             Self::Fish => quiet_fish(stub),
             Self::Zsh => {
+                let stub = zsh_status(stub);
                 // clap's function is named from `name`, its `compdef`
                 // registers `bin`, and compinit autoloads `_<bin>`.
                 let function = format!("_clap_dynamic_completer_{}", name.replace('-', "_"));
@@ -278,6 +279,41 @@ const BASH_CALL: &str = " -- \"${words[@]}\" \\\n";
 fn quiet_bash(stub: String) -> String {
     if stub.matches(BASH_CALL).count() == 1 {
         stub.replacen(BASH_CALL, " -- \"${words[@]}\" 2>/dev/null \\\n", 1)
+    } else {
+        stub
+    }
+}
+
+/// Where clap's zsh stub declares and fills the reply's array, and where
+/// the assignment ends (`clap_complete` 4.6.11, `env/shells.rs`).
+const ZSH_DECLARE: &str = "    local completions=(\"${(@f)$( \\\n";
+const ZSH_ASSIGNED: &str = "    )}\")\n\n    if [[ -n $completions ]]; then\n";
+
+/// clap's zsh stub using the reply only when the completer exits 0 (spec,
+/// decision 14): its `local completions=(...)` takes `local`'s status, 0,
+/// so a failing completer's stdout became candidates (`Error` on an empty
+/// word, completion report B4's zsh case). zsh's own advice: "Unlike
+/// parameter assignment statements, typeset's exit status on an
+/// assignment that involves a command substitution does not reflect the
+/// exit status of the command substitution. Therefore, to test for an
+/// error in a command substitution, separate the declaration of the
+/// parameter from its initialization" (zshbuiltins(1), `typeset`,
+/// <https://zsh.sourceforge.io/Doc/Release/Shell-Builtin-Commands.html#index-typeset>;
+/// `local` is `typeset` in a function). So the array is declared apart
+/// and the function returns when its assignment fails. Only a stub with
+/// each line once is patched.
+fn zsh_status(stub: String) -> String {
+    if stub.matches(ZSH_DECLARE).count() == 1 && stub.matches(ZSH_ASSIGNED).count() == 1 {
+        stub.replacen(
+            ZSH_DECLARE,
+            "    local -a completions\n    completions=(\"${(@f)$( \\\n",
+            1,
+        )
+        .replacen(
+            ZSH_ASSIGNED,
+            "    )}\") || return\n\n    if [[ -n $completions ]]; then\n",
+            1,
+        )
     } else {
         stub
     }
@@ -516,10 +552,64 @@ fi
         assert_eq!(fish, want);
     }
 
+    /// clap 4.6.11's zsh stub, whole, with sb's changes: the reply used
+    /// only when the completer exits 0 (spec, decision 14) and the last
+    /// line guarded (verification item 1).
+    #[test]
+    fn the_zsh_stub_uses_only_a_successful_reply() {
+        let zsh = String::from_utf8(Shell::Zsh.registration("sb", "sb")).expect("UTF-8");
+        let want = r#"#compdef sb
+function _clap_dynamic_completer_sb() {
+    local _CLAP_COMPLETE_INDEX=$(expr $CURRENT - 1)
+    local _CLAP_IFS=$'\n'
+
+    local -a completions
+    completions=("${(@f)$( \
+        _CLAP_IFS="$_CLAP_IFS" \
+        _CLAP_COMPLETE_INDEX="$_CLAP_COMPLETE_INDEX" \
+        SB_COMPLETE="zsh" \
+        sb -- "${words[@]}" 2>/dev/null \
+    )}") || return
+
+    if [[ -n $completions ]]; then
+        local -a dirs=()
+        local -a other=()
+        local completion
+        for completion in $completions; do
+            local value="${completion%%:*}"
+            if [[ "$value" == */ ]]; then
+                local dir_no_slash="${value%/}"
+                if [[ "$completion" == *:* ]]; then
+                    local desc="${completion#*:}"
+                    dirs+=("$dir_no_slash:$desc")
+                else
+                    dirs+=("$dir_no_slash")
+                fi
+            else
+                other+=("$completion")
+            fi
+        done
+        [[ -n $dirs ]] && _describe -V 'values' dirs -S '/' -r '/'
+        [[ -n $other ]] && _describe -V 'values' other
+    fi
+}
+
+if [[ "${funcstack[1]}" == "_sb" ]]; then
+    _clap_dynamic_completer_sb "$@"
+else
+    compdef _clap_dynamic_completer_sb sb
+fi
+"#;
+        assert_eq!(zsh, want);
+    }
+
     /// A stub the patches don't match is left as clap wrote it (and the
     /// tests above fail): never half patched.
     #[test]
     fn a_stub_the_patches_dont_match_is_kept() {
+        assert_eq!(zsh_status("no array\n".to_owned()), "no array\n");
+        assert_eq!(zsh_status(ZSH_DECLARE.to_owned()), ZSH_DECLARE);
+        assert_eq!(zsh_status(ZSH_ASSIGNED.to_owned()), ZSH_ASSIGNED);
         assert_eq!(bash_columns("no line\n".to_owned()), "no line\n");
         let twice = format!("{BASH_SPACE}{BASH_SPACE}");
         assert_eq!(bash_columns(twice.clone()), twice);

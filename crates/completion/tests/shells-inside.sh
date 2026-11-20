@@ -436,7 +436,10 @@ for kind in missing noexec failing; do
     # substrings), so a used reply would show.
     word=pl
     [ "$kind" != failing ] || word=so
-    drive "$shell" "$label" "saltbox up" "saltbox up" "saltbox install $word" "saltbox install $word"
+    # An empty word: the failing completer's stdout ("Error: ...") was a
+    # zsh candidate before sb's zsh stub checked the status (decision 14).
+    drive "$shell" "$label" "saltbox up" "saltbox up" "saltbox install $word" "saltbox install $word" \
+      "saltbox install " "saltbox install"
     # Each shell's wording: bash's and zsh's (any case), fish's, the
     # completer's own.
     if grep -Eiq 'no such file|permission denied|unknown command|not executable|stderr: broken|error' "/out/screen-$label.txt"; then
