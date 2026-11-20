@@ -149,8 +149,14 @@ impl Releases {
             .into_parts();
         // Written through tokio's file, on its blocking pool, so the
         // runner keeps drawing
-        // (<https://docs.rs/tokio/1.54.1/tokio/fs/struct.File.html#method.from_std>).
-        let mut file = tokio::fs::File::from_std(file);
+        // (<https://docs.rs/tokio/1.54.1/tokio/fs/struct.File.html#method.from_std>),
+        // behind tokio's `BufWriter`, as tokio's file docs advise: each
+        // write is a trip to the pool
+        // (<https://docs.rs/tokio/1.54.1/tokio/fs/index.html#tuning-your-file-io>),
+        // and a body that comes at a network's pace comes in chunks of a
+        // TLS record, 16 KiB (measured, [`WRITE_BUFFER`]).
+        let mut file =
+            tokio::io::BufWriter::with_capacity(WRITE_BUFFER, tokio::fs::File::from_std(file));
         // Each chunk counted and hashed before it is written. Why not
         // `tokio::io::copy` from a stream reader with tokio-util's
         // `InspectReader` and `take`: it needs reqwest's `stream` feature
@@ -200,8 +206,12 @@ impl Releases {
         // `complete_inflight`), which would leave a file short on disk
         // passed as verified. Hence `flush` first, as tokio's `File` docs
         // ask before a drop
-        // (<https://docs.rs/tokio/1.54.1/tokio/fs/struct.File.html>).
+        // (<https://docs.rs/tokio/1.54.1/tokio/fs/struct.File.html>);
+        // the `BufWriter`'s writes out what it holds, then flushes the file
+        // (tokio 1.54.1, `src/io/util/buf_writer.rs`, `poll_flush`), so
+        // `into_inner` below loses nothing.
         file.flush().await.map_err(io_failed(write(name)))?;
+        let file = file.into_inner();
         file.sync_all()
             .await
             .map_err(io_failed(format!("sync staged release asset {name:?}")))?;
@@ -212,6 +222,16 @@ impl Releases {
         Ok(Staged(path))
     }
 }
+
+/// The staged file's write buffer: sixteen 16 KiB chunks to each trip to
+/// tokio's blocking pool. A 21 MB asset at a network's pace (1,348
+/// chunks of 16 KiB) took 279 M instructions, 131 ms of CPU and 2,861
+/// context switches with a trip per chunk, 250 M, 105 ms and 535 with
+/// this; 64 KiB saved half as much, and 1 MiB the same instructions with
+/// 1.5 MB more memory held. A body that comes
+/// faster comes in larger chunks (400-800 KiB on loopback), which pass
+/// the buffer by (performance round 3, infra finding 9).
+const WRITE_BUFFER: usize = 256 * 1024;
 
 /// How one download attempt failed: for good (a check that won't change,
 /// a local failure), or worth another attempt, with the response's
