@@ -142,7 +142,12 @@ build it on a temporary root (sb-go's `releaseLayout` injection).
      - `import ansible, apprise, certbot`;
      - `ansible`, `certbot` and `apprise` each run `--version`. ansible runs
        with `ANSIBLE_CONFIG` empty and every other `ANSIBLE_*` removed.
-     Each probe: capture, 30 s.
+     Each probe: capture, 30 s. The seven run at once, as many at a time
+     as sb may run on physical cores (one core, SMT siblings included:
+     in turn); one after another they took
+     about a second. After a failure the probes not yet started don't
+     run. The failure reported is the first in this order, so its text
+     is sb-go's.
 4a. **With `sb update --verify-venv` only** (decision 25; hidden, as
    `Env::verify`), when the active venv has a manifest: step
    **"Verifying Ansible virtual environment files"** (done "Ansible

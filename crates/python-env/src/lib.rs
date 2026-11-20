@@ -16,6 +16,7 @@
 #![deny(clippy::print_stdout, clippy::print_stderr)]
 
 pub mod activate;
+mod cores;
 pub mod deadsnakes;
 pub mod fact;
 mod isolate;
@@ -170,6 +171,11 @@ pub struct Env<'a> {
     /// checked against their wheels' RECORDs and its Python release's
     /// against sb's manifest; off for every other run.
     pub verify: bool,
+    /// How many of the environment check's probes run at once; `None`
+    /// (the default) is one per physical core sb may run on (sysfs's CPU
+    /// topology), no more than the CPUs it may use, read when a check
+    /// starts.
+    pub probes_at_once: Option<std::num::NonZeroUsize>,
 }
 
 impl<'a> Env<'a> {
@@ -196,6 +202,7 @@ impl<'a> Env<'a> {
                 .strftime("%Y%m%dT%H%M%S%N")
                 .to_string(),
             verify: false,
+            probes_at_once: None,
         }
     }
 

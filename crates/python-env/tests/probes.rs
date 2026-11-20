@@ -201,23 +201,27 @@ async fn a_healthy_venv_passes_every_probe() {
         venv.join("bin").display().to_string(),
         tree.layout.uv.display(),
     );
-    assert_eq!(
-        tree.calls_made(),
-        [
-            format!("{py} -I --version"),
-            format!("{py} -I -c import encodings, ssl, sqlite3, ctypes"),
-            format!("{uv} --no-config pip check --python {py}"),
-            format!("{py} -I -c import ansible, apprise, certbot"),
-            format!("{bin}/ansible --version"),
-            format!("{bin}/certbot --version"),
-            format!("{bin}/apprise --version"),
-        ]
-    );
+    // The probes run at once, so they start in any order.
+    let mut calls = tree.calls_made();
+    calls.sort();
+    let mut want = [
+        format!("{py} -I --version"),
+        format!("{py} -I -c import encodings, ssl, sqlite3, ctypes"),
+        format!("{uv} --no-config pip check --python {py}"),
+        format!("{py} -I -c import ansible, apprise, certbot"),
+        format!("{bin}/ansible --version"),
+        format!("{bin}/certbot --version"),
+        format!("{bin}/apprise --version"),
+    ];
+    want.sort();
+    assert_eq!(calls, want);
     // Only ansible gets the isolated config, an empty file while it runs.
     let configs = std::fs::read_to_string(tree.entry_points_log()).expect("entry points");
+    let mut configs: Vec<&str> = configs.lines().collect();
+    configs.sort_unstable();
     assert_eq!(
         configs,
-        "ansible empty-file\ncertbot unset\napprise unset\n"
+        ["ansible empty-file", "apprise unset", "certbot unset"]
     );
 }
 
@@ -322,4 +326,196 @@ async fn each_failing_probe_is_named() {
     std::fs::remove_file(venv.join("bin/apprise")).expect("rm apprise");
     let text = check().await;
     assert!(text.starts_with("run apprise health check: "), "{text}");
+}
+
+/// `program` made to wait, before it runs as it did, until all seven
+/// probes of the environment check have started (each touches a file in
+/// `arrived`), or 20 s have passed (then it fails): probes run one after
+/// another would never all start.
+fn gated(program: &std::path::Path, arrived: &std::path::Path) {
+    let real = program.with_extension("real");
+    std::fs::rename(program, &real).expect("move the stand-in");
+    std::fs::create_dir_all(arrived).expect("arrivals");
+    let (dir, real) = (arrived.display(), real.display());
+    let script = format!(
+        ": > '{dir}/'$$\nn=0\n\
+         while [ \"$(ls '{dir}' | wc -l)\" -lt 7 ]; do\n\
+         n=$((n + 1)); [ \"$n\" -gt 2000 ] && exit 9; sleep 0.01\n\
+         done\nexec '{real}' \"$@\""
+    );
+    let name = program.file_name().expect("name").to_str().expect("utf-8");
+    let _ = stand_in(program.parent().expect("parent"), name, &script);
+}
+
+/// The seven probes run at once (performance research, round 2, item 3):
+/// each waits for the others to start.
+#[tokio::test]
+async fn the_probes_run_at_once() {
+    let _spawns = SPAWNS.lock().await;
+    let tree = Tree::new();
+    let venv = tree.root.path().join("gen/venv");
+    tree.venv(&venv);
+    let arrived = tree.root.path().join("arrived");
+    for program in [
+        venv.join("bin/python3"),
+        venv.join("bin/ansible"),
+        venv.join("bin/certbot"),
+        venv.join("bin/apprise"),
+        tree.layout.uv.clone(),
+    ] {
+        gated(&program, &arrived);
+    }
+    let env = sb_python_env::Env {
+        probes_at_once: Some(at_once(7)),
+        ..tree.env()
+    };
+    venv::check_environment(&env, &venv, PYTHON, &token())
+        .await
+        .expect("healthy");
+}
+
+/// `n` probes at once.
+fn at_once(n: usize) -> std::num::NonZeroUsize {
+    std::num::NonZeroUsize::new(n).expect("at least one")
+}
+
+/// After a failure the probes not yet started don't run, as when the
+/// check stopped at its first failure: on one CPU, a Python that won't
+/// run is the only probe.
+#[tokio::test]
+async fn no_probe_starts_after_a_failure() {
+    let _spawns = SPAWNS.lock().await;
+    let tree = Tree::new();
+    let venv = tree.root.path().join("gen/venv");
+    tree.venv(&venv);
+    let python = venv.join("bin/python3");
+    let _ = stand_in(
+        &venv.join("bin"),
+        "python3",
+        &format!("echo \"$0 $*\" >> '{}'\nexit 1", tree.calls().display()),
+    );
+    let env = sb_python_env::Env {
+        probes_at_once: Some(at_once(1)),
+        ..tree.env()
+    };
+    let text = venv::check_environment(&env, &venv, PYTHON, &token())
+        .await
+        .expect_err("unhealthy")
+        .to_string();
+    assert!(
+        text.starts_with(&format!("run Python at {}: ", python.display())),
+        "{text}"
+    );
+    assert_eq!(
+        tree.calls_made(),
+        [format!("{} -I --version", python.display())]
+    );
+}
+
+/// After Ctrl-C no probe starts.
+#[tokio::test]
+async fn no_probe_starts_after_ctrl_c() {
+    let _spawns = SPAWNS.lock().await;
+    let tree = Tree::new();
+    let venv = tree.root.path().join("gen/venv");
+    tree.venv(&venv);
+    let cancelled = token();
+    cancelled.cancel();
+    venv::check_environment(&tree.env(), &venv, PYTHON, &cancelled)
+        .await
+        .expect_err("interrupted");
+    assert_eq!(tree.calls_made(), Vec::<String>::new());
+}
+
+/// `program` made to note in `log` when it starts (`+`) and ends (`-`),
+/// 200 ms apart, before it runs as it did.
+fn timed(program: &std::path::Path, log: &std::path::Path) {
+    let real = program.with_extension("real");
+    std::fs::rename(program, &real).expect("move the stand-in");
+    let (log, real) = (log.display(), real.display());
+    let script = format!("echo + >> '{log}'\nsleep 0.2\necho - >> '{log}'\nexec '{real}' \"$@\"");
+    let name = program.file_name().expect("name").to_str().expect("utf-8");
+    let _ = stand_in(program.parent().expect("parent"), name, &script);
+}
+
+/// No more probes run at once than `probes_at_once` (by default the
+/// physical cores sb may run on): one at a time on one core, as before,
+/// and two on two.
+#[tokio::test]
+async fn the_probes_at_once_are_capped() {
+    let _spawns = SPAWNS.lock().await;
+    for cap in [1, 2] {
+        let tree = Tree::new();
+        let venv = tree.root.path().join("gen/venv");
+        tree.venv(&venv);
+        let log = tree.root.path().join("running.log");
+        for program in [
+            venv.join("bin/python3"),
+            venv.join("bin/ansible"),
+            venv.join("bin/certbot"),
+            venv.join("bin/apprise"),
+            tree.layout.uv.clone(),
+        ] {
+            timed(&program, &log);
+        }
+        let env = sb_python_env::Env {
+            probes_at_once: Some(at_once(cap)),
+            ..tree.env()
+        };
+        venv::check_environment(&env, &venv, PYTHON, &token())
+            .await
+            .expect("healthy");
+        let (mut running, mut most) = (0_usize, 0_usize);
+        let marks = std::fs::read_to_string(&log).expect("log");
+        for mark in marks.lines() {
+            if mark == "+" {
+                running += 1;
+                most = most.max(running);
+            } else {
+                running -= 1;
+            }
+        }
+        assert_eq!(marks.lines().count(), 14, "{marks}");
+        assert_eq!(most, cap, "{marks}");
+    }
+}
+
+/// With several probes failing, the first in the check's order is the
+/// one named, however soon the others end: a Python reporting another
+/// release, late, beside a failing `uv pip check` and `certbot`.
+#[tokio::test]
+async fn the_first_failure_in_order_is_named() {
+    let _spawns = SPAWNS.lock().await;
+    let tree = Tree::new();
+    let venv = tree.root.path().join("gen/venv");
+    tree.venv(&venv);
+    let python = venv.join("bin/python3");
+    let _ = stand_in(
+        &venv.join("bin"),
+        "python3",
+        "case \"$2\" in --version) sleep 0.3; echo 'Python 3.12.6' ;; esac",
+    );
+    tree.fail("pip-check");
+    let _ = stand_in(&venv.join("bin"), "certbot", "exit 1");
+    let err = venv::check_environment(&tree.env(), &venv, PYTHON, &token())
+        .await
+        .expect_err("unhealthy");
+    assert_eq!(
+        err.to_string(),
+        format!(
+            "python at {} reports \"Python 3.12.6\", expected \"Python 3.12.7\"",
+            python.display()
+        )
+    );
+
+    // A Python that doesn't run at all, late, before the same failures.
+    let _ = stand_in(&venv.join("bin"), "python3", "sleep 0.3; exit 1");
+    let text = venv::check_environment(&tree.env(), &venv, PYTHON, &token())
+        .await
+        .expect_err("unhealthy")
+        .to_string();
+    assert!(
+        text.starts_with(&format!("run Python at {}: ", python.display())),
+        "{text}"
+    );
 }

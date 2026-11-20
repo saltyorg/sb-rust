@@ -11,9 +11,11 @@ use std::time::Duration;
 
 use anyhow::Context as _;
 use sb_cli_core::exit::{Exit, escaped, shown_chain};
+use sb_exec::Cmd;
 use sb_host::OwnerError;
 use sb_host::apt::PackageQueryError;
 use sb_term_ui::{Labels, Step};
+use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
 use crate::activate::{self, ActivateError, CleanupError};
@@ -67,9 +69,121 @@ pub enum CheckError {
     EntryPoint { name: &'static str, cause: String },
 }
 
+/// A probe's ending: its output, or exec's text for its failure; or why
+/// its child couldn't be prepared.
+type Ran = Result<Result<String, String>, IsolateError>;
+
+/// The turns the probes take, [`Env::probes_at_once`] at a time (one per
+/// physical core sb may run on, by default; noted in the run log). Each
+/// check's `tokio::join!` is `biased`, so its probes ask in the check's
+/// order, and tokio's semaphore gives turns in the order asked
+/// (<https://docs.rs/tokio/1.54.1/tokio/sync/struct.Semaphore.html>):
+/// every probe still waiting comes after every probe that has had its
+/// turn.
+fn turns(env: &Env<'_>) -> Semaphore {
+    let at_once = env
+        .probes_at_once
+        .unwrap_or_else(crate::cores::probes_at_once);
+    tracing::info!(at_once, "the environment check's probes take turns");
+    Semaphore::new(at_once.get())
+}
+
+/// One probe, in its turn (held to its end): `program`'s child prepared
+/// as `kind` with `args` applied and [`HEALTH_TIMEOUT`], then captured.
+/// The child's scratch directory lives until it ends.
+///
+/// A probe that fails closes `turns`, and the probes still waiting then
+/// don't run, as the check stopped at its first failure when the probes
+/// ran in turn: they all come after it, so its failure is the one named
+/// (a hung Python costs one timeout, not one for each probe). Ctrl-C
+/// fails the running probes, so the waiting ones don't start either. The
+/// placeholder text of a probe that didn't run is never shown: the
+/// failure before it is named, or the caller reports the interruption.
+async fn run_probe(
+    env: &Env<'_>,
+    turns: &Semaphore,
+    kind: Kind<'_>,
+    program: impl AsRef<Path>,
+    args: impl FnOnce(Cmd) -> Cmd,
+    token: &CancellationToken,
+) -> Ran {
+    let Ok(_turn) = turns.acquire().await else {
+        return Ok(Err("not run: an earlier probe failed".to_string()));
+    };
+    let ran = env
+        .isolated(kind, program.as_ref())
+        .map(|isolated| isolated.map(|cmd| args(cmd).timeout(HEALTH_TIMEOUT)));
+    let ran = match ran {
+        // Boxed: seven captures side by side would make the check's
+        // future (and every caller's) about 18 KB (clippy's
+        // `large_futures`).
+        Ok(prepared) => Ok(Box::pin(probe(&prepared.cmd, token)).await),
+        Err(err) => Err(err),
+    };
+    if !matches!(ran, Ok(Ok(_))) {
+        turns.close();
+    }
+    ran
+}
+
+/// The Python check's two probes: `python -I --version`, and the
+/// standard library's imports.
+fn python_probes<'a>(
+    env: &'a Env<'_>,
+    turns: &'a Semaphore,
+    python: &'a Path,
+    token: &'a CancellationToken,
+) -> (
+    impl Future<Output = Ran> + 'a,
+    impl Future<Output = Ran> + 'a,
+) {
+    let run = |args: &'static [&'static str]| {
+        run_probe(
+            env,
+            turns,
+            Kind::Python,
+            python,
+            move |cmd| args.iter().fold(cmd, |cmd, arg| cmd.arg(arg)),
+            token,
+        )
+    };
+    (run(&["--version"]), run(&["-c", STDLIB]))
+}
+
+/// The Python check's verdict on its probes' endings, the first failure
+/// in sb-go's order: `--version` ran and reported `Python <version>`,
+/// then the standard library imported.
+fn python_checked(
+    python: &Path,
+    version: &str,
+    reported: Ran,
+    stdlib: Ran,
+) -> Result<(), CheckError> {
+    let got = reported?.map_err(|cause| CheckError::RunPython {
+        path: python.to_path_buf(),
+        cause,
+    })?;
+    let want = format!("Python {version}");
+    let got = got.trim();
+    if got != want {
+        return Err(CheckError::PythonVersion {
+            path: python.to_path_buf(),
+            got: got.to_string(),
+            want,
+        });
+    }
+    stdlib?.map_err(|cause| CheckError::Stdlib {
+        path: python.to_path_buf(),
+        cause,
+    })?;
+    Ok(())
+}
+
 /// The Python check (sb-go's `validatePython`, with decision 3's wider
 /// import): `python -I --version` is `Python <version>`, then the
-/// standard library imports.
+/// standard library imports. The two probes run at once where sb may use
+/// two CPUs (as [`check_environment`]'s); the failure returned is the
+/// first in that order, as when they ran one after the other.
 ///
 /// # Errors
 ///
@@ -80,34 +194,10 @@ pub async fn check_python(
     version: &str,
     token: &CancellationToken,
 ) -> Result<(), CheckError> {
-    let reported = env
-        .isolated(Kind::Python, python)?
-        .map(|cmd| cmd.arg("--version").timeout(HEALTH_TIMEOUT));
-    let got = probe(&reported.cmd, token)
-        .await
-        .map_err(|cause| CheckError::RunPython {
-            path: python.to_path_buf(),
-            cause,
-        })?;
-    let want = format!("Python {version}");
-    let got = got.trim();
-    if got != want {
-        return Err(CheckError::PythonVersion {
-            path: python.to_path_buf(),
-            got: got.to_string(),
-            want,
-        });
-    }
-    let imports = env
-        .isolated(Kind::Python, python)?
-        .map(|cmd| cmd.arg("-c").arg(STDLIB).timeout(HEALTH_TIMEOUT));
-    probe(&imports.cmd, token)
-        .await
-        .map_err(|cause| CheckError::Stdlib {
-            path: python.to_path_buf(),
-            cause,
-        })?;
-    Ok(())
+    let turns = turns(env);
+    let (reported, stdlib) = python_probes(env, &turns, python, token);
+    let (reported, stdlib) = tokio::join!(biased; reported, stdlib);
+    python_checked(python, version, reported, stdlib)
 }
 
 /// The environment check of the venv at `venv` (sb-go's
@@ -115,6 +205,19 @@ pub async fn check_python(
 /// `uv pip check` passes, Saltbox's packages import, and `ansible`,
 /// `certbot` and `apprise` each run `--version` in the venv (`ansible`
 /// with no `ANSIBLE_*` but an empty config).
+///
+/// The seven probes run at once, as many at a time as sb may use
+/// physical cores ([`Env::probes_at_once`]; `tokio::join!`,
+/// <https://docs.rs/tokio/1.54.1/tokio/macro.join.html>): one after the
+/// other they took about a second on every update, the longest
+/// (`ansible --version`) about a third of it (performance research,
+/// round 2, item 3), and on one core (SMT siblings included) they still
+/// run in turn, as more Pythons than cores cost more CPU time than the
+/// wait they save. After a
+/// failure the probes not yet started don't run ([`run_probe`]). Each is
+/// independent of the others' results, and the failure returned is the
+/// first in the order above, so the error text is the one sb-go's
+/// sequence gives.
 ///
 /// # Errors
 ///
@@ -126,38 +229,54 @@ pub async fn check_environment(
     token: &CancellationToken,
 ) -> Result<(), CheckError> {
     let python = venv.join("bin/python3");
-    check_python(env, &python, version, token).await?;
     let python_arg = python.to_string_lossy().into_owned();
-    let pip_check = env
-        .isolated(Kind::Uv { cache: true }, &env.layout.uv)?
-        .map(|cmd| {
+    let turns = turns(env);
+    let (reported, stdlib) = python_probes(env, &turns, &python, token);
+    let pip_check = run_probe(
+        env,
+        &turns,
+        Kind::Uv { cache: true },
+        &env.layout.uv,
+        |cmd| {
             cmd.arg("pip")
                 .arg("check")
                 .arg("--python")
                 .shown_value(python_arg)
-                .timeout(HEALTH_TIMEOUT)
-        });
-    probe(&pip_check.cmd, token)
-        .await
-        .map_err(CheckError::Packages)?;
-    let imports = env
-        .isolated(Kind::Python, &python)?
-        .map(|cmd| cmd.arg("-c").arg(PACKAGES).timeout(HEALTH_TIMEOUT));
-    probe(&imports.cmd, token)
-        .await
-        .map_err(CheckError::Imports)?;
-    for name in ENTRY_POINTS {
+        },
+        token,
+    );
+    let imports = run_probe(
+        env,
+        &turns,
+        Kind::Python,
+        &python,
+        |cmd| cmd.arg("-c").arg(PACKAGES),
+        token,
+    );
+    let [first, second, third] = ENTRY_POINTS.map(|name| {
         let kind = Kind::Entrypoint {
             venv,
             ansible: name == "ansible",
         };
         let program = venv.join("bin").join(name);
-        let check = env
-            .isolated(kind, &program)?
-            .map(|cmd| cmd.arg("--version").timeout(HEALTH_TIMEOUT));
-        probe(&check.cmd, token)
-            .await
-            .map_err(|cause| CheckError::EntryPoint { name, cause })?;
+        run_probe(
+            env,
+            &turns,
+            kind,
+            program,
+            |cmd| cmd.arg("--version"),
+            token,
+        )
+    });
+    let (reported, stdlib, pip_check, imports, first, second, third) = tokio::join!(
+        biased;
+        reported, stdlib, pip_check, imports, first, second, third
+    );
+    python_checked(&python, version, reported, stdlib)?;
+    pip_check?.map_err(CheckError::Packages)?;
+    imports?.map_err(CheckError::Imports)?;
+    for (name, ran) in ENTRY_POINTS.into_iter().zip([first, second, third]) {
+        ran?.map_err(|cause| CheckError::EntryPoint { name, cause })?;
     }
     Ok(())
 }
