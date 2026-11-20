@@ -11,11 +11,9 @@ use serde_json::json;
 use crate::Out;
 use std::collections::HashSet;
 use std::path::Path;
-use std::sync::LazyLock;
 use std::time::Duration;
 
 use procfs::{CpuInfo, Current, LoadAverage, Meminfo, Uptime};
-use regex::Regex;
 
 use crate::Paint;
 use crate::text::one_line;
@@ -450,10 +448,40 @@ pub fn cpu_out(info: Option<&CpuInfo>, paint: &Paint) -> Out {
 /// `\s` is `[\t\n\f\r ]` and `\d` is `[0-9]` in its RE2 syntax,
 /// <https://pkg.go.dev/regexp/syntax>), trimmed and made safe to draw.
 fn model_name(raw: &str) -> String {
-    static TAIL: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"[\t\n\f\r ]+[0-9]+-Core.*").expect("a valid pattern"));
-    let model = TAIL.find(raw).map_or(raw, |found| &raw[..found.start()]);
+    let model = core_tail(raw).map_or(raw, |start| &raw[..start]);
     one_line(model.as_bytes())
+}
+
+/// Where sb-go's `\s+\d+-Core.*` first matches in `raw`: the start of the
+/// first run of Go's white space followed by digits and `-Core`. Matched
+/// by hand, the same match as regex's leftmost-first `find` (a test
+/// compares them): why not regex, this pattern's compile and
+/// `coloured`'s were 1.2 M instructions at each login (the performance
+/// pass, 2026-11-20: `sb motd --cpu-info --apt` 19.9 → 18.7 M); nor
+/// regex-lite, a crate new to the tree for a few lines.
+fn core_tail(raw: &str) -> Option<usize> {
+    let bytes = raw.as_bytes();
+    let space = |at: usize| bytes.get(at).is_some_and(|b| b"\t\n\x0c\r ".contains(b));
+    let digit = |at: usize| bytes.get(at).is_some_and(u8::is_ascii_digit);
+    let mut at = 0;
+    while at < bytes.len() {
+        if !space(at) {
+            at += 1;
+            continue;
+        }
+        let start = at;
+        while space(at) {
+            at += 1;
+        }
+        let digits = at;
+        while digit(at) {
+            at += 1;
+        }
+        if at > digits && bytes[at..].starts_with(b"-Core") {
+            return Some(start);
+        }
+    }
+    None
 }
 
 /// CPU on this host.
@@ -837,6 +865,40 @@ mod tests {
         // Nor is a vertical tab Go's `\s`; it is then dropped as a control.
         assert_eq!(model_name("Chip\x0b12-Core"), "Chip12-Core");
         assert_eq!(model_name("X-Core 8-Core"), "X-Core");
+    }
+
+    /// The match by hand is regex's of sb-go's pattern on every short
+    /// text of the characters that matter, and on longer ones.
+    #[test]
+    fn the_core_tail_is_the_patterns_match() {
+        let pattern = regex::Regex::new(r"[\t\n\f\r ]+[0-9]+-Core.*").expect("compiles");
+        let alphabet = [" ", "\t", "\x0b", "1", "-Core", "C", "\u{FF16}", "\n"];
+        // Every text of up to five parts.
+        let mut texts = vec![String::new()];
+        let mut last = texts.clone();
+        for _ in 0..5 {
+            last = last
+                .iter()
+                .flat_map(|text| alphabet.iter().map(move |part| format!("{text}{part}")))
+                .collect();
+            texts.extend(last.iter().cloned());
+        }
+        texts.extend(
+            [
+                "AMD Ryzen 9 5950X 16-Core Processor",
+                "AMD EPYC 7302P 16-Core  Processor",
+                "Chip 12 13-Core",
+                "Chip  \t 8-Core x 4-Core",
+            ]
+            .map(String::from),
+        );
+        for text in &texts {
+            assert_eq!(
+                core_tail(text),
+                pattern.find(text).map(|found| found.start()),
+                "{text:?}"
+            );
+        }
     }
 
     #[test]

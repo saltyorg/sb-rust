@@ -15,10 +15,8 @@ use serde_json::json;
 
 use crate::Out;
 use std::path::{Path, PathBuf};
-use std::sync::LazyLock;
 use std::time::Duration;
 
-use regex::Regex;
 use sb_exec::{Cmd, Ending};
 use tokio_util::sync::CancellationToken;
 
@@ -214,18 +212,40 @@ fn esm(line: &str) -> bool {
 /// lines carry one number (`apt_check.py`'s `%i updates can be applied
 /// immediately.`), where that is the same as colouring each. Go's `\d`
 /// is ASCII only, hence `[0-9]`.
+///
+/// The runs found by hand, as regex's `[0-9]+` finds them (a test compares
+/// them): why not regex, its compile and the CPU line's pattern's were
+/// 1.2 M instructions at each login (`system::core_tail`).
 fn coloured(line: &str, paint: &Paint) -> String {
-    static NUMBER: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new("[0-9]+").expect("a valid pattern"));
-    match NUMBER.find(line) {
-        Some(first) => {
-            let number = paint.value(first.as_str());
-            NUMBER
-                .replace_all(line, regex::NoExpand(&number))
-                .into_owned()
-        }
-        None => line.to_string(),
+    let mut runs = digit_runs(line).peekable();
+    let Some(first) = runs.peek() else {
+        return line.to_string();
+    };
+    let number = paint.value(&line[first.clone()]);
+    let mut out = String::with_capacity(line.len() + number.len());
+    let mut last = 0;
+    for run in runs {
+        out.push_str(&line[last..run.start]);
+        out.push_str(&number);
+        last = run.end;
     }
+    out.push_str(&line[last..]);
+    out
+}
+
+/// Each run of ASCII digits in `line`, from the left.
+fn digit_runs(line: &str) -> impl Iterator<Item = std::ops::Range<usize>> + '_ {
+    let bytes = line.as_bytes();
+    let mut at = 0;
+    std::iter::from_fn(move || {
+        let start = at + bytes[at..].iter().position(u8::is_ascii_digit)?;
+        let end = bytes[start..]
+            .iter()
+            .position(|b| !b.is_ascii_digit())
+            .map_or(bytes.len(), |len| start + len);
+        at = end;
+        Some(start..end)
+    })
 }
 
 /// The `updates-available` file's answer: its first line that says
@@ -620,6 +640,35 @@ pub(crate) mod tests {
             "4 of 4 updates"
         );
         assert_eq!(coloured("no number", &paint), "no number");
+    }
+
+    /// The runs by hand are regex's `[0-9]+` on every short text of the
+    /// characters that matter: each replaced with the first, as regex's
+    /// `replace_all` replaces them.
+    #[test]
+    fn the_digit_runs_are_the_patterns() {
+        let pattern = regex::Regex::new("[0-9]+").expect("compiles");
+        let alphabet = ["1", "23", "a", " ", "\u{FF16}", "é"];
+        // Every text of up to five parts.
+        let mut texts = vec![String::new()];
+        let mut last = texts.clone();
+        for _ in 0..5 {
+            last = last
+                .iter()
+                .flat_map(|text| alphabet.iter().map(move |part| format!("{text}{part}")))
+                .collect();
+            texts.extend(last.iter().cloned());
+        }
+        let paint = painted();
+        for text in &texts {
+            let expected = match pattern.find(text) {
+                Some(first) => pattern
+                    .replace_all(text, regex::NoExpand(&paint.value(first.as_str())))
+                    .into_owned(),
+                None => text.clone(),
+            };
+            assert_eq!(coloured(text, &paint), expected, "{text:?}");
+        }
     }
 
     /// apt-check missing, failing, silent or only about ESM: apt counts.
