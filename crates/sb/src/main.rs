@@ -805,6 +805,18 @@ fn start() -> RunEnd {
     let mut early = colour::early_read(verbose::with_flags(Cli::command()), std::env::args_os());
     early.color.write_global();
     let reused = reuse(&mut early);
+    // A run that hands over to sudo does so now, from the pre-pass's
+    // command: the root run reads the theme and warns for itself. Should
+    // the exec fail, the run goes on as one that didn't hand over yet,
+    // and reports it where it would have (below).
+    let handed_over = reused.as_ref().and_then(|cli| {
+        hand_over(
+            cli,
+            root::effective_uid(),
+            sb_host::check_support,
+            root::relaunch_as_root,
+        )
+    });
     let (choice, mut warnings) = theme_choice();
     let (profile, warning) = theme::Profile::choose(
         std::env::var("SB_COLOR_PROFILE").ok().as_deref(),
@@ -847,11 +859,14 @@ fn start() -> RunEnd {
     // anstream and console alike (term-ui spec: colour on every path).
     cli.color.write_global();
     sb_term_ui::follow_colour_choice(profile);
-    let relaunch = root::ensure_root(
-        cli.command.needs_root(),
-        root::effective_uid(),
-        root::relaunch_as_root,
-    );
+    let relaunch = match handed_over {
+        Some(failed) => Err(failed),
+        None => root::ensure_root(
+            cli.command.needs_root(),
+            root::effective_uid(),
+            root::relaunch_as_root,
+        ),
+    };
     if let Err(err) = relaunch {
         // No root run follows: the warnings held back for it show here.
         for warning in &warnings {
@@ -1053,6 +1068,38 @@ fn reuse(early: &mut colour::Early) -> Option<Cli> {
         .matches
         .take()
         .and_then(|matches| cli_from(&matches).ok())
+}
+
+/// The handover to sudo of a run that needs it (cli-core's
+/// `root::ensure_root`), made before the theme is read: a run that hands
+/// over leaves its theme and its startup warnings to the root run, so
+/// reading the inventory and the theme file first was work thrown away
+/// (about 2.5 M instructions and 1 ms of each command a user types:
+/// performance research, round 3, core item 1). `None` when this run goes
+/// on here: root already, a command that runs as the user, or a host
+/// that refuses the command (`support`, sb-host's check), which the run
+/// then reports as before. Otherwise the failed exec's error (a
+/// successful exec doesn't return), for the run to report where it
+/// would have.
+fn hand_over(
+    cli: &Cli,
+    euid: u32,
+    support: impl FnOnce() -> Result<(), sb_host::Unsupported>,
+    exec: impl FnOnce(&std::path::Path, &[std::ffi::OsString]) -> std::io::Error,
+) -> Option<root::RelaunchError> {
+    let hands_over = root::needs_relaunch(cli.command.needs_root(), euid)
+        && allow_unsupported_release(
+            support(),
+            cli.command.runs_on_unsupported_release(),
+            // The root run warns for itself.
+            &mut Vec::new(),
+        )
+        .is_ok();
+    // As a user, the command needing root: `ensure_root` execs, so it
+    // comes back only with the exec's error.
+    hands_over
+        .then(|| root::ensure_root(true, euid, exec).err())
+        .flatten()
 }
 
 /// sb's command from clap's matches.
@@ -1751,6 +1798,61 @@ mod tests {
             "lines read from the pre-pass: {reused} of {}",
             all.len()
         );
+    }
+
+    /// A run that needs root hands over to sudo from the pre-pass's
+    /// command, before the theme: as a user, on a host that runs the
+    /// command (an unsupported release that `self-update` still runs on
+    /// included). Root, a command that runs as the user and a host that
+    /// refuses the command go on, and that refusal is reported later as
+    /// before; a failed exec is kept for the same place.
+    #[test]
+    fn a_run_that_needs_root_hands_over_before_the_theme() {
+        let cli = |line: &[&str]| {
+            let args = std::iter::once("sb").chain(line.iter().copied());
+            reuse(&mut colour::early_read(
+                verbose::with_flags(Cli::command()),
+                args,
+            ))
+            .expect("parsed")
+        };
+        let old = || {
+            Err(sb_host::Unsupported::Release {
+                found: "20.04".into(),
+                supported: "22.04, 24.04".into(),
+            })
+        };
+        let mut called = None;
+        let handed = hand_over(
+            &cli(&["docker", "ps"]),
+            1000,
+            || Ok(()),
+            |exe, args| {
+                called = Some((exe.to_path_buf(), args.to_vec()));
+                std::io::Error::other("no sudo")
+            },
+        );
+        assert!(
+            matches!(handed, Some(root::RelaunchError::Exec(_))),
+            "{handed:?}"
+        );
+        let (exe, _) = called.expect("exec called");
+        assert_eq!(exe, std::env::current_exe().expect("this test's path"));
+        let handed = hand_over(&cli(&["self-update"]), 1000, old, |_, _| {
+            std::io::Error::other("x")
+        });
+        assert!(
+            handed.is_some(),
+            "self-update runs on an unsupported release"
+        );
+        let never = |_: &std::path::Path, _: &[std::ffi::OsString]| -> std::io::Error {
+            panic!("exec must not be called")
+        };
+        assert!(hand_over(&cli(&["docker", "ps"]), 0, || Ok(()), never).is_none());
+        assert!(hand_over(&cli(&["version"]), 1000, || Ok(()), never).is_none());
+        assert!(hand_over(&cli(&["docker", "ps"]), 1000, old, never).is_none());
+        let not_ubuntu = || Err(sb_host::Unsupported::NotUbuntu("debian".into()));
+        assert!(hand_over(&cli(&["self-update"]), 1000, not_ubuntu, never).is_none());
     }
 
     /// An [`colour::Early`] holding `matches`, asking for no help.
