@@ -222,6 +222,9 @@ rcgen = { version = "0.14.10", default-features = false, features = ["aws_lc_rs"
 # The fake's TLS listener (axum's low-level-rustls example); already in
 # the tree through reqwest.
 tokio-rustls = { version = "0.26.6", default-features = false, features = ["aws_lc_rs", "tls12"] }
+# sb's test that aws-lc is built without CPU-jitter entropy (ADR-027);
+# already in the tree through rustls, with the features rustls gives it.
+aws-lc-rs = { version = "1.18.2", default-features = false, features = ["aws-lc-sys", "prebuilt-nasm"] }
 assert_cmd = "2.2.1"
 predicates = "3.1.4"
 insta = "1.49.0"

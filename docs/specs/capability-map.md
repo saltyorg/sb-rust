@@ -52,7 +52,11 @@ Rust libraries in place of sb-go's internals.
    image's GCC compiles. *Amended 2026-11-13 from static musl through
    `cross` ([ADR-020](../decisions/ADR-020-glibc-builds-on-the-oldest-release.md),
    which supersedes ADR-008; built from hardening Tasks 53 and 54).
-   musl is revisited when the binary is complete (below).*
+   musl is revisited when the binary is complete (below).* *Amended
+   2026-11-20: aws-lc is built without its CPU-jitter entropy source
+   (`AWS_LC_SYS_NO_JITTER_ENTROPY` in `.cargo/config.toml`,
+   [ADR-027](../decisions/ADR-027-aws-lc-without-cpu-jitter.md)), which
+   cost about 450 M instructions per TLS command.*
 7. **Repository:** git repository, intended to be public under saltyorg, so
    the public-repo rules in `CLAUDE.md` apply from the first commit.
 8. **Async runtime:** tokio, confirmed by proto-logs. Blocking work (PTY
@@ -210,7 +214,11 @@ GitHub API (last push, archived flag).
 - `termimad`: renders well inline, but it is a second rendering stack (its own
   view types and `unicode-width` 0.1 next to ratatui's 0.2). proto-markdown.
 - rustls with `ring` instead of aws-lc-rs: no benefit, because ring compiles C
-  too. proto-musl.
+  too. proto-musl. *Measured again 2026-11-20 against aws-lc without
+  CPU jitter: the same speed and 2.09 MB smaller, but no post-quantum
+  key exchange, about 30 lines of code, a provider-install rule for
+  every HTTP client, and recorded decisions reversed. Declined
+  ([ADR-027](../decisions/ADR-027-aws-lc-without-cpu-jitter.md)).*
 - Hand-written mouse hit-maps (sb-go's approach): layout rects plus
   `ListState::offset()` do the same in about a quarter of the code.
   proto-facts.
@@ -504,6 +512,16 @@ To discuss with the maintainer once every module is done, not before:
   marker file, and the check reads the screen as text and waits on an
   event instead of sleeping. Costs: a harness of our own, KVM, heavy CPU
   within the host's cap, slow runs, and CI not yet authorised.
+
+- **Left for later: upstream issues to watch** (2026-11-20).
+  - aws-lc#3818 (https://github.com/aws/aws-lc/issues/3818, reported
+    against aws-lc-sys 0.46.0, open): a thread whose first `RAND_bytes`
+    call comes after process-exit clean-up has begun aborts the
+    process. It could reach sb only if a thread made its first TLS
+    call while sb exits; whether any sb path can is not checked. Check
+    the issue on each aws-lc-sys update. The code is the same with or
+    without CPU jitter
+    ([docs/platform-notes/aws-lc-entropy.md](../platform-notes/aws-lc-entropy.md)).
 
 ## Open items carried into module specs
 

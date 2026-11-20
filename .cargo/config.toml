@@ -1,0 +1,18 @@
+# Read by every cargo run started inside the repository (cargo looks for
+# it from the working directory upward): local builds, the gate and the
+# cross builds, whose container runs cargo in this workspace.
+# https://doc.rust-lang.org/cargo/reference/config.html#env
+[env]
+# aws-lc built without its CPU-jitter entropy source (ADR-027). With it,
+# every process spends about 450 M instructions (40-50 ms) seeding its
+# random generator before the first TLS handshake, and the collector's
+# health test can abort the process on some arm64 boards
+# (https://github.com/aws/aws-lc/issues/3604). Without it, aws-lc seeds
+# from getrandom(2), what ring and Go's crypto/rand rely on, plus RDRAND
+# or RNDR where the CPU has a usable one. A documented aws-lc-sys build
+# option; the FIPS build refuses it, and sb has none:
+# https://aws.github.io/aws-lc-rs/resources.html#entropy-configuration
+# A value already in the environment, even an empty one, wins over this
+# one; crates/sb/tests/entropy.rs then fails. What changes and why:
+# docs/platform-notes/aws-lc-entropy.md.
+AWS_LC_SYS_NO_JITTER_ENTROPY = "1"

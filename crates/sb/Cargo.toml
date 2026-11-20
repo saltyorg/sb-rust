@@ -84,6 +84,10 @@ hex.workspace = true
 sb-host = { workspace = true, features = ["testing"] }
 portable-pty.workspace = true
 vt100.workspace = true
+# tests/entropy.rs: aws-lc built without CPU-jitter entropy (ADR-027),
+# asked of aws-lc-rs and read from the test binary's symbols.
+aws-lc-rs.workspace = true
+object.workspace = true
 
 [lints]
 workspace = true
