@@ -126,6 +126,10 @@ deny = [
     # tui-markdown: rendered in sb-tui only, through its non-generic
     # functions (ADR-026), for the same reason.
     { crate = "tui-markdown", wrappers = ["sb-tui"] },
+    # bollard: called in sb-docker only, whose entry points box the futures
+    # and streams under them (ADR-026's amendment), so one crate compiles
+    # bollard's and hyper's client.
+    { crate = "bollard", wrappers = ["sb-docker"] },
     # completion: Tab completion through clap_complete's engine, the tag
     # completer over ansible's cache, and the shells' registration files
     # (completion spec), used by the binary (and later ops' refresh).

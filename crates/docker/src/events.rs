@@ -10,6 +10,7 @@ use std::collections::HashMap;
 
 use bollard::models::EventMessage;
 use bollard::query_parameters::EventsOptionsBuilder;
+use futures_util::stream::BoxStream;
 use futures_util::{Stream, StreamExt as _};
 
 use crate::connect::Daemon;
@@ -73,15 +74,27 @@ impl ContainerEvent {
     }
 }
 
+/// The daemon's container messages, as bollard reads them with the
+/// `type=container` filter, boxed (`StreamExt::boxed`,
+/// <https://docs.rs/futures-util/0.3.34/futures_util/stream/trait.StreamExt.html#method.boxed>),
+/// so sb-docker alone compiles bollard's and hyper's client under it, not
+/// sb-tui, which polls the events (ADR-026's amendment). Not inlined, so
+/// no caller's crate gets the wrapper, and with it the stream's code,
+/// back.
+#[inline(never)]
+fn messages(daemon: &Daemon) -> BoxStream<'static, Result<EventMessage, bollard::errors::Error>> {
+    let filters = HashMap::from([("type", vec!["container"])]);
+    let options = EventsOptionsBuilder::default().filters(&filters).build();
+    daemon.docker.events(Some(options)).boxed()
+}
+
 /// The daemon's container events from now on. The stream ends when the
 /// daemon ends it, or after its first error, which is its last item and
 /// carries the daemon's message.
 pub fn container_events(
     daemon: &Daemon,
 ) -> impl Stream<Item = anyhow::Result<ContainerEvent>> + Send + 'static {
-    let filters = HashMap::from([("type", vec!["container"])]);
-    let options = EventsOptionsBuilder::default().filters(&filters).build();
-    let events = Box::pin(daemon.docker.events(Some(options)));
+    let events = messages(daemon);
     // futures-util's documented way to turn a state machine into a stream
     // (<https://docs.rs/futures-util/0.3.34/futures_util/stream/fn.unfold.html>):
     // `None` once an error has been sent. Why not a plain `map`: bollard's

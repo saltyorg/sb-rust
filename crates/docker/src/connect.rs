@@ -70,8 +70,10 @@ pub fn address(
 #[derive(Debug)]
 pub struct Daemon {
     /// bollard's client, its every request's path prefixed with
-    /// [`Daemon::request_version`].
-    pub docker: Docker,
+    /// [`Daemon::request_version`]. Crate-private: every bollard call
+    /// goes through sb-docker's boxed entry points, so one crate
+    /// compiles bollard's and hyper's client (ADR-026's amendment).
+    pub(crate) docker: Docker,
     pub address: String,
     pub version: Option<String>,
     /// The daemon's own (its newest) API version, as it said.
@@ -162,7 +164,20 @@ fn too_old(err: &Error) -> Option<&str> {
 ///
 /// When the client can't be made for `address`, the version can't be
 /// had, or the daemon's oldest version is newer than bollard's.
-pub async fn connect(address: &str) -> anyhow::Result<Daemon> {
+// Boxed (`FutureExt::boxed`,
+// <https://docs.rs/futures-util/0.3.34/futures_util/future/trait.FutureExt.html#method.boxed>),
+// as `list` is: sb and sb-motd await it, and each compiled its own copy
+// of bollard's and hyper's client under it (ADR-026's amendment). Not
+// inlined, so no caller's crate gets the wrapper, and with it the
+// boxed future's code, back. The box is one allocation per connection.
+#[inline(never)]
+pub fn connect(address: &str) -> futures_util::future::BoxFuture<'_, anyhow::Result<Daemon>> {
+    use futures_util::FutureExt as _;
+    connecting(address).boxed()
+}
+
+/// [`connect`]'s connection.
+async fn connecting(address: &str) -> anyhow::Result<Daemon> {
     let plain = Docker::connect_with_host(address)
         .with_context(|| format!("couldn't reach Docker at {address}"))?;
     let ours = *API_DEFAULT_VERSION;

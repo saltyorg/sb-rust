@@ -463,9 +463,11 @@ To discuss with the maintainer once every module is done, not before:
     identical code folding for the sb binary, and one crate compiling
     psl's lookup, the Markdown rendering and Docker's container listing,
     took 1,071,392 bytes (4.9%) off the production binary at f726634,
-    with the commands' instruction counts unchanged (ADR-026). Left for
-    later: hyper's client, still compiled in each of the four crates
-    that call bollard (about 0.5 MB).
+    with the commands' instruction counts unchanged (ADR-026). Every
+    bollard call went behind sb-docker on 2026-11-20 (ADR-026's
+    amendment): another 681,280 bytes, with no command's instruction
+    count higher. Boxing `Systemd::services` (78 kB) and `Cmd::capture`
+    (16 kB) raised motd's and update's counts, so both stay as they are.
 - **A phase exploring alternative output designs** (maintainer,
   2026-11-14). The maintainer's design canvas "sb list: refined columns"
   (https://claude.ai/artifact/FLU6EQNhqSh2BHD9NkeHv2) is the starting point, one of the designs to weigh, not a spec. It

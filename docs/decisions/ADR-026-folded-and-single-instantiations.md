@@ -158,3 +158,84 @@ length it passed on the same build.
 - **The linker:** a build that links `x86_64-unknown-linux-gnu` with a
   linker without `--icf` (GNU ld) fails at the link. LLD, gold and mold
   all accept it.
+
+## Amendments
+
+- **2026-11-20, hyper's client compiled once** (the maintainer's
+  decision of 2026-11-20: cut size at no runtime cost, then lower the
+  ratchet). The alternative above, every bollard call behind sb-docker,
+  is taken:
+  - **What changed:** `connect::connect` returns a boxed future, as
+    `connect::list` does. The log reads and the container events poll a
+    boxed bollard stream that sb-docker makes, in the non-inlined
+    `logs::outputs` and `events::messages`. `Daemon::docker` is
+    crate-private, and deny.toml lets only sb-docker depend on bollard.
+  - **Why it works:** a non-generic function's returned future or stream
+    is compiled in the crate that polls it. bollard's `logs` and
+    `events` return `impl Stream`, so sb-tui compiled hyper's client for
+    the log viewer, and sb and sb-motd compiled it for `connect`'s
+    version calls. Coercing to `dyn Future` or `dyn Stream` in sb-docker
+    compiles it there, once.
+  - **Size:** the production binary through the gate's cross build went
+    from 21,712,352 to 21,031,072 bytes (−681,280, −3.1%). The copies of
+    bollard's, hyper's and futures-util's code beyond the first fell
+    from 567,274 to 23,343 bytes.
+  - **Instructions:** the commands' user-space instruction counts didn't
+    rise. On builds with aws-lc's jitter entropy source off, a
+    measurement aid only that makes the TLS commands' counts repeat
+    to within ±0.01%, they moved by −0.11% (`sb version`) to +0.00%
+    (motd over https). Over five rounds of 20 runs, every figure's range
+    for the cut sat at or below main's. That held for `--help`,
+    `version`, `list` and `docker ps`, for validate-config and motd,
+    each over http and https, for `sb logs` opened on a journal unit and on a
+    container (a fake Engine API serving a 20,000-line log), and for a
+    warm `sb update`'s own process.
+  - **The shipped build:** the gate's cross builds of main and of the
+    change were measured the same way. Instructions moved by −0.13% to
+    +0.04%; the +0.04% is validate-config over https, inside the ±0.15%
+    that aws-lc's jitter entropy gives each round. Wall time (hyperfine,
+    60 runs) moved by −3.45% to +0.65%. Peak RSS was the same or lower
+    on every command (512 kB lower on `docker ps`, `list` and
+    `--help`). The warm update's own process took 500.3 M instructions
+    against main's 501.0 M.
+  - **Cycles:** validate-config's cycles read 2.0% to 2.8% higher on the
+    change's shipped build, with its instructions the same and its wall
+    time within 0.2%. The extra cycles sit in rustls-pki-types' base64
+    decoder of the root certificates, a loop the change doesn't touch,
+    whose instruction count is the same: its placement moved. The same
+    code placed elsewhere reads differently. A build with this change
+    and the two routes below read 3.5% above main stripped, as shipped,
+    and 0.8% above main unstripped. Those two routes on their own,
+    which leave this path alone, moved it by −1.2% to +1.6%. Placement
+    moves with any change to the binary.
+  - **Measured and left out:** two more routes cut size, but each raised
+    an instruction count on the jitter-off builds, so the rule leaves
+    them out. The crates named are those that compiled a copy, through
+    sb-host's and the other crates' own `async fn`s:
+
+    | Route | Bytes | Instructions |
+    |---|---:|---|
+    | `Systemd::services` boxed (sb, sb-motd and sb-tui had copies) | −78,432 | motd +0.01%, above main's range |
+    | `Cmd::capture` boxed (sb, sb-motd and sb-tui had copies) | −16,352 | motd +0.04%, the warm update's process +0.2% |
+
+  - **Checked, nothing to take:**
+    - The duplicate versions in sb's tree (`cargo tree -d`): base64,
+      itertools, nom and signal-hook have two versions each, at a few
+      kilobytes each, and the choice is upstream's. darling and syn are
+      build-time only.
+    - Features: syntect's YAML and plist loaders, its HTML output, and
+      encoding_rs leave no code in the binary, because LTO drops what
+      nothing calls.
+    - csv and csv-core, the new dependencies since ee870b1, take 3.4 kB.
+  - **The ratchet:** the ceiling the Consequences above leave to the
+    maintainer was lowered in ADR-025's amendment, as a tightening.
+  - **Method:** builds were made in ubuntu:22.04 containers with the
+    pinned toolchain, one variant each, attributed with cargo-bloat and
+    by the instantiating crate in each symbol's v0 mangling. Each route
+    was measured on its own against main. The measurements ran in one
+    capped container (4 pinned CPUs), with the binaries' order rotated
+    each round:
+    - `perf stat`'s instructions, cycles and task clock;
+    - hyperfine's wall time;
+    - GNU time's peak RSS, and for the TUI and update runs `/proc`'s
+      VmHWM of sb's own process.

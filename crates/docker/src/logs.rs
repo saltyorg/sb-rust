@@ -22,6 +22,7 @@ use std::time::Duration;
 use anyhow::Context as _;
 use bollard::container::LogOutput;
 use bollard::query_parameters::{LogsOptions, LogsOptionsBuilder};
+use futures_util::stream::BoxStream;
 use futures_util::{Stream, StreamExt as _};
 use jiff::Timestamp;
 
@@ -197,6 +198,23 @@ fn options() -> LogsOptionsBuilder {
         .timestamps(true)
 }
 
+/// `id`'s log as bollard reads it with `options`, boxed
+/// (`StreamExt::boxed`,
+/// <https://docs.rs/futures-util/0.3.34/futures_util/stream/trait.StreamExt.html#method.boxed>),
+/// so sb-docker alone compiles bollard's and hyper's client under it:
+/// sb-tui polls every read, and polling bollard's own stream compiled a
+/// copy of that client there (ADR-026's amendment). Not inlined, so
+/// no caller's crate gets the wrapper, and with it the stream's code,
+/// back.
+#[inline(never)]
+fn outputs(
+    daemon: &Daemon,
+    id: &str,
+    options: LogsOptions,
+) -> BoxStream<'static, Result<LogOutput, bollard::errors::Error>> {
+    daemon.docker.logs(id, Some(options)).boxed()
+}
+
 /// Read `id`'s log with `options`, giving each line to `keep` until it
 /// breaks or the log ends.
 async fn read(
@@ -205,7 +223,7 @@ async fn read(
     options: LogsOptions,
     mut keep: impl FnMut(LogLine) -> ControlFlow<()>,
 ) -> anyhow::Result<()> {
-    let mut stream = std::pin::pin!(daemon.docker.logs(id, Some(options)));
+    let mut stream = outputs(daemon, id, options);
     let mut lines = Lines::default();
     while let Some(output) = stream.next().await {
         let output = output.with_context(|| format!("reading the log of {id}"))?;
@@ -402,7 +420,7 @@ pub async fn scan(
         Range::Before(before) => position < before,
         Range::After(after) => position > after,
     };
-    let mut stream = std::pin::pin!(daemon.docker.logs(id, Some(options)));
+    let mut stream = outputs(daemon, id, options);
     let mut lines = Lines::default();
     let mut unyielded = 0;
     while let Some(output) = stream.next().await {
@@ -468,7 +486,7 @@ pub fn follow(
         .follow(true)
         .build();
     let state = Follow {
-        outputs: Box::pin(daemon.docker.logs(id, Some(options))),
+        outputs: outputs(daemon, id, options),
         lines: Lines::default(),
         queue: VecDeque::new(),
         done: false,
@@ -503,8 +521,8 @@ pub fn follow(
 }
 
 /// [`follow`]'s state between items.
-struct Follow<S> {
-    outputs: std::pin::Pin<Box<S>>,
+struct Follow {
+    outputs: BoxStream<'static, Result<LogOutput, bollard::errors::Error>>,
     lines: Lines,
     queue: VecDeque<LogLine>,
     done: bool,
@@ -512,7 +530,7 @@ struct Follow<S> {
     after: Position,
 }
 
-impl<S> Follow<S> {
+impl Follow {
     fn keep(&mut self, lines: Vec<LogLine>) {
         let after = self.after;
         self.queue
