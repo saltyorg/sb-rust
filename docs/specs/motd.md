@@ -243,7 +243,7 @@ mount points.
 | Docker | sb-docker's `connect::list` rows (decision 13) | `systemctl is-active docker`, `docker ps -a` |
 | Traefik | the same listing's `traefik` row, then reqwest `GET http://traefik:8080/api/http/routers` with a 3 s connect timeout (decision 15) | `docker ps`, `curl` |
 | Certificates | Traefik's API: `GET /api/overview`'s `certificates` counts and `GET /api/certificates?sortBy=validUntil&per_page=1`'s one certificate, alongside the routers request (decision 27, below) | none (Difference 34) |
-| Download Queues | Sonarr, Radarr, Lidarr and Readarr `/api/v3/queue` (v1 for Lidarr and Readarr), 100 records per page until done, `X-Api-Key` | golift.io/starr |
+| Download Queues | Sonarr, Radarr, Lidarr and Readarr `/api/v3/queue` (v1 for Lidarr and Readarr), 100 records per page until done, `X-Api-Key`; after a full page, the pages its total says are left four at once, counted in page order | golift.io/starr |
 | SABnzbd | `GET <url>/api?mode=queue&output=json&apikey=…` | same |
 | NZBGet | JSON-RPC `status` then `listgroups`, with Basic auth | same |
 | qBittorrent | `POST /api/v2/auth/login` (1 s), then `GET /api/v2/sync/maindata?rid=0` (20 s), counting every state | autobrr/go-qbittorrent |

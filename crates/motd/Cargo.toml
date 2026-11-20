@@ -41,6 +41,9 @@ reqwest.workspace = true
 # X25519MLKEM768 offered first (ADR-027's amendment): reqwest's rustls
 # leaves the feature off.
 rustls = { workspace = true, features = ["prefer-post-quantum"] }
+# An *arr queue's later pages asked a few at once, answered in page order
+# (`StreamExt::buffered`).
+futures-util.workspace = true
 # rTorrent's XML-RPC: the `methodCall` written, the `methodResponse` read
 # (motd spec, Tech Stack).
 quick-xml.workspace = true

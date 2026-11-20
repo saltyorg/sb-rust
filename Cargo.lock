@@ -3689,6 +3689,7 @@ version = "0.1.0"
 dependencies = [
  "anstyle",
  "form_urlencoded",
+ "futures-util",
  "icu_properties",
  "insta",
  "jiff",

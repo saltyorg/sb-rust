@@ -28,6 +28,12 @@ const PAGE: usize = 100;
 /// keeps answering full pages can't hold the section.
 const MAX_PAGES: usize = 1000;
 
+/// At most this many of a queue's later pages are asked at once (a
+/// window: the next is asked as the oldest is answered): a queue of
+/// 1,000 records has nine later pages, four at a time, and an app sees no
+/// more than this many requests of one motd at a time.
+const IN_FLIGHT: usize = 4;
+
 /// An Arr app as its queue is asked for.
 #[derive(Clone, Copy, Debug)]
 struct Arr {
@@ -168,43 +174,92 @@ fn page_url(base: &str, arr: Arr, page: usize) -> Result<reqwest::Url, String> {
 /// each (a page of more is the app's mistake, and counting only a page's
 /// worth keeps [`MAX_PAGES`] a bound on what is counted), or starr's text
 /// for the first failure.
+///
+/// Page 1 is asked alone. After a full page, every page its total says
+/// is left is asked, [`IN_FLIGHT`] at a time, and the answers are counted
+/// in page order (`StreamExt::buffered`,
+/// <https://docs.rs/futures-util/0.3.34/futures_util/stream/trait.StreamExt.html#method.buffered>),
+/// so the requests, the counts and the failure named are those of asking
+/// one page after another while the queue holds still: one round trip
+/// for each 100 records cost a large queue a second or more with motd's
+/// https instances (performance research, round 2, item 4). After a
+/// short page the next is asked alone, as before. Counting stops at the
+/// first page that ends the queue (the total reached, or an empty page),
+/// and the pages still being asked are dropped.
 async fn fetch(shared: &Shared, instance: &Instance, arr: Arr) -> Result<Queue, String> {
     let key = secret_header(instance.apikey.as_deref().unwrap_or_default())?;
-    let failed = |why: String| format!("api.Get({}/queue): {why}", arr.version);
+    count_pages(|page| get_page(shared, instance, arr, &key, page)).await
+}
+
+/// [`fetch`]'s paging and counting over `ask`, which gives page `n`.
+async fn count_pages<F, Fut>(mut ask: F) -> Result<Queue, String>
+where
+    F: FnMut(usize) -> Fut,
+    Fut: Future<Output = Result<Page, String>>,
+{
+    use futures_util::StreamExt as _;
     let mut queue = Queue::default();
-    for page in 1..=MAX_PAGES {
-        let url = page_url(&instance.url, arr, page)?;
-        let client = shared.client().await?;
-        let response = client
-            .get(url)
-            .header("X-Api-Key", key.clone())
-            .header("Accept", "application/json")
-            .timeout(shared.timeout(instance, DEFAULT_TIMEOUT))
-            .send()
-            .await
-            .map_err(|err| failed(sb_config::http::error_chain(&err.without_url())))?;
-        let status = response.status();
-        let body = sb_config::http::body(response).await.map_err(failed)?;
-        if !status.is_success() {
-            return Err(failed(invalid_status(status.as_u16(), &body)));
-        }
-        let page: Page = serde_json::from_slice(&body)
-            .map_err(|err| failed(format!("decoding Starr JSON response body: {err}")))?;
-        let records = page.records.unwrap_or_default();
-        let got = records.len();
-        for record in records.into_iter().take(PAGE) {
-            queue.records += 1;
-            *queue
-                .statuses
-                .entry(record.status.unwrap_or_default())
-                .or_default() += 1;
-        }
-        let total = usize::try_from(page.total_records.unwrap_or(0)).unwrap_or(0);
-        if queue.records >= total || got == 0 {
-            break;
+    let mut next = 1;
+    let mut last = 1;
+    while next <= MAX_PAGES {
+        let mut pages = futures_util::stream::iter(next..=last)
+            .map(&mut ask)
+            .buffered(IN_FLIGHT);
+        while let Some(page) = pages.next().await {
+            let page = page?;
+            let records = page.records.unwrap_or_default();
+            let got = records.len();
+            for record in records.into_iter().take(PAGE) {
+                queue.records += 1;
+                *queue
+                    .statuses
+                    .entry(record.status.unwrap_or_default())
+                    .or_default() += 1;
+            }
+            let total = usize::try_from(page.total_records.unwrap_or(0)).unwrap_or(0);
+            if queue.records >= total || got == 0 {
+                return Ok(queue);
+            }
+            next += 1;
+            // The next batch's last page (the running one's range is
+            // fixed): every page the latest total says is left, after a
+            // full page; one, after a short one.
+            last = if got >= PAGE {
+                total.div_ceil(PAGE).min(MAX_PAGES).max(next)
+            } else {
+                next
+            };
         }
     }
     Ok(queue)
+}
+
+/// Page `page` of the queue, decoded, or starr's text for its failure.
+async fn get_page(
+    shared: &Shared,
+    instance: &Instance,
+    arr: Arr,
+    key: &reqwest::header::HeaderValue,
+    page: usize,
+) -> Result<Page, String> {
+    let failed = |why: String| format!("api.Get({}/queue): {why}", arr.version);
+    let url = page_url(&instance.url, arr, page)?;
+    let client = shared.client().await?;
+    let response = client
+        .get(url)
+        .header("X-Api-Key", key.clone())
+        .header("Accept", "application/json")
+        .timeout(shared.timeout(instance, DEFAULT_TIMEOUT))
+        .send()
+        .await
+        .map_err(|err| failed(sb_config::http::error_chain(&err.without_url())))?;
+    let status = response.status();
+    let body = sb_config::http::body(response).await.map_err(failed)?;
+    if !status.is_success() {
+        return Err(failed(invalid_status(status.as_u16(), &body)));
+    }
+    serde_json::from_slice(&body)
+        .map_err(|err| failed(format!("decoding Starr JSON response body: {err}")))
 }
 
 /// starr's `ReqError` text (`parseNon200`): `invalid status code, N >=
@@ -455,6 +510,118 @@ mod tests {
                 "{prefix}{unknown}"
             );
         }
+    }
+
+    /// After a full first page, the pages its total says are left are
+    /// asked at once (performance research, round 2, item 4): each answer
+    /// is held until all three were asked, each page asked once.
+    #[tokio::test]
+    async fn the_later_pages_are_asked_at_once() {
+        let fake = Fake::start().unwrap();
+        let full = vec!["downloading"; 100];
+        fake.script("/api/v3/queue", page(400, &full));
+        fake.script("/api/v3/queue", page(400, &full).held());
+        let mut apps = BTreeMap::new();
+        apps.insert(
+            App::Sonarr,
+            section(vec![with_key("Sonarr", fake.url(), "k")]),
+        );
+        let shared = shared(&[]);
+        let paint = Paint::plain();
+        let asked = async {
+            for _ in 0..500 {
+                if fake.seen().len() >= 4 {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            let asked = fake.seen().len();
+            fake.release();
+            asked
+        };
+        let (out, asked) = tokio::join!(queues(&apps, &shared, &paint), asked);
+        assert_eq!(asked, 4);
+        assert_eq!(out.text, "Sonarr: 400 items in queue, 400 downloading");
+        let mut pages: Vec<String> = fake
+            .seen()
+            .iter()
+            .map(|seen| {
+                let query = seen.target.split_once('?').map_or("", |(_, query)| query);
+                query
+                    .split('&')
+                    .find(|pair| pair.starts_with("page="))
+                    .unwrap_or_default()
+                    .to_string()
+            })
+            .collect();
+        pages.sort();
+        assert_eq!(pages, ["page=1", "page=2", "page=3", "page=4"]);
+    }
+
+    /// A page of `total`'s queue, full.
+    fn full(total: i64) -> Page {
+        Page {
+            total_records: Some(total),
+            records: Some(
+                (0..PAGE)
+                    .map(|_| Record {
+                        status: Some("downloading".to_string()),
+                    })
+                    .collect(),
+            ),
+        }
+    }
+
+    /// The later pages' answers are counted in page order, however soon
+    /// each comes: page 2's late failure is the one named, not page 3's
+    /// early one; and page 2 ending the queue, late, keeps page 3's early
+    /// failure out of it.
+    #[tokio::test(start_paused = true)]
+    async fn the_pages_count_in_page_order() {
+        let late = || tokio::time::sleep(std::time::Duration::from_millis(100));
+        let failed = count_pages(|page| async move {
+            match page {
+                2 => {
+                    late().await;
+                    Err("page 2 failed".to_string())
+                }
+                3 => Err("page 3 failed".to_string()),
+                _ => Ok(full(400)),
+            }
+        })
+        .await;
+        assert_eq!(failed, Err("page 2 failed".to_string()));
+        let ended = count_pages(|page| async move {
+            match page {
+                2 => {
+                    late().await;
+                    Ok(Page {
+                        total_records: Some(400),
+                        records: Some(Vec::new()),
+                    })
+                }
+                3 => Err("page 3 failed".to_string()),
+                _ => Ok(full(400)),
+            }
+        })
+        .await
+        .expect("ended by page 2");
+        assert_eq!(ended.records, PAGE);
+    }
+
+    /// An app that answers full pages for ever is asked [`MAX_PAGES`]
+    /// pages, each once, and counted [`PAGE`] records a page.
+    #[tokio::test]
+    async fn at_most_max_pages_are_asked() {
+        let asked = std::sync::Mutex::new(Vec::new());
+        let queue = count_pages(|page| {
+            asked.lock().unwrap().push(page);
+            async { Ok(full(i64::MAX)) }
+        })
+        .await
+        .expect("counted");
+        assert_eq!(queue.records, MAX_PAGES * PAGE);
+        assert_eq!(*asked.lock().unwrap(), (1..=MAX_PAGES).collect::<Vec<_>>());
     }
 
     /// A page of more than 100 records counts 100; a name is trimmed, as
