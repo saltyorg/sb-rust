@@ -115,8 +115,8 @@ enum Down {
 }
 
 /// The run's one listing, shared by the Docker and Traefik sections, and
-/// the one client Traefik's three requests share (building one loads the
-/// platform's roots, so one is built, at the first request).
+/// the one client Traefik's three requests share (built once, at the
+/// first request; with the platform's roots only where [`needs_roots`]).
 #[derive(Debug)]
 pub struct Containers {
     settings: Settings,
@@ -147,7 +147,13 @@ impl Containers {
     /// inside the 5 s, no redirect followed, the settings' proxy.
     async fn client(&self) -> &Result<reqwest::Client, String> {
         self.client
-            .get_or_init(|| async { traefik_client(&self.settings.proxy) })
+            .get_or_init(|| async {
+                let roots =
+                    needs_roots(&self.settings.traefik_base, &self.settings.proxy, |name| {
+                        std::env::var_os(name)
+                    });
+                traefik_client(&self.settings.proxy, roots)
+            })
             .await
     }
 
@@ -419,15 +425,49 @@ async fn fetch(containers: &Containers, url: &str) -> Result<(u16, Vec<u8>), Str
     Ok((status, sb_config::http::body(response).await?))
 }
 
+/// The proxy variables reqwest's system proxy reads for an http URL
+/// (<https://docs.rs/reqwest/0.13.5/reqwest/#proxies>; hyper-util 0.1.21's
+/// `Matcher::from_env`, which reqwest's system proxy is). Why not ask
+/// that `Matcher` whether Traefik's URL would be proxied: it would make
+/// hyper-util a direct dependency of motd, held to reqwest's version, to
+/// save the roots in the rare case of a proxy variable that `NO_PROXY`
+/// or CGI's `REQUEST_METHOD` turns off for Traefik; this list errs
+/// towards loading them, which is always safe.
+const HTTP_PROXY_VARS: [&str; 4] = ["HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"];
+
+/// Whether Traefik's client may verify a certificate: an https base, or a
+/// proxy (which may be an https one). Saltbox's `http://traefik:8080`
+/// with no proxy verifies none, so its client is built without the
+/// platform's roots (about 15 M instructions and 5 ms on the runtime's
+/// thread, the step before Traefik's requests). `var` reads the
+/// environment.
+fn needs_roots<V>(base: &str, proxy: &Proxy, var: impl Fn(&str) -> Option<V>) -> bool {
+    // As reqwest reads the request's URL (its `Url`, the url crate's).
+    let http = reqwest::Url::parse(base).is_ok_and(|url| url.scheme() == "http");
+    let proxied = match proxy {
+        Proxy::Off => false,
+        Proxy::Via(_) => true,
+        Proxy::System => HTTP_PROXY_VARS.iter().any(|name| var(name).is_some()),
+    };
+    !http || proxied
+}
+
 /// Traefik's client: sb-go's `curl --connect-timeout 3` inside the 5 s,
 /// no redirect followed (curl follows none without -L), `proxy` as
-/// sb-config's `Http::new` applies it.
-fn traefik_client(proxy: &Proxy) -> Result<reqwest::Client, String> {
+/// sb-config's `Http::new` applies it, and without `roots` none of the
+/// platform's root certificates (reqwest's `tls_certs_only` with none,
+/// <https://docs.rs/reqwest/0.13.5/reqwest/struct.ClientBuilder.html#method.tls_certs_only>).
+fn traefik_client(proxy: &Proxy, roots: bool) -> Result<reqwest::Client, String> {
     let builder = reqwest::Client::builder()
         .connect_timeout(TRAEFIK_CONNECT)
         .timeout(LIMIT)
         // curl follows no redirect without -L.
         .redirect(reqwest::redirect::Policy::none());
+    let builder = if roots {
+        builder
+    } else {
+        builder.tls_certs_only(std::iter::empty::<reqwest::Certificate>())
+    };
     // As sb-config's `Http::new` applies it
     // (<https://docs.rs/reqwest/0.13.5/reqwest/struct.ClientBuilder.html#method.no_proxy>,
     // <https://docs.rs/reqwest/0.13.5/reqwest/struct.Proxy.html#method.all>).
@@ -869,7 +909,8 @@ mod tests {
         // nothing asked.
         let mut broken = settings(&engine, api.url());
         broken.proxy = Proxy::Via("not a proxy url \u{0}".into());
-        assert!(traefik_client(&broken.proxy).is_err());
+        assert!(traefik_client(&broken.proxy, true).is_err());
+        assert!(traefik_client(&broken.proxy, false).is_err());
         assert_eq!(
             traefik(&Containers::new(broken), &Paint::plain())
                 .await
@@ -1542,6 +1583,49 @@ mod tests {
         );
     }
 
+    /// The platform's roots only where a certificate may be verified: an
+    /// https base, or any proxy (it may be an https one). Saltbox's plain
+    /// base with no proxy variable has none, and still reaches Traefik.
+    #[tokio::test]
+    async fn traefiks_client_loads_roots_only_for_https_or_a_proxy() {
+        let none = |_: &str| None::<String>;
+        let set =
+            |name: &str| (name == "http_proxy").then(|| "http://198.51.100.7:3128".to_string());
+        assert!(!needs_roots("http://traefik:8080", &Proxy::System, none));
+        assert!(!needs_roots("HTTP://traefik:8080", &Proxy::Off, set));
+        assert!(!needs_roots("http:traefik:8080", &Proxy::Off, none));
+        assert!(needs_roots("http://traefik:8080", &Proxy::System, set));
+        assert!(needs_roots(
+            "http://traefik:8080",
+            &Proxy::Via("http://p:1".into()),
+            none
+        ));
+        assert!(needs_roots(
+            "https://traefik.example.com",
+            &Proxy::Off,
+            none
+        ));
+        assert!(needs_roots("traefik:8080", &Proxy::Off, none));
+        for name in HTTP_PROXY_VARS {
+            assert!(needs_roots(
+                "http://traefik:8080",
+                &Proxy::System,
+                |var: &str| { (var == name).then_some("http://p:1") }
+            ));
+        }
+        assert!(!needs_roots(
+            "http://traefik:8080",
+            &Proxy::System,
+            |var: &str| { (var == "HTTPS_PROXY").then_some("http://p:1") }
+        ));
+        let engine = engine(vec![running(1, "traefik")]);
+        let api = Fake::start().unwrap();
+        api.script("/api/http/routers", Answer::json(200, "[]"));
+        let containers = Containers::new(settings(&engine, api.url()));
+        traefik(&containers, &Paint::plain()).await;
+        assert_eq!(api.seen().len(), 1);
+    }
+
     /// The section's job, on the host's clock.
     #[tokio::test]
     async fn the_certificates_section_reads_the_clock() {
@@ -1575,8 +1659,8 @@ mod tests {
         );
     }
 
-    /// The routers and the certificates take one client between them, so
-    /// one set of the platform's roots is loaded for all three requests.
+    /// The routers and the certificates take one client between them,
+    /// built once for all three requests.
     #[tokio::test]
     async fn traefiks_requests_share_one_client() {
         let engine = engine(vec![running(1, "traefik")]);
