@@ -58,6 +58,15 @@ pub struct Early {
     /// help or saw a help flag before its error; the real parse may still
     /// show help for it (`-h` after a typo it can't get past).
     pub help: bool,
+    /// The pre-pass's matches when its parse succeeded, so is final. On
+    /// a line that asks for no help ([`Early::help`]) they are the real
+    /// parse's, but for the help flag the pre-pass adds (`help`, false),
+    /// given a tree whose only `help` subcommands are clap's (none of
+    /// whose commands takes a positional): the trees differ only in the
+    /// help flag, the `help` subcommands and the version flag, and such a
+    /// line uses none of them. The caller can read its command from them
+    /// rather than build the tree and parse the line again.
+    pub matches: Option<clap::ArgMatches>,
 }
 
 /// [`early_choice`]'s pre-pass, also saying whether the line asks for
@@ -86,9 +95,9 @@ where
         // after it. clap's real `help` takes no flags, so `sb help
         // --color=never` is a usage error; this makes that error follow it.
         .subcommand(Command::new("help").arg(Arg::new("command").num_args(0..)));
-    let from_command_line = |matches: clap::ArgMatches| {
+    let from_command_line = |matches: &clap::ArgMatches| {
         (matches.value_source("color") == Some(ValueSource::CommandLine))
-            .then(|| Color::from_arg_matches(&matches).ok())
+            .then(|| Color::from_arg_matches(matches).ok())
             .flatten()
     };
     // A parse that succeeds is final: its `--color`, or `auto`. Only when
@@ -106,7 +115,8 @@ where
     match pre_pass.clone().try_get_matches_from(&args) {
         Ok(matches) => Early {
             help: asks_help(&matches),
-            color: from_command_line(matches).unwrap_or_default(),
+            color: from_command_line(&matches).unwrap_or_default(),
+            matches: Some(matches),
         },
         Err(err) => {
             let partial = pre_pass
@@ -124,10 +134,12 @@ where
                         | clap::error::ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
                 ) || partial.as_ref().is_some_and(asks_help),
                 color: partial
+                    .as_ref()
                     .and_then(from_command_line)
                     .unwrap_or_else(|| Color {
                         color: lexed_choice(args).unwrap_or(ColorChoice::Auto),
                     }),
+                matches: None,
             }
         }
     }
@@ -218,6 +230,25 @@ mod tests {
             &["--color", "bogus"],
         ] {
             assert!(!help(args), "{args:?}");
+        }
+    }
+
+    /// A parse that succeeds keeps its matches, help or not; one that
+    /// fails has none.
+    #[test]
+    fn a_final_parse_keeps_its_matches() {
+        let read = |args: &[&str]| {
+            let all = std::iter::once("sb").chain(args.iter().copied());
+            early_read(Cli::command(), all)
+        };
+        let early = read(&["--color=never", "version", "--json"]);
+        let matches = early.matches.expect("final");
+        let (name, version) = matches.subcommand().expect("a command");
+        assert_eq!(name, "version");
+        assert!(version.get_flag("json"));
+        assert!(read(&["version", "--help"]).matches.is_some());
+        for args in [&["bogus"][..], &["version", "--bogus"], &[]] {
+            assert!(read(args).matches.is_none(), "{args:?}");
         }
     }
 

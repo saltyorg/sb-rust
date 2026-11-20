@@ -25,6 +25,7 @@ use sb_ops::Checkout;
 /// every parse goes through `verbose::with_flags` (the real parse, the
 /// colour pre-pass, the completion tree, the contract test); a
 /// `Cli::parse()` or `Cli::command()` alone refuses `-v`.
+#[cfg_attr(test, derive(Debug))]
 #[derive(Parser)]
 #[command(name = "sb", about = "Saltbox CLI")]
 struct Cli {
@@ -42,6 +43,7 @@ struct Cli {
 /// Why not clap's `#[command(version)]`: it adds a `--version` flag that
 /// prints `<name> <version>` (`clap_builder` 4.6.7 `Command::_render_version`);
 /// sb-go has a `version` subcommand with its own line and `--json`.
+#[cfg_attr(test, derive(Debug))]
 #[derive(Subcommand)]
 enum Command {
     /// Print Saltbox CLI version
@@ -235,6 +237,7 @@ Restart an existing shell, or source its installed file.
 Use \"completion generate <shell>\" to write a script to standard output.";
 
 /// `sb completion`'s subcommands (completion spec).
+#[cfg_attr(test, derive(Debug))]
 #[derive(Subcommand, Clone, Copy)]
 enum CompletionCommand {
     /// Install bash completion
@@ -270,6 +273,7 @@ enum CompletionCommand {
 
 /// `sb announcements`' hidden subcommands, for developers (ops spec,
 /// "`sb announcements preview`" and "`sb announcements check`").
+#[cfg_attr(test, derive(Debug))]
 #[derive(Subcommand, Clone)]
 enum AnnouncementsCommand {
     /// Show what the next sb update would show of the announcements
@@ -435,6 +439,7 @@ without the credential checks. If it has issues, sb offers to edit it again;
 
 /// `sb edit`'s subcommands, one per file (tui spec, editors; sb-go's
 /// names, underscores kept).
+#[cfg_attr(test, derive(Debug))]
 #[derive(Subcommand, Clone, Copy)]
 // Each also takes its file's name, and the inventory its own
 // (`localhost`), as hidden aliases: the names users type from the files
@@ -486,6 +491,7 @@ impl EditCommand {
 /// `sb docker`'s subcommands (docker spec). sb-go's `logs` is gone:
 /// `sb logs` shows the containers too (the maintainer, 2026-11-18; tui
 /// decision 1), and `hinted` names it.
+#[cfg_attr(test, derive(Debug))]
 #[derive(Subcommand)]
 enum DockerCommand {
     /// List Docker containers with port mappings
@@ -796,8 +802,9 @@ fn start() -> RunEnd {
     // profile. The colour
     // choice must be anstream's global one before the real parse, which
     // prints help (spec: startup steps 5 and 6).
-    let early = colour::early_read(verbose::with_flags(Cli::command()), std::env::args_os());
+    let mut early = colour::early_read(verbose::with_flags(Cli::command()), std::env::args_os());
     early.color.write_global();
+    let reused = reuse(&mut early);
     let (choice, mut warnings) = theme_choice();
     let (profile, warning) = theme::Profile::choose(
         std::env::var("SB_COLOR_PROFILE").ok().as_deref(),
@@ -806,12 +813,13 @@ fn start() -> RunEnd {
     warnings.extend(warning);
     theme::install(theme::Theme::resolve(&choice.palette, profile));
     // Every command, help and version included, refuses an unsupported
-    // host first, as sb-go does (cli-core spec, startup step 1); the real
-    // parse runs too, printing nothing yet. Together they say whether this
+    // host first, as sb-go does (cli-core spec, startup step 1); the
+    // command is read too (from the pre-pass's parse, else the real
+    // parse), printing nothing yet. Together they say whether this
     // run hands over to a root run through sudo, which then reads its own
     // settings and warns about those: a run about to relaunch leaves the
     // startup warnings to it.
-    let parsed = parse(profile, early.help);
+    let parsed = reused.map_or_else(|| parse(profile, early.help), Ok);
     let support = allow_unsupported_release(
         sb_host::check_support(),
         parsed
@@ -977,6 +985,9 @@ fn config_override(value: Option<std::ffi::OsString>) -> Option<std::path::PathB
 /// and clap runs it for the root and the matched subcommands on every
 /// parse (`clap_builder` 4.6.7 `_do_parse`, `_build_subcommand`), so a
 /// command that runs would still lay out their help.
+///
+/// A line whose colour pre-pass parsed and asks for no help isn't parsed
+/// here at all ([`reuse`]).
 fn parse(profile: theme::Profile, help: bool) -> Result<Cli, clap::Error> {
     parse_from(profile, help, std::env::args_os())
 }
@@ -988,15 +999,7 @@ fn parse_from(
     args: impl IntoIterator<Item = std::ffi::OsString>,
 ) -> Result<Cli, clap::Error> {
     use clap::error::ErrorKind;
-    let tree = || {
-        let cmd = match profile {
-            theme::Profile::Ascii => Cli::command().styles(clap::builder::Styles::plain()),
-            _ => Cli::command(),
-        };
-        // Before the help's layout, which lists each command's flags.
-        let cmd = force_update_arg(cmd, &BuildInfo::current(env!("CARGO_PKG_VERSION")));
-        verbose::with_flags(cmd)
-    };
+    let tree = || real_tree(profile);
     let args: Vec<std::ffi::OsString> = args.into_iter().collect();
     if !help {
         match tree().try_get_matches_from(&args) {
@@ -1019,6 +1022,37 @@ fn parse_from(
     let matches =
         help::apply(tree(), theme::current(), colour, help::width()).try_get_matches_from(&args)?;
     cli_from(&matches)
+}
+
+/// The real parse's tree, before the help's layout (which lists each
+/// command's flags): sb's, with `--force-update` in builds that have it
+/// and sb-go's hidden `-v`, in clap's plain styles under `ascii`.
+fn real_tree(profile: theme::Profile) -> clap::Command {
+    let cmd = match profile {
+        theme::Profile::Ascii => Cli::command().styles(clap::builder::Styles::plain()),
+        _ => Cli::command(),
+    };
+    let cmd = force_update_arg(cmd, &BuildInfo::current(env!("CARGO_PKG_VERSION")));
+    verbose::with_flags(cmd)
+}
+
+/// The command from the colour pre-pass's matches, when they are final
+/// and the line asks for no help: then they are the real parse's
+/// (cli-core's `colour::Early::matches`), and the tree is built and the
+/// line parsed once, not twice (about 0.4 M instructions of every run:
+/// performance research, round 3, core item 2). The pre-pass's tree has
+/// no `--force-update`: a line that gives it fails there and is parsed
+/// for real, and one that doesn't reads it as false, as the real parse
+/// would. A line that asks for help is parsed for real, with the help
+/// laid out.
+fn reuse(early: &mut colour::Early) -> Option<Cli> {
+    if early.help {
+        return None;
+    }
+    early
+        .matches
+        .take()
+        .and_then(|matches| cli_from(&matches).ok())
 }
 
 /// sb's command from clap's matches.
@@ -1603,6 +1637,196 @@ mod tests {
         assert_eq!(kind, clap::error::ErrorKind::DisplayHelp);
         assert_eq!((kind, text.clone()), rendered(true));
         assert!(text.contains("  USAGE"), "{text}");
+    }
+
+    /// clap gives every command with subcommands its own `help`
+    /// subcommand, unless switched off; the colour pre-pass switches it
+    /// off everywhere and adds a plain one at the root, so `sb <command>
+    /// help` fails there and is parsed again. A command with clap's `help`
+    /// and a positional (or external subcommands) would let the pre-pass
+    /// read `help` as a value, a parse that succeeds and asks for no
+    /// help, while the real parse shows help: none has both.
+    #[test]
+    fn no_command_with_claps_help_subcommand_takes_a_positional() {
+        fn walk(cmd: &clap::Command, path: &str, seen: &mut usize) {
+            if cmd.has_subcommands() && !cmd.is_disable_help_subcommand_set() {
+                *seen += 1;
+                let positionals: Vec<_> = cmd.get_positionals().map(clap::Arg::get_id).collect();
+                assert!(positionals.is_empty(), "{path}: {positionals:?}");
+                assert!(!cmd.is_allow_external_subcommands_set(), "{path}");
+            }
+            for sub in cmd.get_subcommands() {
+                walk(sub, &format!("{path} {}", sub.get_name()), seen);
+            }
+        }
+        let mut seen = 0;
+        walk(&real_tree(theme::Profile::Ascii), "sb", &mut seen);
+        // Only the root's today (sb-go's cobra adds one there alone).
+        assert!(seen >= 1, "the root at least: {seen}");
+    }
+
+    /// Wherever the pre-pass's parse succeeds on a line that asks for no
+    /// help, the command read from its matches is the real parse's, field
+    /// for field. Checked on every command of the tree with each of
+    /// its flags, and with each word that sets the two parses apart (the
+    /// help flag and subcommand, a version flag neither has, `--`) at
+    /// each place.
+    #[test]
+    fn the_pre_pass_matches_are_the_real_parses() {
+        fn lines(cmd: &clap::Command, path: &[String], out: &mut Vec<Vec<String>>) {
+            let mut words: Vec<Vec<String>> =
+                vec![vec![], vec!["x".into()], vec!["x".into(), "y".into()]];
+            for arg in cmd.get_arguments() {
+                let takes = arg.get_num_args().is_none_or(|n| n.takes_values())
+                    && arg.get_action().takes_values();
+                let value = arg
+                    .get_possible_values()
+                    .first()
+                    .map_or_else(|| "x".to_owned(), |v| v.get_name().to_owned());
+                if let Some(long) = arg.get_long() {
+                    words.push(if takes {
+                        vec![format!("--{long}"), value.clone()]
+                    } else {
+                        vec![format!("--{long}")]
+                    });
+                }
+                if let Some(short) = arg.get_short() {
+                    words.push(if takes {
+                        vec![format!("-{short}"), value.clone()]
+                    } else {
+                        vec![format!("-{short}")]
+                    });
+                }
+            }
+            let special = [
+                "-h",
+                "--help",
+                "help",
+                "-V",
+                "--version",
+                "--",
+                "-v",
+                "--color=never",
+                "-hv",
+            ];
+            for word in &words {
+                let mut line = path.to_vec();
+                line.extend(word.iter().cloned());
+                for at in 0..=line.len() {
+                    for extra in special {
+                        let mut with = line.clone();
+                        with.insert(at, extra.to_owned());
+                        out.push(with);
+                    }
+                }
+                out.push(line);
+            }
+            for sub in cmd.get_subcommands() {
+                let mut path = path.to_vec();
+                path.push(sub.get_name().to_owned());
+                lines(sub, &path, out);
+            }
+        }
+        let real = real_tree(theme::Profile::Ascii);
+        let mut all = Vec::new();
+        lines(&real, &[], &mut all);
+        let mut reused = 0;
+        for line in &all {
+            let args: Vec<String> = std::iter::once("sb".to_owned())
+                .chain(line.iter().cloned())
+                .collect();
+            let mut early = colour::early_read(verbose::with_flags(Cli::command()), &args);
+            let Some(pre) = early.matches.take().filter(|_| !early.help) else {
+                continue;
+            };
+            reused += 1;
+            let real = real.clone().try_get_matches_from(&args);
+            let real = real.unwrap_or_else(|err| panic!("{line:?}: the real parse fails: {err}"));
+            let real = cli_from(&real).expect("the real parse's command");
+            let pre = reuse(&mut early_with(pre)).unwrap_or_else(|| panic!("{line:?}: not reused"));
+            assert_eq!(format!("{pre:?}"), format!("{real:?}"), "{line:?}");
+        }
+        assert!(
+            reused > 500,
+            "lines read from the pre-pass: {reused} of {}",
+            all.len()
+        );
+    }
+
+    /// An [`colour::Early`] holding `matches`, asking for no help.
+    fn early_with(matches: clap::ArgMatches) -> colour::Early {
+        colour::Early {
+            color: colour::Color::default(),
+            help: false,
+            matches: Some(matches),
+        }
+    }
+
+    /// Under `ascii` the real parse's tree has clap's plain styles, so
+    /// what clap still draws itself has no colour; under the other
+    /// profiles, clap's own.
+    #[test]
+    fn the_ascii_tree_draws_in_plain_styles() {
+        let styled = |profile| {
+            real_tree(profile)
+                .render_help()
+                .ansi()
+                .to_string()
+                .contains('\x1b')
+        };
+        assert!(!styled(theme::Profile::Ascii));
+        assert!(styled(theme::Profile::TrueColor));
+    }
+
+    /// The pre-pass's tree has no `--force-update`: a line that gives it
+    /// must fail there, not read it as a value, so `self-update` takes no
+    /// positional (clap reads an unknown flag as a value only for a
+    /// positional that takes hyphen values).
+    #[test]
+    fn self_update_takes_no_positional() {
+        let tree = real_tree(theme::Profile::Ascii);
+        let update = tree.find_subcommand("self-update").expect("self-update");
+        let positionals: Vec<_> = update.get_positionals().map(clap::Arg::get_id).collect();
+        assert!(positionals.is_empty(), "{positionals:?}");
+        assert!(!update.is_allow_external_subcommands_set());
+    }
+
+    /// A line that asks for help isn't read from the pre-pass, nor is one
+    /// the pre-pass couldn't parse; any other is, and a build with
+    /// `--force-update` still reads the flag, from the real parse.
+    #[test]
+    fn only_a_final_parse_without_help_is_reused() {
+        let early = |line: &[&str]| {
+            let args = std::iter::once("sb").chain(line.iter().copied());
+            colour::early_read(verbose::with_flags(Cli::command()), args)
+        };
+        let cli = reuse(&mut early(&["--color=never", "docker", "ps", "--json"])).expect("reused");
+        assert!(matches!(cli.color.color, clap::ColorChoice::Never));
+        assert!(matches!(cli.command, Command::Docker { .. }));
+        assert!(!cli.verbose_given);
+        assert!(reuse(&mut early(&["list", "-v"])).is_some_and(|cli| cli.verbose_given));
+        assert!(
+            reuse(&mut early(&["self-update"])).is_some_and(|cli| !matches!(
+                cli.command,
+                Command::SelfUpdate {
+                    force_update: true,
+                    ..
+                }
+            ))
+        );
+        for line in [
+            &["--help"][..],
+            &["docker"],
+            &["help", "docker"],
+            &["docker", "help"],
+            &["bogus"],
+            &["self-update", "--force-update"],
+        ] {
+            assert!(reuse(&mut early(line)).is_none(), "{line:?}");
+        }
+        let mut help = early(&["version"]);
+        help.help = true;
+        assert!(reuse(&mut help).is_none());
     }
 
     /// The colour pre-pass reads which lines ask for help, for `parse`:
