@@ -108,7 +108,7 @@ where
     let args: Vec<OsString> = args.into_iter().map(Into::into).collect();
     // `-h` is claimed for every subcommand here; a subcommand that defines
     // its own `-h` would conflict (clap's debug assertions say so).
-    let pre_pass = cmd
+    let mut pre_pass = cmd
         .disable_help_flag(true)
         .disable_help_subcommand(true)
         .disable_version_flag(true)
@@ -140,7 +140,12 @@ where
         matches!(matches.try_get_one::<bool>("help"), Ok(Some(true)))
             || matches.subcommand_name() == Some("help")
     };
-    match pre_pass.clone().try_get_matches_from(&args) {
+    // Parsed in place (`try_get_matches_from_mut` leaves the command
+    // usable: <https://docs.rs/clap/4.6.7/clap/struct.Command.html#method.try_get_matches_from_mut>),
+    // so only a failing line parses again, where a copy for the first
+    // parse cost every line a tree and its drop (performance round 5:
+    // 0.21 M instructions and 37 page faults).
+    match pre_pass.try_get_matches_from_mut(&args) {
         Ok(matches) => {
             let help = asks_help(&matches);
             Early {
@@ -151,10 +156,8 @@ where
             }
         }
         Err(err) => {
-            let partial = pre_pass
-                .ignore_errors(true)
-                .try_get_matches_from(&args)
-                .ok();
+            ignoring_errors(&mut pre_pass);
+            let partial = pre_pass.try_get_matches_from_mut(&args).ok();
             let alone =
                 err.kind() == clap::error::ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand;
             let flagged = partial.as_ref().is_some_and(asks_help);
@@ -179,6 +182,17 @@ where
                 matches: None,
             }
         }
+    }
+}
+
+/// `ignore_errors` on `cmd` and on every command under it. It is a global
+/// setting, but a built tree (the first parse built `cmd`) no longer hands
+/// one down: `clap_builder` 4.6.7 propagates global settings to the
+/// subcommands only while it builds the parent (`_build_self`), once.
+fn ignoring_errors(cmd: &mut Command) {
+    *cmd = std::mem::take(cmd).ignore_errors(true);
+    for sub in cmd.get_subcommands_mut() {
+        ignoring_errors(sub);
     }
 }
 
@@ -310,6 +324,49 @@ mod tests {
         assert_eq!(path(&["bogus", "-h"]), None);
         assert_eq!(path(&["version"]), None);
         assert_eq!(path(&["version", "--bogus"]), None);
+    }
+
+    #[derive(Parser)]
+    struct Nested {
+        #[command(flatten)]
+        color: Color,
+        #[command(subcommand)]
+        command: Group,
+    }
+
+    #[derive(Subcommand)]
+    enum Group {
+        #[command(subcommand)]
+        Docker(Docker),
+    }
+
+    #[derive(Subcommand)]
+    enum Docker {
+        Ps {
+            #[arg(long)]
+            json: bool,
+        },
+    }
+
+    /// After a failed parse, the partial parse ignores an error two
+    /// commands deep too, though the first parse built the tree, which
+    /// then hands no setting down (`ignoring_errors`): the help flag
+    /// before the error still names the nested command.
+    #[test]
+    fn a_partial_parse_reads_a_nested_commands_help() {
+        let read = |args: &[&str]| {
+            let all = std::iter::once("sb").chain(args.iter().copied());
+            early_read(Nested::command(), all)
+        };
+        let early = read(&["docker", "ps", "-h", "--bogus"]);
+        assert!(early.help);
+        assert_eq!(
+            early.path,
+            Some(vec!["docker".to_string(), "ps".to_string()])
+        );
+        let early = read(&["docker", "ps", "--bogus"]);
+        assert!(!early.help);
+        assert_eq!(early.path, None);
     }
 
     fn choice(args: &[&str]) -> ColorChoice {
