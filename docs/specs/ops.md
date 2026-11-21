@@ -548,7 +548,7 @@ program; decision 33):
 | Kernel | `System::kernel_version()` (`uname -r`) |
 | TCP Congestion Ctrl | `/proc/sys/net/ipv4/tcp_congestion_control` (`sysctl -n`) |
 | Virtualization | `systemd-detect-virt`'s stdout (exec capture, 5 s, any exit code) upper-cased; `none`, nothing or a failure is `Dedicated` (difference 16) |
-| IPv4/IPv6 | `GET https://icanhazip.com` bound to `0.0.0.0` and to `::` at once (reqwest `local_address`), 4 s each, no redirects, an answer over 64 KiB refused (difference 58): a family is `✓ Online` when its answer has any text but newlines (bench.sh's `$(curl -s ...)`), else `✗ Offline`; `<v4> / <v6>` in one cell, the Ok role with both online, Problem with neither, Warn otherwise (difference 54) |
+| IPv4/IPv6 | `GET https://icanhazip.com` bound to `0.0.0.0` and to `::` at once (reqwest `local_address`), 4 s each, no redirects, an answer over 64 KiB refused (difference 58): a family is `✓ Online` when its answer has any text but newlines (bench.sh's `$(curl -s ...)`), else `✗ Offline`; `<v4> / <v6>` in one cell, the Ok role with both online, Problem with neither, Warn otherwise (difference 54); when no client can be built because the system's CA certificates are missing, this one row says `Not checked:` and cli-core's sentence with the fix, in Problem, and the rows below it are left out (decision 44, difference 70) |
 | Organization, Location, Region | `GET https://ipinfo.io/json`, 4 s (difference 17): `Organization` when `org` is there, `Location` (`city / country`) with both, `Region` when `region` is there, and a `Region` row `No ISP detected` without `org`, as bench.sh's `ipv4_info`; a field of nothing but newlines counts as none, as `-n "$(...)"` |
 
 Sizes are bench.sh's `calc_size` with binary unit names (`KiB` to
@@ -1439,6 +1439,20 @@ Local changes (the maintainer, 2026-11-19; decisions 40 to 42):
     green, red and cyan; a failure red) and always wrote colour, piped
     too; sb follows its colour choice and writes none piped.
 
+The system's CA bundle (the maintainer, 2026-11-21; decision 44):
+70. Without the system's CA certificates, sb says so with the fix,
+    `the system's CA certificates are missing; run apt install
+    --reinstall ca-certificates`: bench's IPv4/IPv6 row (`Not checked:`
+    and the sentence, in Problem, instead of `✗ Offline / ✗ Offline`
+    and `No ISP detected`) and its Speedtest row (`Speedtest
+    unavailable:` and the sentence, in Warn), and the error of every
+    command whose HTTPS client can't be built (self-update, update's
+    release check and every other user of release's client, the
+    credential checks, restore). sb-go has no roots of its own (it
+    imports no `x509roots/fallback`): its bench fails before any output
+    with `x509: certificate signed by unknown authority`, and bench.sh's
+    curl rows say offline or nothing.
+
 ## Scope
 
 **In:**
@@ -2196,6 +2210,24 @@ the real services.
     writes them (two SGR sequences, where the example joined them in
     one), and a padded cell's spaces sit outside its colour, as tabled
     pads; what shows on the terminal is the same.
+44. **A missing CA bundle is said, with its fix** (the maintainer,
+    2026-11-21, after a container without `ca-certificates` showed
+    bench's network rows as `✗ Offline / ✗ Offline` and `No ISP
+    detected`): where an HTTPS client can't be built because no CA
+    certificate loaded from the system, sb says `the system's CA
+    certificates are missing; run apt install --reinstall
+    ca-certificates`, one sentence in cli-core (`tls::MISSING_CA`),
+    found from the build error's rustls cause (`tls::is_missing_ca`), not
+    its text (difference 70). No fallback roots are compiled in. Decided: the sentence's place (bench's IPv4/IPv6 row, with the
+    rows after it left out, since neither check could ask; release's
+    `Error::MissingCa`; the config checks' client error; restore's
+    client error), and that a client's request errors are left as they
+    are. Left as they were: motd's Traefik client, which loads the
+    platform's roots only for an https base or a proxy, and the docker
+    controller's https override (`SB_DOCKER_CONTROLLER_URL`, for tests);
+    both keep reqwest's text. Known limit: an `SSL_CERT_FILE` or
+    `SSL_CERT_DIR` pointing at a bad place gives the same sentence,
+    whose fix doesn't help there; sudo's relaunch drops both.
 
 ## Known limits
 
@@ -2258,6 +2290,15 @@ with no terminal) were decided on 2026-11-13 from recorded rules:
 decisions 28 and 29.
 
 ## Amendments to other specs
+
+**cli-core, release and config specs (2026-11-21, decision 44):**
+cli-core's `tls` holds `MISSING_CA`, the sentence, and `is_missing_ca(err)`,
+whether a client build's error has a rustls `Error::General` among its
+causes (rustls-platform-verifier's error for an empty root store;
+UNVERIFIED as a contract, checked against its 0.7.1 source and in a
+container). release's client build gives `Error::MissingCa` for it,
+shown as the sentence; config's `Http::client` gives the sentence as
+its error text.
 
 **Repo spec (2026-11-18, `announcements preview`):** `Repo::file_at(ref,
 path)`, a local read: `git rev-parse --verify --quiet <ref>^{commit}`

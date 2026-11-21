@@ -3518,6 +3518,7 @@ dependencies = [
  "icu_properties",
  "procfs",
  "rustix",
+ "rustls",
  "saphyr",
  "saphyr-parser",
  "serde",

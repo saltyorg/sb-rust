@@ -937,6 +937,7 @@ mod tests {
                 v6: false,
             },
             isp,
+            ca_missing: false,
         }
     }
 
@@ -1151,6 +1152,25 @@ mod tests {
                 "Speedtest unavailable: no network"
             )),
             "{unavailable:?}"
+        );
+        // A missing CA bundle: release's error, in cli-core's words with
+        // the fix, in Warn (decision 44).
+        let missing = render(&speedtest::table(&speedtest::Outcome::Unavailable(
+            sb_release::Error::MissingCa.to_string(),
+        )));
+        let said = format!("Speedtest unavailable: {}", sb_cli_core::tls::MISSING_CA);
+        assert!(
+            sb_term_ui::DisplayText::from_bytes(missing.as_bytes(), false)
+                .as_str()
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .contains(&said),
+            "{missing:?}"
+        );
+        assert!(
+            missing.contains(&theme.style(Role::Warn).to_string()),
+            "{missing:?}"
         );
         // No node count without nodes.
         let plain = Theme::plain();

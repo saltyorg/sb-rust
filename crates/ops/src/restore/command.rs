@@ -354,10 +354,13 @@ fn client(user_agent: &str) -> anyhow::Result<reqwest::Client> {
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|err| {
-            anyhow::anyhow!(
-                "can't build the HTTP client: {}",
+            // A missing CA bundle is said with its fix (cli-core's `tls`).
+            let why = if sb_cli_core::tls::is_missing_ca(&err) {
+                sb_cli_core::tls::MISSING_CA.to_owned()
+            } else {
                 error_chain(&err.without_url())
-            )
+            };
+            anyhow::anyhow!("can't build the HTTP client: {why}")
         })
 }
 
@@ -462,6 +465,54 @@ async fn body(response: reqwest::Response) -> Result<Vec<u8>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Set in this test binary's child that runs without CA certificates:
+    /// the file it writes when its check ran.
+    const NO_CA_CHILD: &str = "SB_OPS_TEST_RESTORE_NO_CA_CHILD";
+
+    /// Without the system's CA certificates the client's error is
+    /// cli-core's sentence with the fix (ops spec, decision 44), not
+    /// reqwest's "builder error". In a child of this test binary with
+    /// `SSL_CERT_FILE` an empty file, which rustls-native-certs reads
+    /// instead of the system's store
+    /// (<https://docs.rs/rustls-native-certs/0.8.5/rustls_native_certs/fn.load_native_certs.html>).
+    #[test]
+    fn without_ca_certificates_the_client_says_so() {
+        if let Some(ran) = std::env::var_os(NO_CA_CHILD) {
+            let Err(err) = client("sb/1") else {
+                panic!("the client was built");
+            };
+            assert_eq!(
+                err.to_string(),
+                format!(
+                    "can't build the HTTP client: {}",
+                    sb_cli_core::tls::MISSING_CA
+                )
+            );
+            std::fs::write(ran, "ran").expect("mark");
+            return;
+        }
+        let dir = tempfile::tempdir().expect("dir");
+        let (empty, ran) = (dir.path().join("empty.pem"), dir.path().join("ran"));
+        std::fs::write(&empty, "").expect("empty bundle");
+        let child = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .args([
+                "--exact",
+                "restore::command::tests::without_ca_certificates_the_client_says_so",
+            ])
+            .env(NO_CA_CHILD, &ran)
+            .env("SSL_CERT_FILE", &empty)
+            .env_remove("SSL_CERT_DIR")
+            .output()
+            .expect("child");
+        assert!(
+            child.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&child.stdout),
+            String::from_utf8_lossy(&child.stderr)
+        );
+        assert!(ran.exists(), "the child's check didn't run");
+    }
 
     /// A body cut short mid-way is the transfer's error, not the size
     /// cap's: only a body over [`MAX_BODY`] is "over"; one at it is read

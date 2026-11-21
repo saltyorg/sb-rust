@@ -33,6 +33,10 @@ tracing-subscriber.workspace = true
 unicode-width.workspace = true
 # Help lines wrapped at words (help.rs), the wrap term-ui uses.
 tabled.workspace = true
+# The error a client build gives when the system's CA certificates are
+# missing (tls.rs): rustls's own error type, already in sb through
+# reqwest, with `std` (its `std::error::Error`), which reqwest turns on.
+rustls = { workspace = true, features = ["std"] }
 # A combining mark stays with its base character in escaped text
 # (plan decision 40).
 icu_properties.workspace = true

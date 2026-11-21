@@ -369,6 +369,9 @@ pub struct Facts {
     /// icanhazip on each family, and ipinfo's fields.
     pub online: Online,
     pub isp: Isp,
+    /// The network couldn't be checked: the system's CA certificates are
+    /// missing (ops spec, decision 44).
+    pub ca_missing: bool,
 }
 
 /// A two-column row's cells.
@@ -439,8 +442,12 @@ pub fn table(facts: &Facts) -> Table {
     table.row(row("Kernel", shown(facts.kernel.clone())));
     table.row(row("TCP Congestion Ctrl", shown(facts.congestion.clone())));
     table.row(row("Virtualization", facts.virtualization.as_str()));
-    for row in network::rows(facts.online, &facts.isp) {
-        table.row(row);
+    if facts.ca_missing {
+        table.row(network::missing_ca_row());
+    } else {
+        for row in network::rows(facts.online, &facts.isp) {
+            table.row(row);
+        }
     }
     table
 }
@@ -511,10 +518,13 @@ pub async fn gather(
     let df = df_usage(sources.disks, sources.disks_limit, token).await;
     let pools = zpools(&sources.zpool, token).await;
     if let Some(endpoints) = endpoints {
-        (facts.online, facts.isp) = tokio::join!(
+        match tokio::join!(
             network::online(endpoints, token),
             network::isp(endpoints, token)
-        );
+        ) {
+            (Ok(online), Ok(isp)) => (facts.online, facts.isp) = (online, isp),
+            _ => facts.ca_missing = true,
+        }
     }
     facts.disk = df.map(|df| df.plus(facts.swap).plus(pools));
     facts.virtualization = detect_virt(&sources.detect_virt, token).await;
@@ -684,6 +694,7 @@ fn read_host(sources: &Sources) -> anyhow::Result<Facts> {
         virtualization: String::new(),
         online: Online::default(),
         isp: Isp::default(),
+        ca_missing: false,
     })
 }
 
@@ -1110,6 +1121,7 @@ mod tests {
                 country: Some("DE".to_owned()),
                 region: Some("Saxony".to_owned()),
             },
+            ca_missing: false,
         }
     }
 
@@ -1144,6 +1156,23 @@ IPv4/IPv6            ✓ Online / ✗ Offline
 Organization         AS1 Example
 Location             Falkenstein / DE
 Region               Saxony"
+        );
+    }
+
+    /// Without the CA bundle the network rows are one Problem row with
+    /// the fix (ops spec, decision 44), the other rows as they were.
+    #[test]
+    fn a_missing_ca_bundle_replaces_the_network_rows() {
+        let text = rendered(&Facts {
+            ca_missing: true,
+            ..facts()
+        });
+        assert!(
+            text.ends_with(&format!(
+                "\nVirtualization       KVM\nIPv4/IPv6            Not checked: {}",
+                sb_cli_core::tls::MISSING_CA
+            )),
+            "{text}"
         );
     }
 

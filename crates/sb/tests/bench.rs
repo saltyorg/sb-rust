@@ -21,6 +21,9 @@ fn bench_on_small_tmpfs(envs: &[(&str, OsString)]) -> Output {
     let script = r#"mount -t tmpfs -o size=16m sb-bench "$1" && cd "$1" && shift && exec "$@""#;
     let mut cmd = std::process::Command::new("unshare");
     common::apply_sb_env(&mut cmd);
+    // The CA store as the test sets it, never the caller's directories
+    // (rustls-native-certs loads those as well).
+    cmd.env_remove("SSL_CERT_DIR");
     for (name, value) in envs {
         cmd.env(name, value);
     }
@@ -222,6 +225,50 @@ fn bench_asks_the_fakes_and_keeps_the_addresses_out() {
             .as_deref()
             .is_some_and(|ua| ua.starts_with("sb/"))
     }));
+}
+
+/// Without the system's CA certificates (`SSL_CERT_FILE` an empty file,
+/// which rustls-native-certs reads instead of the system's store) the
+/// network rows are one Problem row with the fix, not `✗ Offline` and
+/// `No ISP detected`, and no request is made (ops spec, decision 44).
+#[test]
+fn without_ca_certificates_bench_says_so() {
+    if !root_gate::requested() {
+        return;
+    }
+    let dir = tempfile::tempdir().expect("dir");
+    let network = sb_ops::testing::NetworkFake::start("ADDRESS\n", r#"{"org":"AS1 Example"}"#)
+        .expect("network fake");
+    let release = sb_release::testing::Fake::start().expect("release fake");
+    let pin = serve_speedtest(
+        &release,
+        dir.path(),
+        &sb_release::testing::stand_in("1.0.0"),
+    );
+    let network_file = dir.path().join("network.json");
+    network
+        .write_network(pin, &network_file)
+        .expect("network file");
+    let empty = dir.path().join("empty.pem");
+    std::fs::write(&empty, "").expect("empty bundle");
+    let out = bench_on_small_tmpfs(&[
+        ("SB_BENCH_TEST_NETWORK", network_file.into_os_string()),
+        ("SSL_CERT_FILE", empty.into_os_string()),
+    ]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(0), "{stdout}");
+    // The row wraps in its column, piped at 80: its words, in order.
+    let words = stdout.split_whitespace().collect::<Vec<_>>().join(" ");
+    // The last System row, then Disk write's heading.
+    let row = format!(
+        "IPv4/IPv6 Not checked: {} Disk write",
+        sb_cli_core::tls::MISSING_CA
+    );
+    assert!(words.contains(&row), "{stdout}");
+    for never in ["Offline", "No ISP detected", "Organization"] {
+        assert!(!stdout.contains(never), "{never}\n{stdout}");
+    }
+    assert!(network.seen().is_empty(), "{:?}", network.seen());
 }
 
 /// Every file under `dir`.

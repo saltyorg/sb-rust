@@ -102,6 +102,11 @@ pub enum Error {
     /// The HTTP client couldn't be built (its TLS setup).
     #[error("build the HTTP client: {0}")]
     Client(String),
+    /// The HTTP client couldn't be built because the system's CA
+    /// certificates are missing: cli-core's one sentence, with the fix
+    /// (ops spec, decision 44).
+    #[error("{}", sb_cli_core::tls::MISSING_CA)]
+    MissingCa,
     /// An asset failed its checks (sb-go's texts).
     #[error("{0}")]
     Asset(String),
@@ -185,7 +190,8 @@ impl Releases {
     ///
     /// # Errors
     ///
-    /// [`Error::Client`] when the client can't be built.
+    /// [`Error::Client`] when the client can't be built, [`Error::MissingCa`]
+    /// when that is for the system's missing CA certificates.
     pub fn production(user_agent: &str) -> Result<Self, Error> {
         Self::with(builder(user_agent), [PROXY, API, DOWNLOAD])
     }
@@ -197,8 +203,9 @@ impl Releases {
     ///
     /// # Errors
     ///
-    /// [`Error::Client`] when the client can't be built, or (`testing`)
-    /// the variable is unset or its file unreadable.
+    /// [`Error::Client`] when the client can't be built
+    /// ([`Error::MissingCa`] for the system's missing CA certificates), or
+    /// (`testing`) the variable is unset or its file unreadable.
     pub fn for_sb(user_agent: &str) -> Result<Self, Error> {
         #[cfg(feature = "testing")]
         return testing::from_env(user_agent);
@@ -213,10 +220,15 @@ impl Releases {
         [proxy, api, download]: [&str; 3],
     ) -> Result<Self, Error> {
         // With reqwest's causes (cli-core's chain, as every transport
-        // error here): "builder error" alone names none.
-        let client = builder
-            .build()
-            .map_err(|err| Error::Client(lookup::causes(err)))?;
+        // error here): "builder error" alone names none. A missing CA
+        // bundle is said with its fix (cli-core's `tls`).
+        let client = builder.build().map_err(|err| {
+            if sb_cli_core::tls::is_missing_ca(&err) {
+                Error::MissingCa
+            } else {
+                Error::Client(lookup::causes(err))
+            }
+        })?;
         let parse = |base: &str| {
             Url::parse(base).map_err(|err| Error::Client(format!("base {base}: {err}")))
         };
@@ -284,6 +296,51 @@ mod tests {
             panic!("the client was built");
         };
         assert_eq!(text, "builder error: failed to parse header value");
+    }
+
+    /// Set in this test binary's child that runs without CA certificates:
+    /// the file it writes when its check ran.
+    const NO_CA_CHILD: &str = "SB_RELEASE_TEST_NO_CA_CHILD";
+
+    /// Without the system's CA certificates the client is
+    /// [`Error::MissingCa`], whose message is cli-core's sentence with the
+    /// fix, not reqwest's "builder error" (ops spec, decision 44). The
+    /// check runs in a child of this test binary with `SSL_CERT_FILE` an
+    /// empty file, which rustls-native-certs reads instead of the
+    /// system's store
+    /// (<https://docs.rs/rustls-native-certs/0.8.5/rustls_native_certs/fn.load_native_certs.html>),
+    /// so the variable is set only there.
+    #[test]
+    fn without_ca_certificates_the_client_says_so() {
+        if let Some(ran) = std::env::var_os(NO_CA_CHILD) {
+            let Err(err) = Releases::production("sb/1") else {
+                panic!("the client was built");
+            };
+            assert!(matches!(err, Error::MissingCa), "{err}");
+            assert_eq!(err.to_string(), sb_cli_core::tls::MISSING_CA);
+            std::fs::write(ran, "ran").expect("mark");
+            return;
+        }
+        let dir = tempfile::tempdir().expect("dir");
+        let (empty, ran) = (dir.path().join("empty.pem"), dir.path().join("ran"));
+        std::fs::write(&empty, "").expect("empty bundle");
+        let child = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .args([
+                "--exact",
+                "tests::without_ca_certificates_the_client_says_so",
+            ])
+            .env(NO_CA_CHILD, &ran)
+            .env("SSL_CERT_FILE", &empty)
+            .env_remove("SSL_CERT_DIR")
+            .output()
+            .expect("child");
+        assert!(
+            child.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&child.stdout),
+            String::from_utf8_lossy(&child.stderr)
+        );
+        assert!(ran.exists(), "the child's check didn't run");
     }
 
     /// A base that isn't a URL is the client's error, naming the base.

@@ -115,6 +115,11 @@ you could trip over.
   one label column, with no boxes and no line between rows. Rates are
   right-aligned so their decimals line up, a failed Speedtest node or
   disk run shows in red, and a skipped test's reason in yellow.
+- **A missing CA bundle is named, with its fix:** when the system's CA
+  certificates are missing, `sb bench`, `sb self-update`, `sb update`,
+  the config checks and `sb restore` say so and to run `apt install
+  --reinstall ca-certificates`, instead of a TLS builder error; bench no
+  longer reports the server offline then.
 - **`sb motd`'s default colours** are the GitHub Dark Colorblind palette
   (GitHub Primer's dark colorblind terminal colours) wherever motd.yml
   sets none: blue labels, values, successes and low bars, purple app
