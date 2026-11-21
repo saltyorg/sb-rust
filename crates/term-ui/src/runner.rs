@@ -196,6 +196,36 @@ struct State {
     /// Paused (`Runner::pause_over`, `Runner::pause_below`): nothing is
     /// drawn until the next step, or the run's end.
     paused: bool,
+    /// A step event's redraw, at most once a frame.
+    throttle: Throttle,
+}
+
+/// When a step event redraws the live area (`State::redraw_soon`): at once
+/// when the area was last drawn a [`FRAME`] ago or more, else at the next
+/// frame, so a burst of step events costs a render a frame, not one an
+/// event. Each render lays out the whole tree, every line of every step so
+/// far: on a terminal a warm `sb update` rendered it about 110 times in
+/// 2.1 s, 70% of sb's own work, for 57 draws indicatif let through (perf
+/// round 5, ops finding 1). A line shows up to a frame later; what is
+/// printed, and its order, stay the same, and a transient step's end
+/// first draws what waits, so a transient step shows running at least
+/// once. Why not indicatif's own limit
+/// (`ProgressDrawTarget::stderr_with_hz`,
+/// <https://docs.rs/indicatif/0.18.6/indicatif/struct.ProgressDrawTarget.html#method.stderr_with_hz>):
+/// it limits the write to the terminal, not sb's layout of the tree before
+/// `set_message`, and a draw it drops is never drawn later.
+#[derive(Debug)]
+struct Throttle {
+    /// Off for the in-memory screen, whose tests draw every event.
+    on: bool,
+    /// When the live area was last rendered (tokio's clock, which the
+    /// frames keep).
+    drawn: Option<tokio::time::Instant>,
+    /// An event's redraw waits for the next frame.
+    pending: bool,
+    /// Renders of the live area, for the tests.
+    #[cfg(test)]
+    renders: usize,
 }
 
 /// A plain line held for the run's end (`State::waiting`).
@@ -282,6 +312,20 @@ impl Size {
 }
 
 impl State {
+    /// `redraw` for a step event: in live mode, at the next frame when the
+    /// area was drawn under a frame ago (`Throttle`). The clock is read in
+    /// live mode only, so a plain run costs nothing more.
+    fn redraw_soon(&mut self) {
+        if self.throttle.on
+            && matches!(self.mode, Mode::Live(_))
+            && self.throttle.drawn.is_some_and(|at| at.elapsed() < FRAME)
+        {
+            self.throttle.pending = true;
+            return;
+        }
+        self.redraw();
+    }
+
     /// Print what can be printed and redraw the live area (live mode).
     fn redraw(&mut self) {
         // Nothing after the restore hook ran, nor after the run's end (a
@@ -293,6 +337,14 @@ impl State {
         let Mode::Live(area) = &mut self.mode else {
             return;
         };
+        if self.throttle.on {
+            self.throttle.drawn = Some(tokio::time::Instant::now());
+        }
+        self.throttle.pending = false;
+        #[cfg(test)]
+        {
+            self.throttle.renders += 1;
+        }
         let (rows, width) = self.size.get();
         let d = Draw {
             theme: theme::current(),
@@ -482,7 +534,7 @@ impl Runner {
         // (seen on indicatif's in-memory terminal).
         let Options { target } = options;
         let kept = target.clone();
-        let (mode, colour, size, clock, terminal) = match target {
+        let (mode, colour, size, clock, terminal, throttle) = match target {
             Target::Stderr => {
                 // indicatif hides its stderr target when stderr isn't a
                 // terminal or `TERM` is dumb or unset (draw_target.rs,
@@ -501,6 +553,7 @@ impl Runner {
                     Size::Stderr,
                     Clock::System,
                     terminal,
+                    true,
                 )
             }
             // Always live: the in-memory screen is for the live snapshots.
@@ -523,7 +576,14 @@ impl Runner {
                 // build, and nothing draws a dropped frame again.
                 let target = draw_target(&Target::InMemory { term, colour });
                 let clock = Clock::Frozen(Instant::now());
-                (Mode::Live(Area::new(target)), colour, size, clock, true)
+                (
+                    Mode::Live(Area::new(target)),
+                    colour,
+                    size,
+                    clock,
+                    true,
+                    false,
+                )
             }
         };
         let stop = Arc::new(AtomicBool::new(false));
@@ -547,6 +607,13 @@ impl Runner {
             frame: 0,
             ended: false,
             paused: false,
+            throttle: Throttle {
+                on: throttle,
+                drawn: None,
+                pending: false,
+                #[cfg(test)]
+                renders: 0,
+            },
         }));
         lock(&shared).redraw();
         let mut runner = Runner {
@@ -636,11 +703,15 @@ impl Runner {
             let mut state = lock(&self.shared);
             // Cleared once, however often it is paused below; drawn just
             // before, as the run's end clears it (`State::end`).
-            if how == Pause::Below && self.paused != Some(Pause::Below) {
+            let clears = how == Pause::Below && self.paused != Some(Pause::Below);
+            // An event's redraw that waited for a frame is drawn before the
+            // pause too, so nothing printed during it comes before the
+            // event's lines.
+            if clears || state.throttle.pending {
                 state.redraw();
-                if let Mode::Live(area) = &state.mode {
-                    area.clear();
-                }
+            }
+            if clears && let Mode::Live(area) = &state.mode {
+                area.clear();
             }
             state.paused = true;
         }
@@ -779,7 +850,7 @@ fn begin(
     // the run's end (decision 14); plain, the first line prints it.
     let held = state.tree.held(id);
     state.plain(held, prefixed(prefix, &format!("- {}", labels.running)));
-    state.redraw();
+    state.redraw_soon();
     Some((id, started))
 }
 
@@ -835,7 +906,7 @@ fn notice(
         }
         state.tree.notice(id, warn, text);
     }
-    state.redraw();
+    state.redraw_soon();
 }
 
 /// `text` with a concurrent sibling's label in front, for plain mode.
@@ -973,6 +1044,14 @@ impl Ending {
         let now;
         {
             let mut state = lock(&self.shared);
+            // A transient step's lines never stay on the screen: what
+            // waits for a frame is drawn before one ends, so a transient
+            // step shorter than a frame (a cache rebuild with little to
+            // do) still shows running once, as every step did. Any other
+            // step's finished line is printed, so it waits as events do.
+            if state.throttle.pending && state.tree.held(self.id) && !std::thread::panicking() {
+                state.redraw();
+            }
             now = state.clock.now();
             let screen = failure.as_ref().map_or_default(|f| f.screen.clone());
             let reason = failure.as_ref().and_then(|f| f.reason.clone());
@@ -1005,7 +1084,7 @@ impl Ending {
                 }
             }
             if !std::thread::panicking() {
-                state.redraw();
+                state.redraw_soon();
             }
         }
         // Logged outside the lock: the log write blocks on the file.
@@ -1803,6 +1882,97 @@ mod tests {
             },
         };
         (term, options)
+    }
+
+    /// On a terminal a step event's redraw waits for the next frame when
+    /// the area was drawn under a frame ago: a burst of events costs a
+    /// render a frame. A pause draws one that waited first, so what the
+    /// pause prints comes after it.
+    #[tokio::test(start_paused = true)]
+    async fn a_step_events_redraw_waits_for_the_next_frame() {
+        let (term, options) = screen();
+        let shutdown = Shutdown::new();
+        let mut run = Runner::start("sb demo", &shutdown, None, options);
+        // As on a terminal (the in-memory screen draws every event).
+        lock(&run.shared).throttle.on = true;
+        run.step(Labels::new("Reading a", "a read"), async |step| {
+            // The step's start drew; its notice comes within a frame.
+            step.info("first notice");
+            let shown = term.contents();
+            assert!(shown.contains("Reading a"), "{shown}");
+            assert!(!shown.contains("first notice"), "{shown}");
+            tokio::time::sleep(FRAME).await;
+            let shown = term.contents();
+            assert!(shown.contains("first notice"), "the frame drew it: {shown}");
+            // A frame on, an event draws at once.
+            tokio::time::sleep(FRAME * 2).await;
+            step.info("second notice");
+            let shown = term.contents();
+            assert!(shown.contains("second notice"), "{shown}");
+            Ok(())
+        })
+        .await
+        .expect("step");
+        // The step's end came within a frame of the last draw: it waits,
+        // and the pause draws it before anything printed during it.
+        let shown = term.contents();
+        assert!(!shown.contains("a read"), "{shown}");
+        run.pause_over();
+        let shown = term.contents();
+        assert!(shown.contains("a read"), "drawn at the pause: {shown}");
+        run.resume(false);
+        run.finish();
+    }
+
+    /// A transient step that starts and ends within a frame of the last
+    /// draw shows running once: its end draws its waiting start first,
+    /// then waits. Any other step's end waits for the frame.
+    #[tokio::test(start_paused = true)]
+    async fn a_step_shorter_than_a_frame_shows_running_once() {
+        let (term, options) = screen();
+        let shutdown = Shutdown::new();
+        let mut run = Runner::start("sb demo", &shutdown, None, options);
+        lock(&run.shared).throttle.on = true;
+        // A first step drawn, so the next events come within a frame.
+        run.step(Labels::new("Reading a", "a read"), async |_| Ok(()))
+            .await
+            .expect("step");
+        let before = lock(&run.shared).throttle.renders;
+        run.step(Labels::new("Reading b", "b read"), async |step| {
+            step.info("b notice");
+            Ok(())
+        })
+        .await
+        .expect("step");
+        assert_eq!(lock(&run.shared).throttle.renders, before, "it waits");
+        run.step(
+            Labels::new("Reading c", "c read").transient(),
+            async |step| {
+                let shown = term.contents();
+                assert!(!shown.contains("Reading c"), "its start waits: {shown}");
+                step.info("c notice");
+                Ok(())
+            },
+        )
+        .await
+        .expect("step");
+        let state = lock(&run.shared);
+        // One render, at the end, of the step running, its notice in it;
+        // the end itself waits for the frame.
+        assert_eq!(state.throttle.renders, before + 1);
+        assert!(state.throttle.pending);
+        drop(state);
+        let shown = term.contents();
+        assert!(
+            shown.contains("Reading c") && shown.contains("c notice") && !shown.contains("c read"),
+            "{shown}"
+        );
+        run.finish();
+        let shown = term.contents();
+        assert!(
+            shown.contains("b read") && !shown.contains("Reading c"),
+            "{shown}"
+        );
     }
 
     /// Two steps run one after another; at the end the screen holds the

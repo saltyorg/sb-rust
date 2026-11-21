@@ -47,6 +47,10 @@ async fn work(step: &mut Step, lines: usize, pace: Duration) -> anyhow::Result<(
     // `--child-colour`: a line with its own colour codes, as a child's.
     if arg("--child-colour") {
         step.output("\x1b[31mchild red\x1b[0m");
+        // Over a frame (80 ms) on, so the note's redraw is drawn at once,
+        // the output line with it: a step event's redraw waits for the
+        // next frame on a terminal, and the step's end would come first.
+        tokio::time::sleep(Duration::from_millis(100)).await;
         step.info("\x1b[32mgreen note\x1b[0m");
     }
     Ok(())
