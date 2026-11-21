@@ -1630,10 +1630,29 @@ async fn frames(shared: Shared, stop: Arc<AtomicBool>) {
 fn plain_line(line: &str) {
     // anstream strips the codes when stderr's choice is no colour;
     // recorded for the blank line at the end (cli-core's `tail`).
-    let _ = writeln!(
-        sb_cli_core::tail::Tracked::stderr(anstream::stderr()),
-        "{line}"
+    let _ = write_line(
+        &mut sb_cli_core::tail::Tracked::stderr(anstream::stderr()),
+        line,
     );
+}
+
+/// `line` and its break to `out` in one write, where `writeln!` on
+/// unbuffered stderr made two (anstream, when it strips codes, writes
+/// each run of text between them apart; a plain line has none when
+/// colour is off). A line that fits is joined on the stack: a new string
+/// for each line cost more instructions than `writeln!`'s two writes
+/// (performance round 5: 0.7% more on 100,000 streamed lines).
+fn write_line(out: &mut impl Write, line: &str) -> std::io::Result<()> {
+    let mut joined = [0_u8; 256];
+    match joined.get_mut(..=line.len()) {
+        Some(joined) => {
+            let (text, end) = joined.split_at_mut(line.len());
+            text.copy_from_slice(line.as_bytes());
+            end[0] = b'\n';
+            out.write_all(joined)
+        }
+        None => out.write_all([line, "\n"].concat().as_bytes()),
+    }
 }
 
 /// A plain-mode end line: `✓ <done label>   2.0s`, or ✗ with the label and
@@ -2433,6 +2452,38 @@ mod tests {
 
     /// Every colour code a plain end line writes is of the profile's kind;
     /// `ascii` writes none.
+    /// Each call's bytes, as the writer was handed them.
+    #[derive(Default)]
+    struct Writes(Vec<Vec<u8>>);
+
+    impl Write for Writes {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.push(buf.to_vec());
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// A plain line and its break go out in one write, a line that fits
+    /// the stack's buffer (up to 255 bytes) and a longer one alike.
+    #[test]
+    fn a_plain_line_is_one_write() {
+        for line in [
+            String::new(),
+            "✓ Done   0.0s".to_string(),
+            "x".repeat(255),
+            "y".repeat(256),
+            "z".repeat(4000),
+        ] {
+            let mut out = Writes::default();
+            write_line(&mut out, &line).expect("written");
+            assert_eq!(out.0, [format!("{line}\n").into_bytes()], "{}", line.len());
+        }
+    }
+
     #[test]
     fn plain_end_lines_follow_the_profile() {
         use crate::style::sgr::{colour_codes, of_kind};
