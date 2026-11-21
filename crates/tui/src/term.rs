@@ -613,9 +613,15 @@ async fn sleep_until(due: Option<Instant>) {
 /// [`Ending`] or an error. The first frame is drawn at once, as the
 /// recipe's interval's first tick drew it, or for a screen whose first
 /// frame waits for its source ([`App::first_frame_waits`]) at its first
-/// wake, a frame time on at most; a later change is drawn at the
-/// frames' [`Grid`]'s next time, so changes within a frame time share one
-/// frame. Nothing pending, nothing wakes the loop but an event, a source's
+/// wake, a frame time on at most. A key press's change is drawn at once,
+/// or a frame time after the last frame if that came sooner: waiting for
+/// the grid made a key's frame 8.7 ms late on average, up to 18 ms (perf
+/// round 3). Any other change (the mouse, a paste, a source's lines) is
+/// drawn at the frames' [`Grid`]'s next time, a frame time after the
+/// last frame at the soonest, so changes within a frame time share one
+/// frame and frames stay at most 60 a second: drawing those at once too
+/// cost a wheel burst an extra frame, 43% more instructions. Nothing
+/// pending, nothing wakes the loop but an event, a source's
 /// `wake` or the screen's tick, at the ticks' grid's first time at or
 /// after [`App::tick_at`] (once, however late: a stall runs the tick's
 /// work once, as the recipe's skipped missed ticks did). A cancelled `token` wins over events already waiting, and the
@@ -640,12 +646,19 @@ where
     // The first frame, at once, or a frame time on while it waits.
     let mut due = Some(if waits { start + frames.period } else { start });
     let mut changed = true;
-    let mut drawn = false;
+    let mut drawn: Option<Instant> = None;
+    // A key press asked for the pending frame.
+    let mut key = false;
     loop {
         let now = Instant::now();
-        if changed && due.is_none() {
-            // The first frame, drawn at once once its wait is over.
-            due = Some(if drawn { frames.next(now) } else { now });
+        if changed && (due.is_none() || key) {
+            let wanted = match drawn {
+                None => now,
+                Some(drawn) if key => now.max(drawn + frames.period),
+                Some(drawn) => frames.next(now).max(drawn + frames.period),
+            };
+            due = Some(due.map_or(wanted, |due| due.min(wanted)));
+            key = false;
         }
         let late = due.is_some_and(|due| now >= due + frames.period);
         let tick = app.tick_at().map(|at| ticks.next(at));
@@ -663,10 +676,14 @@ where
                 terminal
                     .draw(|frame| app.draw(frame))
                     .map_err(io::Error::other)?;
+                // The frame's time: when it was due, as the recipe's
+                // interval kept its grid (the timer fires up to a
+                // millisecond late, which would add up over a run of
+                // frames), or now for a late one.
+                drawn = if late { Some(Instant::now()) } else { due };
                 changed = false;
                 due = None;
                 waits = false;
-                drawn = true;
                 continue;
             }
             Step::Tick => app.tick(),
@@ -685,7 +702,10 @@ where
                 }
                 // A new size needs a new frame whatever the screen says.
                 changed |= matches!(input, Input::Resize(..));
-                app.input(input)
+                let pressed = matches!(input, Input::Key(_));
+                let flow = app.input(input);
+                key |= pressed && flow == Flow::Redraw;
+                flow
             }
             Step::Event(Some(Event::Failed(err))) => return Err(err),
             Step::Event(None) => {
@@ -792,7 +812,8 @@ mod tests {
     use ratatui::widgets::Paragraph;
 
     /// Counts what the loop asks of it, and when; answers keys from a
-    /// script: `q` quits, `r` asks for a frame, anything else doesn't.
+    /// script: `q` quits, `r` and any paste ask for a frame, anything else
+    /// doesn't.
     #[derive(Default)]
     struct Script {
         inputs: Vec<Input>,
@@ -818,6 +839,7 @@ mod tests {
             let flow = match &input {
                 Input::Key(key) if key.code == KeyCode::Char('q') => Flow::Quit,
                 Input::Key(key) if key.code == KeyCode::Char('r') => Flow::Redraw,
+                Input::Paste(_) => Flow::Redraw,
                 _ => Flow::Unchanged,
             };
             self.inputs.push(input);
@@ -901,17 +923,22 @@ mod tests {
         (ms(at), Event::Input(input))
     }
 
-    /// The first frame at once; a change on the next frame of the 60/s
-    /// grid, several in one frame time together; none without a change.
+    fn paste() -> Input {
+        Input::Paste("text".into())
+    }
+
+    /// The first frame at once; a change but a key's on the next frame of
+    /// the 60/s grid, several in one frame time together; none without a
+    /// change.
     #[tokio::test(start_paused = true)]
     async fn the_first_frame_comes_at_once_and_a_change_on_the_grid() {
         let mut app = Script::default();
         let events = vec![
             input(5, char_key('x')),
-            input(20, char_key('r')),
-            input(25, char_key('r')),
+            input(20, paste()),
+            input(25, paste()),
             input(40, char_key('x')),
-            input(205, char_key('r')),
+            input(205, paste()),
             input(500, char_key('q')),
         ];
         let ending = run(&mut app, events, &CancellationToken::new()).await;
@@ -921,24 +948,72 @@ mod tests {
         assert_eq!(app.drawn, [ms(0), ms(34), ms(217)]);
     }
 
-    /// Changes every millisecond for a second: 60 frames, one a frame
-    /// time, as the recipe's render interval drew them.
+    /// Changes every millisecond for a second, keys, pastes or the two
+    /// mixed: 60 frames, one a frame time, as the recipe's render interval
+    /// drew them.
     #[tokio::test(start_paused = true)]
     async fn frames_come_at_most_sixty_times_a_second() {
+        let inputs: [fn(u64) -> Input; 3] = [
+            |_| char_key('r'),
+            |_| paste(),
+            |at| if at % 3 == 0 { char_key('r') } else { paste() },
+        ];
+        for make in inputs {
+            let mut app = Script::default();
+            let mut events: Vec<_> = (1..=1_000).map(|at| input(at, make(at))).collect();
+            events.push(input(1_001, char_key('q')));
+            run(&mut app, events, &CancellationToken::new())
+                .await
+                .expect("ends");
+            assert!((60..=62).contains(&app.draws), "{} frames", app.draws);
+            let closest = app
+                .drawn
+                .windows(2)
+                .map(|pair| pair[1].saturating_sub(pair[0]))
+                .min()
+                .expect("frames");
+            assert!(closest >= ms(16), "{closest:?}");
+        }
+    }
+
+    /// A key press's change is drawn at once, or a frame time after the
+    /// last frame when that came sooner; a key that changes nothing draws
+    /// nothing.
+    #[tokio::test(start_paused = true)]
+    async fn a_key_press_draws_at_once() {
         let mut app = Script::default();
-        let mut events: Vec<_> = (1..=1_000).map(|at| input(at, char_key('r'))).collect();
-        events.push(input(1_001, char_key('q')));
+        let events = vec![
+            input(100, char_key('r')),
+            input(105, char_key('r')),
+            input(150, char_key('x')),
+            input(300, char_key('r')),
+            input(500, char_key('q')),
+        ];
         run(&mut app, events, &CancellationToken::new())
             .await
             .expect("ends");
-        assert!((60..=62).contains(&app.draws), "{} frames", app.draws);
-        let closest = app
-            .drawn
-            .windows(2)
-            .map(|pair| pair[1].saturating_sub(pair[0]))
-            .min()
-            .expect("frames");
-        assert!(closest >= ms(16), "{closest:?}");
+        assert_eq!(app.drawn, [ms(0), ms(100), ms(117), ms(300)]);
+    }
+
+    /// A key brings a frame already pending on the grid forward; a change
+    /// on the grid after a key's frame keeps a frame time from it.
+    #[tokio::test(start_paused = true)]
+    async fn a_key_brings_a_pending_frame_forward_and_the_grid_keeps_its_distance() {
+        let mut app = Script::default();
+        let events = vec![
+            input(102, paste()),
+            input(103, char_key('r')),
+            input(110, char_key('r')),
+            input(112, paste()),
+            input(500, char_key('q')),
+        ];
+        run(&mut app, events, &CancellationToken::new())
+            .await
+            .expect("ends");
+        // The paste's frame was due at 116.7 ms; the key drew it at 103.
+        // The key at 110 waits to 119.7; the paste after it joins that
+        // frame, past the grid's 116.7.
+        assert_eq!(app.drawn, [ms(0), ms(103), ms(120)]);
     }
 
     /// A screen whose first frame waits draws it at its source's first

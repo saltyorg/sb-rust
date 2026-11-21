@@ -340,7 +340,10 @@ fallback); the viewer itself has no save or print (decision 24).
   and ticks a screen only when it asks (the picker's 5 s refresh, on the
   same 4/s grid). The viewer's first frame waits for its first page, a
   frame time at most, and is drawn as it comes, as the interval's tick
-  often caught it.
+  often caught it. A key press's frame is drawn at once (a frame time
+  after the last frame at the soonest), where the grid made it wait
+  8.7 ms on average; the mouse, pastes and a source's lines keep the
+  grid, so a wheel burst costs no extra frame.
 - **Leaving the screen** clears it as the last step before the
   alternate screen is left (*amended 2026-11-19,* "Keys: one map for
   every screen", decision 6: "Blank on exit"). Before that, it drains
