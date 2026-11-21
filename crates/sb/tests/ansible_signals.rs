@@ -444,3 +444,32 @@ fn ctrl_c_during_sb_lists_first_listing_starts_no_other() {
     assert!(!dir.path().join("argv.1").exists(), "nothing else started");
     assert_eq!(stdout, "", "nothing listed");
 }
+
+/// Ctrl-C while `sb list --refresh` lists Saltbox's tags over a valid
+/// cache: as a rebuild's (decision 21): no later repository starts a
+/// child, the cache is left as it was, and sb ends by SIGINT with
+/// nothing listed.
+#[test]
+fn ctrl_c_during_a_refresh_starts_no_other_listing() {
+    if !root_gate::requested() {
+        return;
+    }
+    let dir = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).expect("dir");
+    let group = start(dir.path(), "wait", &["list", "--refresh"]);
+    let cache = dir.path().join("saltbox/cache.json");
+    let before = std::fs::read_to_string(&cache).expect("cache");
+    press_ctrl_c(&group);
+    let (status, stdout, stderr) = end(group);
+    assert_eq!(
+        status.signal(),
+        Some(Signal::INT.as_raw()),
+        "{status:?} {stderr}"
+    );
+    assert!(
+        dir.path().join("argv.term").exists(),
+        "the listing got SIGTERM"
+    );
+    assert!(!dir.path().join("argv.1").exists(), "nothing else started");
+    assert_eq!(stdout, "", "nothing listed");
+    assert_eq!(std::fs::read_to_string(&cache).expect("cache"), before);
+}

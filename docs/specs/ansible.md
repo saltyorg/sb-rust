@@ -198,7 +198,8 @@ death by signal for an interrupted run (cli-core).
 
 ### `sb list [query]`
 
-- Flags: `-m, --include-mod`, and the new `--json` (below). sb-go's counted `-v` is dropped (exit 2), as
+- Flags: `-m, --include-mod`, and the new `--json` and `--refresh`
+  (below). sb-go's counted `-v` is dropped (exit 2), as
   in `validate-config` and `docker` (config decision 1, docker decision 6,
   term-ui decision 9): the run log holds the detail.
 - Repos: Saltbox and Sandbox through the cache (rebuilt as a step when
@@ -207,6 +208,18 @@ death by signal for an interrupted run (cli-core).
   Saltbox_mod tags`; a missing directory prints `Saltbox-mod directory
   not found, skipping.  Ensure Saltbox-mod is installed.` and goes on;
   another stat error is that repo's error.
+- **`--refresh`** (decision 21, the maintainer, 2026-11-21; difference
+  18): Saltbox's and Sandbox's tags are listed whatever the cache holds,
+  each as its rebuild step (`Updating <Repo> tags cache`, transient as
+  without the flag), and their entries recorded for HEAD and the file
+  written as the cache's `refresh` does (written only when an entry
+  changed, so identical tags keep the file and its mtime); then the
+  listing as usual. Each repository's `tags listed` record has
+  `cached: false`, `--json` its `cache: "rebuilt"`. `saltbox_mod` is
+  never cached, so `-m` is unchanged by it; it goes with `--json` and a
+  query. A Ctrl-C during it is a rebuild's (no later repository starts a
+  child, sb ends by the signal, nothing listed). Help: `Rebuild the
+  Saltbox and Sandbox tag caches before listing`.
 - **Steps:** every step of `sb list` (the rebuilds and the listing) is a
   transient term-ui step (decision 18): shown while it runs; when every
   step succeeded, only the tags are left, without the `sb list` title;
@@ -270,9 +283,9 @@ death by signal for an interrupted run (cli-core).
   `prefix` (what `sb install` takes before its tags: `""`, `sandbox-`,
   `mod-`), `cache`, and `tags` (in Ansible's order; with a query, the
   matches in the search's order).
-  - **`cache`:** `cached` (read from cache.json), `rebuilt` (listed and
-    written now), `listed` (saltbox_mod, listed fresh and never cached),
-    `missing` (`-m` given and no saltbox_mod directory: no tags).
+  - **`cache`:** `cached` (read from cache.json), `rebuilt` (listed now
+    and recorded, the file written when it changed), `listed`
+    (saltbox_mod, listed fresh and never cached), `missing` (`-m` given and no saltbox_mod directory: no tags).
   - **Failures:** a failed repository has no object; its line is under
     `errors`, the others are printed, exit 1, the error block on stderr
     as without `--json`.
@@ -324,7 +337,8 @@ nothing from ops, so it lands here.
   `completion`'s reader, which must fit the 10 ms startup budget),
   `tags(repo, step)` (load, rebuild if stale, write), and
   `refresh(repo, step)` (always rebuild and write; `update`, `branch`,
-  `branch-sandbox` in `ops`), and `run(repo, tags, &RunArgs)`, one
+  `branch-sandbox` in `ops`; `refresh_on` is the same as top-level steps
+  of a lazy runner, for `sb list --refresh`), and `run(repo, tags, &RunArgs)`, one
   attached playbook run by tag with the `Executing...` and success
   lines, returning exec's `Ran` (`sb install`, `sb diag`, and ops'
   announcement migrations). `update` reads `fresh(repo, head)` for the
@@ -391,6 +405,10 @@ nothing from ops, so it lands here.
 17. **`sb install --help` shows how to name tags** (the examples above):
     both separators, the `sandbox-` and `mod-` prefixes and `sb list`.
     sb-go's help is its one line.
+18. **`sb list --refresh`** (decision 21): rebuilds both tag caches
+    before listing. sb-go's `list` has no way to rebuild a valid cache
+    (an edited role needs a commit, or `install --no-cache` to skip the
+    check).
 
 ### Scope
 
@@ -751,6 +769,15 @@ for validate-config.
     and `sb docker ps --json`, in the shape above. The cache state, which
     the text leaves to the run log (decision 19), is a field here: a
     script can tell a fresh listing from the cache.
+21. **`sb list --refresh`** (the maintainer, 2026-11-21): rebuild the
+    Saltbox and Sandbox tag caches unconditionally, then list, so the
+    rebuild can be timed (the run log's step records and `tags listed`
+    with `cached: false`), and so roles edited locally, which don't move
+    HEAD, show their tags. It goes through the cache's own rebuild (the
+    listing and the write `refresh` uses for `update` and `branch`), as
+    top-level steps of `sb list`'s lazy runner (`TagCache::refresh_on`,
+    beside `tags_on`), since `list` has no parent step. Shown in help:
+    an extension to sb-go's command tree (the contract's `EXTENSIONS`).
 
 ## Known limits
 

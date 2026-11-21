@@ -156,6 +156,24 @@ fn sb_gos_protocol_cases() {
     assert_eq!(std::fs::read_dir(logs.path()).expect("list").count(), 0);
 }
 
+/// `sb list --refresh` is offered, with its help (ansible spec,
+/// decision 21), in each shell.
+#[test]
+fn list_offers_refresh() {
+    let root = saltbox(TAGS, None);
+    let logs = tempfile::tempdir().expect("temp dir");
+    let got = candidates(&request(root.path(), logs.path(), &["list", "--re"]));
+    assert_eq!(
+        got,
+        ["--refresh\tRebuild the Saltbox and Sandbox tag caches before listing"]
+    );
+    for shell in ["bash", "zsh"] {
+        let words = ["list", "--re"];
+        let got = reply(shell, root.path(), &words, words.len());
+        assert!(got.contains("--refresh"), "{shell}: {got:?}");
+    }
+}
+
 /// Bash's and zsh's stubs pass the current word's index, and the words
 /// after the cursor too: only the words before it are earlier tags.
 #[test]

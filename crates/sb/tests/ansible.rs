@@ -1540,3 +1540,123 @@ fn list_help_has_json() {
     assert!(output.status.success());
     assert!(stdout(&output).contains("--json"), "{}", stdout(&output));
 }
+
+/// `sb list --refresh` (spec, `--refresh`; decision 21): a valid cache is
+/// listed again anyway, each repository in its rebuild step (logged, and
+/// transient: piped, a success prints nothing), the new tags shown and
+/// written over the old file, and each `tags listed` record `cached=false`.
+/// Without the flag the same valid cache is used and nothing runs.
+#[test]
+fn list_refresh_rebuilds_a_valid_cache() {
+    if !root_gate::requested() {
+        return;
+    }
+    let world = World::new();
+    let file = world.root().join("cache.json");
+    tag_cache::listing(&world.root(), &["always", "plex"]);
+    tag_cache::listing(&world.appdata().join("sandbox"), &["always", "b"]);
+    let output = world.sb(&["list"]).output().expect("run sb");
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(
+        stdout(&output).contains("Saltbox  3 tags"),
+        "{}",
+        stdout(&output)
+    );
+    assert_eq!(
+        world.runs(),
+        Vec::<Vec<String>>::new(),
+        "the cache was used"
+    );
+    let before = std::fs::read_to_string(&file).expect("cache");
+    // An mtime well in the past, so the rewrite shows whatever the
+    // filesystem's timestamp granularity.
+    let old = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000_000);
+    std::fs::File::options()
+        .write(true)
+        .open(&file)
+        .and_then(|f| f.set_modified(old))
+        .expect("old mtime");
+
+    let output = world.sb(&["list", "--refresh"]).output().expect("run sb");
+    assert!(output.status.success(), "{}", stderr(&output));
+    let rule = dashes();
+    assert_eq!(
+        stdout(&output),
+        format!(
+            "\nSaltbox  2 tags\n{rule}\nalways  plex\n\
+             \nSandbox  2 tags  ·  install as sandbox-<tag>\n{rule}\nalways  b\n\
+             {FOOTER}"
+        )
+    );
+    assert_eq!(stderr(&output), "");
+    let runs = world.runs();
+    assert_eq!(runs.len(), 2, "both listed");
+    assert!(runs.iter().all(|run| args_of(run).contains(&"--list-tags")));
+    let after = std::fs::read_to_string(&file).expect("cache");
+    assert_ne!(after, before, "written over");
+    assert!(after.contains(r#""tags":["always","plex"]"#), "{after}");
+    let mtime = std::fs::metadata(&file)
+        .and_then(|m| m.modified())
+        .expect("mtime");
+    assert_ne!(mtime, old, "the file was written");
+    let log = world.log();
+    assert!(log.contains("Updating Saltbox tags cache"), "{log}");
+    assert!(log.contains("Updating Sandbox tags cache"), "{log}");
+    let listed: Vec<&str> = log.lines().filter(|l| l.contains("tags listed")).collect();
+    assert_eq!(listed.len(), 4, "{log}");
+    assert!(
+        listed[..2].iter().all(|l| l.contains("cached=true")),
+        "{log}"
+    );
+    assert!(
+        listed[2..].iter().all(|l| l.contains("cached=false")),
+        "{log}"
+    );
+}
+
+/// `--refresh` with `--json`, `-m` and a query: each cached repository is
+/// `rebuilt`, `saltbox_mod` still `listed` (never cached), the matches the
+/// query's.
+#[test]
+fn list_refresh_goes_with_json_mod_and_a_query() {
+    if !root_gate::requested() {
+        return;
+    }
+    let world = World::new();
+    tag_cache::listing(&world.root(), &["always", "plex"]);
+    tag_cache::listing(&world.appdata().join("sandbox"), &["always", "plexy"]);
+    tag_cache::listing(&world.appdata().join("saltbox_mod"), &["jf"]);
+    let output = world
+        .sb(&["list", "--refresh", "--json", "-m", "plex"])
+        .output()
+        .expect("run sb");
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(
+        stdout(&output),
+        concat!(
+            r#"{"schema":1,"query":"plex","repositories":["#,
+            r#"{"repository":"saltbox","prefix":"","cache":"rebuilt","tags":["plex"]},"#,
+            r#"{"repository":"sandbox","prefix":"sandbox-","cache":"rebuilt","tags":["plexy"]},"#,
+            r#"{"repository":"saltbox_mod","prefix":"mod-","cache":"listed","tags":[]}],"#,
+            r#""errors":[]}"#,
+            "\n"
+        )
+    );
+    assert_eq!(world.runs().len(), 3);
+}
+
+/// `--refresh` is in `sb list`'s help, with its text.
+#[test]
+fn list_help_has_refresh() {
+    let output = common::sb()
+        .args(["list", "--help"])
+        .output()
+        .expect("run sb");
+    assert!(output.status.success());
+    let out = stdout(&output);
+    assert!(out.contains("--refresh"), "{out}");
+    assert!(
+        out.contains("Rebuild the Saltbox and Sandbox tag caches before listing"),
+        "{out}"
+    );
+}

@@ -49,6 +49,9 @@ you could trip over.
 - **A theme file,** `<appdata>/sb/config.toml`: the built-in theme, with
   the colour depth and colours per role.
 - **`sb docker ps --json`.**
+- **`sb list --refresh`** rebuilds the Saltbox and Sandbox tag caches
+  before listing: after roles were edited locally, or to time the
+  rebuild (the run log has each step's time).
 - **`sb update --verify-venv`** (hidden while its cost is tried): checks
   every file of the Ansible virtual environment against its package's
   record, and the Python against a manifest sb writes when it installs

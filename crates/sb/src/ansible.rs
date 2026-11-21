@@ -169,7 +169,8 @@ async fn check_tags(
 /// `sb list [query]` (ansible spec, `sb list`; module build M34): Saltbox's
 /// and Sandbox's tags through the cache, a rebuild a step of a runner
 /// titled `sb list` that starts at its first step and ends before any
-/// output; `saltbox_mod`'s with `-m`, listed in a step of that runner.
+/// output, or with `--refresh` every time (spec, decision 21);
+/// `saltbox_mod`'s with `-m`, listed in a step of that runner.
 /// Every step is transient (spec, decision 18): on success only the tags
 /// are left. Then the refined columns (spec, decision 19), or the search
 /// table, on stdout, fitted to its terminal (80 columns when it isn't
@@ -193,8 +194,7 @@ pub fn list(args: &ListArgs, shutdown: &Shutdown, log: Option<&RunLog>) -> anyho
             sb_term_ui::Runner::start("sb list", shutdown, log, sb_term_ui::Options::default())
         })
         .transient();
-        let listing =
-            sb_ansible::gather(&mut cache, &ansible, &repos, args.include_mod, &mut runner).await;
+        let listing = sb_ansible::gather(&mut cache, &ansible, &repos, args, &mut runner).await;
         // The steps end before the output starts.
         drop(runner);
         if shutdown.token().is_cancelled() {

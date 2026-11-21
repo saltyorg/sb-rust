@@ -12,7 +12,7 @@ use sb_term_ui::{Runner, Table};
 use term_grid::{Direction, Filling, Grid, GridOptions};
 use unicode_width::UnicodeWidthChar;
 
-use crate::cache::{LazyRunner, TagCache};
+use crate::cache::{LazyRunner, Listed, TagCache};
 use crate::{Ansible, Kind, Repo, Repos};
 
 /// The width the columns fill when stdout isn't a terminal (sb-go's
@@ -35,6 +35,10 @@ pub struct ListArgs {
     // New in sb (spec, `--json`; decision 20).
     #[arg(long)]
     pub json: bool,
+    /// Rebuild the Saltbox and Sandbox tag caches before listing
+    // New in sb (spec, `--refresh`; decision 21).
+    #[arg(long)]
+    pub refresh: bool,
 }
 
 /// One repository's tags.
@@ -56,7 +60,7 @@ pub struct Section {
 pub enum Cache {
     /// Read from cache.json.
     Cached,
-    /// Listed and written now.
+    /// Listed now and recorded (the file written when it changed).
     Rebuilt,
     /// `saltbox_mod`'s, listed fresh and never cached.
     Listed,
@@ -76,7 +80,8 @@ pub struct Listing {
 }
 
 /// Saltbox's and Sandbox's tags through the cache, each rebuilt as a
-/// top-level step of `runner` when stale; with `include_mod`,
+/// top-level step of `runner` when stale, or with `args.refresh` whatever
+/// the cache holds (spec, decision 21); with `args.include_mod`,
 /// `saltbox_mod`'s listed fresh, never cached, when its directory is
 /// there (sb-go list.go:119-128). A repository that fails is a line in
 /// [`Listing::failures`] and the others go on.
@@ -84,7 +89,7 @@ pub async fn gather<F: FnOnce() -> Runner>(
     cache: &mut TagCache,
     ansible: &Ansible,
     repos: &Repos,
-    include_mod: bool,
+    args: &ListArgs,
     runner: &mut LazyRunner<F>,
 ) -> Listing {
     let mut listing = Listing::default();
@@ -95,6 +100,14 @@ pub async fn gather<F: FnOnce() -> Runner>(
             return listing;
         }
         let listed = match sb_repo::Repo::open(name, repo.dir()) {
+            Ok(checkout) if args.refresh => cache
+                .refresh_on(ansible, repo, &checkout, runner)
+                .await
+                .map(|tags| Listed {
+                    tags,
+                    cached: false,
+                })
+                .map_err(anyhow::Error::from),
             Ok(checkout) => cache
                 .tags_on(ansible, repo, &checkout, runner)
                 .await
@@ -127,7 +140,7 @@ pub async fn gather<F: FnOnce() -> Runner>(
             )),
         }
     }
-    if include_mod && !runner.token().is_cancelled() {
+    if args.include_mod && !runner.token().is_cancelled() {
         let repo = &repos.saltbox_mod;
         // std's existence check: missing is `Ok(false)`, any other stat
         // error an error (<https://doc.rust-lang.org/std/path/struct.Path.html#method.try_exists>).

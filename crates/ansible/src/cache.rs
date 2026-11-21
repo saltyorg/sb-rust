@@ -213,20 +213,52 @@ impl TagCache {
             Lookup::Fresh(tags) => return Ok(Listed { tags, cached: true }),
             Lookup::Stale(head) => head,
         };
+        let tags = self.rebuild_on(ansible, repo, head, runner).await?;
+        Ok(Listed {
+            tags,
+            cached: false,
+        })
+    }
+
+    /// [`TagCache::refresh`] for a command with no parent step (`sb list
+    /// --refresh`; spec, decision 21): `repo`'s tags rebuilt and written
+    /// whatever the cache holds, in a top-level step of `runner`, as
+    /// [`TagCache::tags_on`]'s rebuild.
+    ///
+    /// # Errors
+    ///
+    /// As [`TagCache::tags`].
+    pub async fn refresh_on<F: FnOnce() -> Runner>(
+        &mut self,
+        ansible: &Ansible,
+        repo: &Repo,
+        checkout: &sb_repo::Repo,
+        runner: &mut LazyRunner<F>,
+    ) -> Result<Vec<String>, CacheError> {
+        same_repo(repo, checkout);
+        let head = checkout.head(&runner.token()).await?;
+        self.rebuild_on(ansible, repo, head, runner).await
+    }
+
+    /// The listing in a top-level step of `runner`, transient when its
+    /// steps are.
+    async fn rebuild_on<F: FnOnce() -> Runner>(
+        &mut self,
+        ansible: &Ansible,
+        repo: &Repo,
+        head: String,
+        runner: &mut LazyRunner<F>,
+    ) -> Result<Vec<String>, CacheError> {
         let label = label(repo.kind());
         let labels = runner.labels(label.clone(), label);
-        let tags = runner
+        runner
             .runner()
             .step(labels, async |step| {
                 self.list_and_record(ansible, repo, head, &step.token())
                     .await
             })
             .await
-            .map_err(CacheError::Step)?;
-        Ok(Listed {
-            tags,
-            cached: false,
-        })
+            .map_err(CacheError::Step)
     }
 
     /// `repo`'s cached tags if valid for its checkout's HEAD, else that
@@ -377,7 +409,8 @@ impl<F: FnOnce() -> Runner> LazyRunner<F> {
     }
 
     /// Every step started on it is transient (term-ui's
-    /// `Labels::transient`): [`TagCache::tags_on`]'s rebuilds and `sb
+    /// `Labels::transient`): [`TagCache::tags_on`]'s and
+    /// [`TagCache::refresh_on`]'s rebuilds and `sb
     /// list -m`'s listing show while they run; when every step
     /// succeeded they are gone, title included, and when one failed the
     /// whole tree stays. `sb list`'s runner

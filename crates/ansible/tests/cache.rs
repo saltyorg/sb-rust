@@ -493,6 +493,44 @@ async fn tags_on_a_lazy_runner_start_it_only_to_rebuild() {
     assert_eq!(world.runs().len(), 1, "no second listing");
 }
 
+/// `refresh_on` (`sb list --refresh`, decision 21): with no parent step, a
+/// valid cache is listed again anyway, the rebuild a top-level step of
+/// the runner it starts, and the new tags recorded for HEAD.
+#[tokio::test]
+async fn refresh_on_a_lazy_runner_rebuilds_a_valid_cache() {
+    let world = World::new();
+    let ansible = Ansible::with_program(FAKE);
+    let (repo, checkout) = (world.repo(), world.checkout());
+    let mut cache = TagCache::load(&world.root());
+    let ran = lazily(async |runner| cache.tags_on(&ansible, &repo, &checkout, runner).await).await;
+    assert!(ran.result.is_ok_and(|listed| !listed.cached));
+    world.set("FAKE_ANSIBLE_LISTING", "      TASK TAGS: [always, plex]\n");
+    let mut cache = TagCache::load(&world.root());
+    let ran = lazily(async |runner| {
+        cache
+            .refresh_on(&ansible, &repo, &checkout, runner)
+            .await
+            .map_err(|err| error_text(&err))
+    })
+    .await;
+    assert_eq!(ran.result, Ok(strings(&["always", "plex"])));
+    assert!(ran.started);
+    let lines: Vec<&str> = ran.screen.lines().map(str::trim_end).collect();
+    // `lazily`'s runner is titled `sb install`; `sb list` names its own.
+    assert_eq!(lines[0], "sb install", "{}", ran.screen);
+    assert!(
+        lines[1].starts_with("╰── ✓ Updating Saltbox tags cache"),
+        "{}",
+        ran.screen
+    );
+    assert_eq!(world.runs().len(), 2, "listed again");
+    let entry = TagCache::load(&world.root())
+        .entry(&world.repo())
+        .expect("entry");
+    assert_eq!(entry.tags, strings(&["always", "plex"]));
+    assert_eq!(entry.commit, git(&world.root(), &["rev-parse", "HEAD"]));
+}
+
 /// A transient lazy runner (`sb list`'s, decision 18): a rebuild that
 /// succeeds leaves nothing, title included; one that fails stays under
 /// the title with its cause.
