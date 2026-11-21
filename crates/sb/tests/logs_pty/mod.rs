@@ -7,7 +7,7 @@ use std::io::{Read, Write};
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::PathBuf;
 use std::process::Output;
-use std::sync::mpsc;
+use std::sync::{OnceLock, mpsc};
 use std::time::{Duration, Instant};
 
 use portable_pty::{
@@ -15,6 +15,7 @@ use portable_pty::{
 };
 use rustix::fs::{Mode, OFlags, open};
 use rustix::termios::{LocalModes, tcgetattr};
+use sb_host::journal::testing::follow_slot::{self, Slot};
 
 use crate::common;
 
@@ -27,6 +28,9 @@ pub const WAIT: Duration = Duration::from_secs(20);
 pub struct World {
     pub dir: tempfile::TempDir,
     docker_host: Option<String>,
+    /// The follow slot of a world whose service's log is followed
+    /// ([`World::follows`]).
+    follow: OnceLock<Slot>,
 }
 
 impl World {
@@ -62,7 +66,16 @@ impl World {
         Self {
             dir,
             docker_host: None,
+            follow: OnceLock::new(),
         }
+    }
+
+    /// A service's log in this world is followed: a follow slot, held
+    /// while the world lives, after a check that the host has an inotify
+    /// instance to give (sb-journal's `testing::follow_slot`; the nextest
+    /// `journal-follow` group under nextest).
+    pub fn follows(&self) {
+        self.follow.get_or_init(follow_slot::take);
     }
 
     /// The same world on the Docker daemon at `host` (a fake's).

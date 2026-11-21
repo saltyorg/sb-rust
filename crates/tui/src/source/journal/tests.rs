@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use sb_host::journal::testing::crafted::{self, Format, H_ARENA_SIZE, H_N_ENTRIES, boot_file_in};
+use sb_host::journal::testing::follow_slot::{self, Slot};
 use sb_host::journal::{FieldName, Release, Source};
 use tokio::sync::Notify;
 
@@ -37,15 +38,20 @@ fn small(page: usize) -> Settings {
     }
 }
 
-/// The test's end of a source: its handle and the viewer's channel.
+/// The test's end of a source: its handle and the viewer's channel, and
+/// a follow slot for as long as it lives (sb-journal's
+/// `testing::follow_slot`: a few follows at a time, after a check that
+/// the host has an inotify instance to give).
 struct Viewer {
     handle: SourceHandle,
     events: mpsc::UnboundedReceiver<Tagged>,
     wake: Arc<Notify>,
+    _follow: Slot,
 }
 
 impl Viewer {
     fn on(journal: Arc<Journal>, query: Query, settings: Settings) -> Self {
+        let follow = follow_slot::take();
         let (tx, events) = mpsc::unbounded_channel();
         let wake = Arc::new(Notify::new());
         let outbox = Outbox::new(tx, Arc::clone(&wake), Generation::default().next());
@@ -54,6 +60,7 @@ impl Viewer {
             handle,
             events,
             wake,
+            _follow: follow,
         }
     }
 

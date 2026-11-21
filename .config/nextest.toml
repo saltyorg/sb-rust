@@ -36,3 +36,24 @@ slow-timeout = { period = "30s", terminate-after = 2 }
 fail-fast = false
 status-level = "slow"
 final-status-level = "slow"
+
+# The journal-follow tests a few at a time (maintainer, 2026-11-21): each
+# holds an inotify instance while it follows, and with every test at
+# once the run took the host's last ones (fs.inotify.max_user_instances
+# counts all of root's processes). Nextest's documented test groups
+# (https://nexte.st/docs/configuration/test-groups/): sb's `logs` tests,
+# except the containers' (which follow Docker's logs, not the journal),
+# and sb-tui's journal adapter's. sb-journal's and sb-host's own follow
+# tests hold their instance for milliseconds and stay out (2026-11-21).
+# The group's max-threads is sb-journal's `testing::follow_slot::AT_ONCE`
+# (a unit test there checks the two agree). The `default` profile's overrides apply to
+# the `mutants` and `release-tests` profiles too (`cargo nextest
+# show-config test-groups --profile release-tests` lists them). The
+# cargo test and cargo llvm-cov runs, which have no test groups, take
+# the same limit from sb-journal's `testing::follow_slot`.
+[test-groups]
+journal-follow = { max-threads = 2 }
+
+[[profile.default.overrides]]
+filter = '(package(sb) & binary(logs) & !test(/^logs_containers::/)) | (package(sb-tui) & test(/^source::journal::tests::/))'
+test-group = 'journal-follow'

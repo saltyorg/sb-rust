@@ -54,6 +54,7 @@ trait Journal {
 impl Journal for World {
     /// `APP`'s journal: three entries of its own and one of another unit.
     fn write_journal(&self) {
+        self.follows();
         let unit = format!("_SYSTEMD_UNIT={APP}.service");
         let marker = format!("MESSAGE=a line with {MARKER}");
         let entries: [&[&[u8]]; 4] = [
@@ -84,6 +85,7 @@ impl Journal for World {
     /// here` as entry 100's message: far outside the 500 lines a viewer
     /// loads.
     fn write_long_journal(&self, n: usize) {
+        self.follows();
         let unit = format!("_SYSTEMD_UNIT={APP}.service");
         let messages: Vec<String> = (0..n)
             .map(|i| {
@@ -521,6 +523,7 @@ fn a_dotted_service_name_opens_its_log() {
     let files =
         r#"[{"unit_file":"saltbox_managed_a.b.service","state":"enabled","vendor_preset":null}]"#;
     let world = World::new(units, files);
+    world.follows();
     let unit = "_SYSTEMD_UNIT=saltbox_managed_a.b.service";
     let entries: [&[&[u8]]; 1] = [&[b"MESSAGE=dotted unit line", unit.as_bytes()]];
     journal_file(&world.journal().join("system.journal"), 1, &entries);
