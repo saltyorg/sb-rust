@@ -15,7 +15,7 @@
 
 use std::sync::OnceLock;
 
-use anstyle::{AnsiColor, Color, RgbColor, Style};
+use anstyle::{Ansi256Color, AnsiColor, Color, RgbColor, Style};
 
 /// A colour's job, not its hue: screens share one meaning per role.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -129,38 +129,59 @@ const fn rgb(hex: u32) -> RgbColor {
     RgbColor(r, g, b)
 }
 
+/// The built-in `default` theme, for dark backgrounds, in [`Role::ALL`]
+/// order.
+const BUILT_IN: [RgbColor; Role::ALL.len()] = [
+    rgb(0x00DC_E3EC), // text
+    rgb(0x008B_95A7), // muted
+    rgb(0x0058_6174), // faint
+    rgb(0x003A_4558), // border
+    rgb(0x005C_CFE6), // accent
+    rgb(0x000B_1A24), // on_accent
+    rgb(0x006F_D39A), // ok
+    rgb(0x00FF_6E7A), // problem
+    rgb(0x00F5_B55B), // warn
+    rgb(0x0084_A9C0), // idle
+    rgb(0x007E_A6FF), // service
+    rgb(0x0034_466E), // service_rule
+    rgb(0x00C4_9BFF), // container
+    rgb(0x004F_3D6E), // container_rule
+    rgb(0x006A_2E36), // attention_rule
+    rgb(0x00E8_C77A), // highlight
+    rgb(0x007E_A6FF), // link
+    rgb(0x00E8_C77A), // code
+    rgb(0x001C_2430), // code_bg
+    rgb(0x00C4_9BFF), // accent_2
+    rgb(0x002A_3446), // button_bg
+    rgb(0x001A_2029), // button_disabled_bg
+    rgb(0x004A_3F12), // search_hit
+    rgb(0x00FF_FFFF), // selected_fg
+    rgb(0x0024_405E), // selected_bg
+];
+
 impl Default for Palette {
     /// The built-in `default` theme, for dark backgrounds.
     fn default() -> Self {
-        Self([
-            rgb(0x00DC_E3EC), // text
-            rgb(0x008B_95A7), // muted
-            rgb(0x0058_6174), // faint
-            rgb(0x003A_4558), // border
-            rgb(0x005C_CFE6), // accent
-            rgb(0x000B_1A24), // on_accent
-            rgb(0x006F_D39A), // ok
-            rgb(0x00FF_6E7A), // problem
-            rgb(0x00F5_B55B), // warn
-            rgb(0x0084_A9C0), // idle
-            rgb(0x007E_A6FF), // service
-            rgb(0x0034_466E), // service_rule
-            rgb(0x00C4_9BFF), // container
-            rgb(0x004F_3D6E), // container_rule
-            rgb(0x006A_2E36), // attention_rule
-            rgb(0x00E8_C77A), // highlight
-            rgb(0x007E_A6FF), // link
-            rgb(0x00E8_C77A), // code
-            rgb(0x001C_2430), // code_bg
-            rgb(0x00C4_9BFF), // accent_2
-            rgb(0x002A_3446), // button_bg
-            rgb(0x001A_2029), // button_disabled_bg
-            rgb(0x004A_3F12), // search_hit
-            rgb(0x00FF_FFFF), // selected_fg
-            rgb(0x0024_405E), // selected_bg
-        ])
+        Self(BUILT_IN)
     }
 }
+
+/// The 256-colour pick for each role's built-in colour, in [`Role::ALL`]
+/// order: anstyle-lossy's `rgb_to_xterm` (a search over 240 colours) is a
+/// `const fn`
+/// (<https://docs.rs/anstyle-lossy/1.1.5/anstyle_lossy/fn.rgb_to_xterm.html>),
+/// so the built-in palette's picks are made when sb is compiled, not at
+/// every start (performance round 5: 0.19 M instructions a run). A role a
+/// theme file sets to another colour is converted at run time.
+const XTERM: [Ansi256Color; Role::ALL.len()] = {
+    let mut picks = [Ansi256Color(0); Role::ALL.len()];
+    let mut i = 0;
+    while i < picks.len() {
+        picks[i] = anstyle_lossy::rgb_to_xterm(BUILT_IN[i]);
+        i += 1;
+    }
+    picks
+};
 
 /// The 16-colour pick for each role's built-in colour (ADR-006), in
 /// [`Role::ALL`] order; a role a theme file sets to another colour is
@@ -293,17 +314,17 @@ pub struct Theme {
 
 impl Theme {
     /// Every role in `profile`; under `ansi` a role still on its built-in
-    /// colour takes [`SIXTEEN`]'s pick (ADR-006).
+    /// colour takes [`SIXTEEN`]'s pick (ADR-006), under `ansi256`
+    /// [`XTERM`]'s, the one [`Profile::resolve`] gives it.
     #[must_use]
     pub fn resolve(palette: &Palette, profile: Profile) -> Self {
-        let built_in = Palette::default();
         Self {
             colours: std::array::from_fn(|i| {
                 let colour = palette.0[i];
-                if profile == Profile::Ansi && colour == built_in.0[i] {
-                    Some(Color::Ansi(SIXTEEN[i]))
-                } else {
-                    profile.resolve(colour)
+                match profile {
+                    Profile::Ansi if colour == BUILT_IN[i] => Some(Color::Ansi(SIXTEEN[i])),
+                    Profile::Ansi256 if colour == BUILT_IN[i] => Some(Color::Ansi256(XTERM[i])),
+                    _ => profile.resolve(colour),
                 }
             }),
             profile,
@@ -620,8 +641,24 @@ mod tests {
         );
     }
 
-    /// The other profiles never use the picks: every role resolves as its
-    /// colour does on its own.
+    /// Under `ansi256` a role a theme file sets to another colour is
+    /// converted at run time, not given the built-in colour's pick.
+    #[test]
+    fn an_overridden_role_is_converted_in_256_colours() {
+        let mut palette = Palette::default();
+        let red = anstyle::RgbColor(0xFF, 0x6E, 0x7A);
+        palette.set(Role::Ok, red);
+        let theme = Theme::resolve(&palette, Profile::Ansi256);
+        assert_eq!(theme.color(Role::Ok), Profile::Ansi256.resolve(red));
+        assert_ne!(
+            theme.color(Role::Ok),
+            Some(anstyle::Color::Ansi256(XTERM[Role::Ok.index()]))
+        );
+    }
+
+    /// The other profiles never use the 16-colour picks: every role
+    /// resolves as its colour does on its own (ansi256's picks, made at
+    /// compile time, are that same conversion).
     #[test]
     fn other_profiles_resolve_every_role_directly() {
         let palette = Palette::default();
