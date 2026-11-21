@@ -312,6 +312,21 @@ impl Prepared {
         )
     }
 
+    /// The first document's events as saphyr-parser gives them, for a
+    /// receiver that looks at each before handing it on through
+    /// [`Prepared::libyaml`] (config's duplicate-key check and its loader
+    /// in one pass).
+    ///
+    /// # Errors
+    ///
+    /// As [`Prepared::load`].
+    pub fn load_raw<'input, R: SpannedEventReceiver<'input>>(
+        &'input self,
+        receiver: &mut R,
+    ) -> Result<(), ScanError> {
+        Parser::new_from_str(&self.text).load(receiver, false)
+    }
+
     /// `event`, at `span` in this text, with a scalar's text as libyaml
     /// reads it. One case differs: a block scalar at the end of a text
     /// with no final line break. libyaml 0.2.5 and sb-go's yaml.v3
@@ -326,7 +341,8 @@ impl Prepared {
     /// not saphyr's own: neither it, 0.3.4, nor granit-parser 2.0.0 has
     /// an option for it. Checked against libyaml through `PyYAML` 6.0.3
     /// and against yaml.v3 3.0.5 (the platform note).
-    fn libyaml<'input>(&self, event: Event<'input>, span: &Span) -> Event<'input> {
+    #[must_use]
+    pub fn libyaml<'input>(&self, event: Event<'input>, span: &Span) -> Event<'input> {
         // The top-level scalar a comment ended, the document's only scalar
         // (no collection holds it): libyaml's value, where saphyr reads on
         // over the emptied comment lines. Not found by its span: saphyr

@@ -1,7 +1,7 @@
 //! A config file parsed for validation (config spec, "Parsing" and
 //! "Duplicate keys"): the first YAML document, with every node's position
 //! (saphyr's `MarkedYamlOwned`) and its scalars' source text kept for
-//! yaml.v3-style resolution; a pass over saphyr-parser's events first
+//! yaml.v3-style resolution; the same pass over saphyr-parser's events
 //! reports every duplicate key. The text goes through cli-core's YAML
 //! pre-pass first, so sb accepts what Ansible's libyaml accepts (decision
 //! 28), and every position points into the file as written.
@@ -65,42 +65,54 @@ pub fn prepare(file: &str, text: &str) -> Result<Prepared, Vec<Issue>> {
 ///
 /// The issues above, sorted by position.
 pub fn load(file: &str, prepared: &Prepared) -> Result<MarkedYamlOwned, Vec<Issue>> {
-    let issue = |(line, column): (usize, usize), message: String| Issue {
-        file: file.to_string(),
-        line,
-        column,
-        path: String::new(),
-        message,
+    let mut loader = loader();
+    // One parser pass for both (two cost validate-config 7% more,
+    // performance round 5). Each event of the first document (the
+    // pre-pass has refused a second) goes to the duplicate-key check as
+    // saphyr-parser gives it, then to the loader with its scalar as
+    // libyaml reads it and its span moved back into the file as written.
+    // The loader's tree is dropped when a key repeats.
+    let mut both = Both {
+        keys: Keys::new(file),
+        original: Original {
+            prepared,
+            loader: &mut loader,
+        },
     };
-    let syntax = |err: &ScanError| {
-        vec![issue(
-            position(prepared, err.marker()),
-            format!("syntax error: {}", err.info()),
-        )]
-    };
-    let found = duplicates(file, prepared).map_err(|err| syntax(&err))?;
+    prepared
+        .load_raw(&mut both)
+        .map_err(|err| syntax(file, prepared, &err))?;
+    let found = both.keys.finish();
     if !found.is_empty() {
         return Err(found);
     }
+    loaded(file, loader)
+}
+
+/// saphyr's loader as [`load`] uses it: scalars kept as their source text
+/// (`early_parse` off), and duplicates left to [`Keys`], as yaml.v3
+/// compares keys (the loader would also compare an alias key with the
+/// text it stands for).
+fn loader<'input>() -> YamlLoader<'input, MarkedYamlOwned> {
     let mut loader = YamlLoader::<MarkedYamlOwned>::default();
     loader.early_parse(false);
-    // The pass above decides duplicates, as yaml.v3 compares keys; the
-    // loader would also compare an alias key with the text it stands for.
     loader.allow_duplicate_keys(true);
-    // The first document only: the pre-pass has refused a second. Its
-    // scalars as libyaml reads them, each event's span moved back into
-    // the file as written.
-    prepared
-        .load(&mut Original {
-            prepared,
-            loader: &mut loader,
-        })
-        .map_err(|err| syntax(&err))?;
+    loader
+}
+
+/// The verdict on a text `loader` has loaded, its duplicate keys checked:
+/// the loader's own errors, else the root mapping, or the issue of a root
+/// that isn't one.
+fn loaded(
+    file: &str,
+    loader: YamlLoader<'_, MarkedYamlOwned>,
+) -> Result<MarkedYamlOwned, Vec<Issue>> {
     // Errors the loader keeps to itself (an alias expansion past its
     // budget, say), as saphyr's own `load_from_parser` checks. Their
     // positions come from the moved spans: the file's already.
     if let Some(err) = loader.error() {
         return Err(vec![issue(
+            file,
             (err.marker().line(), err.marker().col() + 1),
             format!("syntax error: {}", err.info()),
         )]);
@@ -111,10 +123,134 @@ pub fn load(file: &str, prepared: &Prepared) -> Result<MarkedYamlOwned, Vec<Issu
     match kind_name(&root.data) {
         None => Ok(root),
         Some("null") => Ok(empty()),
-        Some(found) => Err(vec![issue(
+        Some(found) => Err(vec![not_a_mapping(
+            file,
             (root.span.start.line(), root.span.start.col() + 1),
-            format!("the file must be a mapping of keys, not {found}"),
+            found,
         )]),
+    }
+}
+
+/// An issue in `file` at a 1-based (line, column), for no key path.
+fn issue(file: &str, (line, column): (usize, usize), message: String) -> Issue {
+    Issue {
+        file: file.to_string(),
+        line,
+        column,
+        path: String::new(),
+        message,
+    }
+}
+
+/// saphyr-parser's syntax error as `file`'s one issue.
+fn syntax(file: &str, prepared: &Prepared, err: &ScanError) -> Vec<Issue> {
+    vec![issue(
+        file,
+        position(prepared, err.marker()),
+        format!("syntax error: {}", err.info()),
+    )]
+}
+
+/// The issue of a root that is `found`, not a mapping.
+fn not_a_mapping(file: &str, at: (usize, usize), found: &str) -> Issue {
+    issue(
+        file,
+        at,
+        format!("the file must be a mapping of keys, not {found}"),
+    )
+}
+
+/// [`load`]'s verdict without its tree, for a file whose tree nobody
+/// reads (one with no schema: the inventory). The duplicate keys and the
+/// root's kind come from one pass over the events. The loader's tree
+/// decides only two cases, so a text with either is loaded as before:
+/// an alias (the loader's expansion budget; duplicate keys are this
+/// check's) and a root collection with a tag outside YAML's core schema
+/// (`!unsafe`, `!vault`, `!`: the loader keeps the tag on it, and
+/// [`kind_name`] then calls it a scalar).
+///
+/// # Errors
+///
+/// As [`load`].
+pub fn check(file: &str, prepared: &Prepared) -> Result<(), Vec<Issue>> {
+    let mut only = KeysOnly {
+        prepared,
+        keys: Keys::new(file),
+        root: None,
+        needs_tree: false,
+    };
+    // saphyr-parser's events, the first document's, as the duplicate-key
+    // pass before the loader read them (the pre-pass has refused a
+    // second).
+    for event in Parser::new_from_str(prepared.text()) {
+        let (event, span) = event.map_err(|err| syntax(file, prepared, &err))?;
+        if event == Event::DocumentEnd {
+            break;
+        }
+        only.on_event(event, span);
+    }
+    let (needs_tree, root) = (only.needs_tree, only.root);
+    let found = only.keys.finish();
+    if !found.is_empty() {
+        return Err(found);
+    }
+    if needs_tree {
+        // The loader alone: the keys are checked already.
+        let mut loader = loader();
+        prepared
+            .load(&mut Original {
+                prepared,
+                loader: &mut loader,
+            })
+            .map_err(|err| syntax(file, prepared, &err))?;
+        return loaded(file, loader).map(|_| ());
+    }
+    match root {
+        Some((found, at)) => Err(vec![not_a_mapping(file, at, found)]),
+        None => Ok(()),
+    }
+}
+
+/// [`check`]'s receiver: the duplicate-key check, whether the verdict
+/// needs the loader's tree ([`check`]), and what the root is when it
+/// isn't a mapping or null, with where.
+struct KeysOnly<'a> {
+    prepared: &'a Prepared,
+    keys: Keys<'a>,
+    root: Option<(&'static str, (usize, usize))>,
+    needs_tree: bool,
+}
+
+impl<'input> SpannedEventReceiver<'input> for KeysOnly<'_> {
+    fn on_event(&mut self, event: Event<'input>, span: Span) {
+        let top = self.keys.frames.is_empty();
+        self.keys.event(self.prepared, &event, &span);
+        // Below the root only an alias matters: libyaml's reading of a
+        // scalar is for the root's kind, and costs its look at every
+        // event otherwise.
+        if !top {
+            self.needs_tree |= matches!(event, Event::Alias(_));
+            return;
+        }
+        let at = || {
+            let start = self.prepared.original(&span.start);
+            (start.line(), start.col() + 1)
+        };
+        match self.prepared.libyaml(event, &span) {
+            Event::Alias(_) => self.needs_tree = true,
+            Event::MappingStart(_, Some(tag)) | Event::SequenceStart(_, Some(tag))
+                if !tag.is_yaml_core_schema() =>
+            {
+                self.needs_tree = true;
+            }
+            Event::SequenceStart(..) => self.root = Some(("a sequence", at())),
+            Event::Scalar(text, style, _, tag)
+                if resolve(&text, style, tag.as_deref()) != Ok(Value::Null) =>
+            {
+                self.root = Some(("a scalar", at()));
+            }
+            _ => {}
+        }
     }
 }
 
@@ -130,6 +266,24 @@ fn kind_name(data: &YamlDataOwned<MarkedYamlOwned>) -> Option<&'static str> {
         }
         YamlDataOwned::Sequence(_) => Some("a sequence"),
         _ => Some("a scalar"),
+    }
+}
+
+/// The duplicate-key check and the loader, fed from one pass: the check
+/// sees each event as saphyr-parser gives it, the loader its scalar as
+/// libyaml reads it and its span in the file as written (saphyr's
+/// `YamlLoader` implements `SpannedEventReceiver`:
+/// <https://docs.rs/saphyr-parser/0.3.3/saphyr_parser/trait.SpannedEventReceiver.html>).
+struct Both<'a, 'input> {
+    keys: Keys<'a>,
+    original: Original<'a, 'input>,
+}
+
+impl<'input> SpannedEventReceiver<'input> for Both<'_, 'input> {
+    fn on_event(&mut self, event: Event<'input>, span: Span) {
+        let prepared = self.original.prepared;
+        self.keys.event(prepared, &event, &span);
+        self.original.on_event(prepared.libyaml(event, &span), span);
     }
 }
 
@@ -222,19 +376,34 @@ fn key_segment(top: bool, key: &str) -> String {
     }
 }
 
-/// Every duplicate key in `text`'s first document, from saphyr-parser's
-/// events (before any loading, which would stop at the first), sorted by
-/// position: each with its key path and the first position of the same
-/// key (`KeyId`) in the same mapping. The pre-pass has limited the
-/// nesting, so the frames are at most `yaml::MAX_DEPTH`.
-fn duplicates(file: &str, prepared: &Prepared) -> Result<Vec<Issue>, ScanError> {
-    let mut issues = Vec::new();
-    let mut frames: Vec<Frame> = Vec::new();
-    for event in Parser::new_from_str(prepared.text()) {
-        let (event, span) = event?;
+/// Every duplicate key in a text's first document, from saphyr-parser's
+/// events as they come, each with its key path and the first position of
+/// the same key (`KeyId`) in the same mapping. The pre-pass has limited
+/// the nesting, so the frames are at most `yaml::MAX_DEPTH`.
+struct Keys<'a> {
+    file: &'a str,
+    issues: Vec<Issue>,
+    frames: Vec<Frame>,
+}
+
+impl<'a> Keys<'a> {
+    fn new(file: &'a str) -> Self {
+        Self {
+            file,
+            issues: Vec::new(),
+            frames: Vec::new(),
+        }
+    }
+
+    /// The issues, sorted by position.
+    fn finish(mut self) -> Vec<Issue> {
+        self.issues.sort();
+        self.issues
+    }
+
+    fn event(&mut self, prepared: &Prepared, event: &Event<'_>, span: &Span) {
         let here = position(prepared, &span.start);
         match event {
-            Event::DocumentEnd => break,
             Event::MappingStart(..) | Event::SequenceStart(..) => {
                 let kind = if matches!(event, Event::MappingStart(..)) {
                     FrameKind::Mapping {
@@ -244,14 +413,14 @@ fn duplicates(file: &str, prepared: &Prepared) -> Result<Vec<Issue>, ScanError> 
                 } else {
                     FrameKind::Sequence { index: 0 }
                 };
-                frames.push(Frame {
-                    segment: child_segment(&frames),
+                self.frames.push(Frame {
+                    segment: child_segment(&self.frames),
                     start: here,
                     kind,
                 });
             }
             Event::MappingEnd | Event::SequenceEnd => {
-                if let Some(frame) = frames.pop() {
+                if let Some(frame) = self.frames.pop() {
                     let id = match frame.kind {
                         FrameKind::Mapping { .. } => KeyId::Mapping,
                         FrameKind::Sequence { .. } => KeyId::Sequence,
@@ -261,7 +430,7 @@ fn duplicates(file: &str, prepared: &Prepared) -> Result<Vec<Issue>, ScanError> 
                         label: "<key>".to_string(),
                         here: frame.start,
                     };
-                    ended(&mut issues, file, &mut frames, node);
+                    ended(&mut self.issues, self.file, &mut self.frames, node);
                 }
             }
             Event::Scalar(value, ..) => {
@@ -270,21 +439,19 @@ fn duplicates(file: &str, prepared: &Prepared) -> Result<Vec<Issue>, ScanError> 
                     label: value.to_string(),
                     here,
                 };
-                ended(&mut issues, file, &mut frames, node);
+                ended(&mut self.issues, self.file, &mut self.frames, node);
             }
             Event::Alias(anchor) => {
                 let node = Node {
-                    id: KeyId::Alias(anchor),
+                    id: KeyId::Alias(*anchor),
                     label: "<alias>".to_string(),
                     here,
                 };
-                ended(&mut issues, file, &mut frames, node);
+                ended(&mut self.issues, self.file, &mut self.frames, node);
             }
             _ => {}
         }
     }
-    issues.sort();
-    Ok(issues)
 }
 
 /// A node that has ended: its key identity, its label in a path and where
@@ -771,5 +938,80 @@ mod tests {
             issues("a: 1\n---\nb: 1\nb: 2\n"),
             ["test.yml:2:1: syntax error: a second document (Ansible reads one document per file)"]
         );
+    }
+
+    /// [`check`] gives [`load`]'s verdict without its tree: the same
+    /// issues, or none, for every kind of root, tagged or not,
+    /// duplicates, aliases (the loader's budget) and the cases where the
+    /// pre-pass rewrites the text. Every text passes the pre-pass, which
+    /// refuses a syntax error first.
+    #[test]
+    fn check_gives_loads_verdict() {
+        let mut budget = String::from("a: &a [x, x, x, x, x, x, x, x, x, x]\n");
+        for level in 1..8 {
+            let prev = if level == 1 {
+                "a".to_string()
+            } else {
+                format!("l{}", level - 1)
+            };
+            let _ = writeln!(
+                budget,
+                "l{level}: &l{level} [{}]",
+                vec![format!("*{prev}"); 10].join(", ")
+            );
+        }
+        let texts = [
+            "",
+            "\n",
+            "# only a comment\n",
+            "---\n",
+            "---\n...\n",
+            "--- # a comment\n",
+            "~\n",
+            "null\n",
+            "!!null ''\n",
+            "''\n",
+            "foo\n",
+            "&a foo\n",
+            "!!str null\n",
+            "42\n",
+            "|\n  a block\n",
+            "|\n  a block",
+            "- a\n- b\n",
+            "[a, b]\n",
+            "{}\n",
+            "!!map {}\n",
+            "a: 1\nb: [1, 2]\nc: {d: e}\n",
+            "a: 1\na: 2\n",
+            "a: {b: 1, b: 2}\nc: [x, {d: 1, d: 2}]\n",
+            "'a': 1\n\"a\": 2\n",
+            "a: &x 1\nb: *x\n",
+            "a: &x 1\n*x : 2\n",
+            "a: &x [1]\nb: *x\nb: 3\n",
+            "a:\tb\n",
+            "key:\tvalue\nother: 1\n",
+            "? a\n: 1\n? b\n: 2\n",
+            "a: 1\n# a trailing comment",
+            "!unsafe\na: 1\n",
+            "! [a]\n",
+            "!vault {a: 1}\n",
+            "--- ! \na: 1\n",
+            "--- ! \n- a\n",
+            "&a !unsafe [a]\n",
+            "!!map\na: 1\n",
+            "!!seq [a]\n",
+            "a: !unsafe [x]\nb: !vault {c: 1}\n",
+            "!unsafe foo\n",
+            budget.as_str(),
+        ];
+        for text in texts {
+            let prepared =
+                prepare("test.yml", text).unwrap_or_else(|issues| panic!("{text:?}: {issues:?}"));
+            assert_eq!(
+                check("test.yml", &prepared),
+                load("test.yml", &prepared).map(|_| ()),
+                "{text:?}"
+            );
+        }
     }
 }

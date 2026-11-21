@@ -603,12 +603,18 @@ fn check_parsed(
     };
     let validators = Saltbox::with_zoneinfo(settings.zoneinfo.clone());
     let checked = yaml::with_stack(prepared.depth(), || {
+        // A file with no schema needs the load's verdict, not its tree
+        // (the inventory's tree was its peak memory, performance round 5).
+        let Some(rules) = rules else {
+            match loaded {
+                Some(loaded) => drop(loaded?),
+                None => parse::check(file.path, &prepared)?,
+            }
+            return Ok(None);
+        };
         let root = match loaded {
             Some(loaded) => loaded?,
             None => parse::load(file.path, &prepared)?,
-        };
-        let Some(rules) = rules else {
-            return Ok(None);
         };
         let tree = tree::build(file.path, &root, &rules::secret_paths(rules))?;
         let report = rules::validate(file.path, &tree, rules, &validators);
