@@ -261,7 +261,7 @@ pub(crate) fn page(
     let beyond = Cell::new(false);
     let (picked, more_older, more_newer, from, counts) = match at {
         Position::Tail => {
-            let (walks, counts) = walks(files, groups, |_: &Cursor| Step::Take, errors);
+            let (walks, counts) = walks(files, groups, |_: &Cursor| Step::Take, None, errors);
             let (picked, more) = newest(&mut Merge::new(walks, boots), n, held, errors);
             (picked, more, false, End::Newest, counts)
         }
@@ -274,7 +274,7 @@ pub(crate) fn page(
                     Step::Skip
                 }
             };
-            let (walks, counts) = walks(files, groups, step, errors);
+            let (walks, counts) = walks(files, groups, step, Some(c), errors);
             let (picked, more) = newest(&mut Merge::new(walks, boots), n, held, errors);
             (picked, more, beyond.get(), End::Newest, counts)
         }
@@ -287,7 +287,7 @@ pub(crate) fn page(
                     Step::Take
                 }
             };
-            let (walks, counts) = walks(files, groups, step, errors);
+            let (walks, counts) = walks(files, groups, step, Some(c), errors);
             let (picked, more) = newest(&mut Merge::new(walks, boots), n, held, errors);
             (picked, more, beyond.get(), End::Newest, counts)
         }
@@ -341,7 +341,11 @@ pub(crate) fn scan_back(
         };
         if take { Step::Take } else { Step::Skip }
     };
-    let (walks, _counts) = walks(files, groups, keep, &mut errors);
+    let seek = match at {
+        Position::Before(c) | Position::AtOrBefore(c) => Some(c),
+        _ => None,
+    };
+    let (walks, _counts) = walks(files, groups, keep, seek, &mut errors);
     let mut merge = Merge::new(walks, boots);
     loop {
         let (picked, more) = newest(&mut merge, step, held, &mut errors);
@@ -463,6 +467,7 @@ fn walks<'a, S>(
     files: &'a [JournalFile],
     groups: &'a [Group],
     step: S,
+    seek: Option<&Cursor>,
     errors: &mut ReadErrors,
 ) -> (Vec<impl Iterator<Item = Result<Candidate>> + 'a>, Vec<u64>)
 where
@@ -470,7 +475,13 @@ where
 {
     let (mut out, mut counts) = (Vec::new(), Vec::new());
     for (file, f) in files.iter().enumerate() {
-        let (walk, count) = file_walk(f, groups, step, errors);
+        // Only a file of the cursor's seqnum id: there the page's order
+        // is the sequence numbers' (`Cursor::order`), and its lists' items
+        // rise with them.
+        let below = seek
+            .filter(|c| c.seqnum_id == f.header.seqnum_id)
+            .map(|c| c.seqnum);
+        let (walk, count) = file_walk(f, groups, step, below, errors);
         counts.push(count);
         out.push(walk.map(move |r| {
             r.map(|(offset, location)| Candidate {
@@ -772,7 +783,11 @@ fn union<'a, T: 'a>(streams: Vec<Stream<'a, T>>) -> Stream<'a, T> {
 /// other terms' DATA offsets ("Reading": multiple matches).
 struct Walk<'a, S> {
     f: &'a JournalFile,
-    driver: Stream<'a, ()>,
+    driver: Driver<'a>,
+    /// The sequence number a page back seeks below (`walks`), and the
+    /// matching entries skipped in a row so far.
+    below: Option<u64>,
+    skipped: u32,
     /// Per other term, the DATA offsets of its values; the entry must
     /// carry one of each.
     others: Vec<Vec<u64>>,
@@ -780,6 +795,44 @@ struct Walk<'a, S> {
     /// The last entry read: an older one must end before it.
     end: u64,
 }
+
+/// A walk's driving list: one DATA object's (or the file's) entry list,
+/// which can seek (`EntriesRev::seek_below`), or several merged
+/// (`union`), which don't. One list is walked without the merge's heap,
+/// an offset met twice in a row given once, errors between included, as
+/// `union` gives it.
+enum Driver<'a> {
+    One(EntriesRev<'a>, Option<u64>),
+    Merged(Stream<'a, ()>),
+}
+
+impl<'a> Driver<'a> {
+    fn one(list: EntriesRev<'a>) -> Self {
+        Self::One(list, None)
+    }
+
+    fn next(&mut self) -> Option<Result<(u64, ())>> {
+        match self {
+            Self::One(it, last) => loop {
+                match it.next()? {
+                    Ok(off) if last.replace(off) == Some(off) => {}
+                    r => return Some(r.map(|off| (off, ()))),
+                }
+            },
+            Self::Merged(it) => it.next(),
+        }
+    }
+}
+
+/// After this many matching entries skipped in a row, a walk with a
+/// sequence number to seek below bisects its list for it, once (about 40
+/// reads on a list of 400,000): a page back reads every newer matching
+/// entry first, one `pread` each, which cost a page 400,000 entries back
+/// 0.5 s (perf round 5, item 5). A page near the tail skips fewer and
+/// reads as it did. Every entry dropped is one `step` would skip, and
+/// the walk has skipped this many already, so `Before`'s and
+/// `AtOrBefore`'s flags are set as without the seek.
+const SEEK_AFTER: u32 = 64;
 
 impl<S: Fn(&Cursor) -> Step> Iterator for Walk<'_, S> {
     type Item = Result<(u64, Cursor)>;
@@ -815,8 +868,19 @@ impl<S: Fn(&Cursor) -> Step> Iterator for Walk<'_, S> {
             }
             let location = location(self.f, &e);
             match (self.step)(&location) {
-                Step::Take => return Some(Ok((off, location))),
-                Step::Skip => {}
+                Step::Take => {
+                    self.skipped = 0;
+                    return Some(Ok((off, location)));
+                }
+                Step::Skip => {
+                    self.skipped = self.skipped.saturating_add(1);
+                    if self.skipped == SEEK_AFTER
+                        && let (Some(below), Driver::One(list, _)) = (self.below, &mut self.driver)
+                    {
+                        let f = self.f;
+                        list.seek_below(&mut |off| f.entry(off).ok().map(|e| e.seqnum > below));
+                    }
+                }
             }
         }
     }
@@ -841,6 +905,7 @@ fn file_walk<'a, S>(
     f: &'a JournalFile,
     groups: &[Group],
     step: S,
+    below: Option<u64>,
     errors: &mut ReadErrors,
 ) -> (Stream<'a, Cursor>, u64)
 where
@@ -853,6 +918,8 @@ where
         Box::new(Walk {
             f,
             driver,
+            below,
+            skipped: 0,
             others,
             step,
             end: u64::MAX,
@@ -860,7 +927,7 @@ where
     };
     let mut walks: Vec<Stream<'a, Cursor>> = Vec::new();
     if groups.is_empty() {
-        walks.push(walk(offsets(f.all_entries_rev()), Vec::new()));
+        walks.push(walk(Driver::one(f.all_entries_rev()), Vec::new()));
     }
     let mut known = Known::default();
     'groups: for (g, group) in groups.iter().enumerate() {
@@ -887,17 +954,23 @@ where
             continue;
         };
         known.drivers.insert(g, driver);
-        let lists = resolved[driver]
-            .iter()
-            .map(|d| offsets(f.entries_of_rev(d)))
-            .collect();
+        let lists = if let [one] = resolved[driver].as_slice() {
+            Driver::one(f.entries_of_rev(one))
+        } else {
+            Driver::Merged(union(
+                resolved[driver]
+                    .iter()
+                    .map(|d| offsets(f.entries_of_rev(d)))
+                    .collect(),
+            ))
+        };
         let others = resolved
             .iter()
             .enumerate()
             .filter(|(i, _)| *i != driver)
             .map(|(_, r)| r.iter().map(|d| d.offset).collect())
             .collect();
-        walks.push(walk(union(lists), others));
+        walks.push(walk(lists, others));
     }
     let again = reread(f, groups, &known, errors);
     if !again.extras.is_empty() {
@@ -1483,6 +1556,113 @@ mod tests {
 
     fn u_is_x() -> Vec<Group> {
         vec![vec![vec![b"U=x".to_vec()]]]
+    }
+
+    /// One list walked without the merge gives an offset met twice in a
+    /// row once, as `union` does, across the error between: here an
+    /// array out of order is left, and the older one starts with the
+    /// entry given last.
+    #[test]
+    fn one_list_gives_a_repeat_across_an_error_once() {
+        each_format(|format| {
+            let (mut c, l) = crafted::journal_in(format, 3);
+            let (e0, e1, e2) = (l.entries[0], l.entries[1], l.entries[2]);
+            let a1 = c.array(&[e0, e1], 2, 0);
+            let a2 = c.array(&[e2, e1], 2, 0);
+            c.set(a1 + A_NEXT, a2);
+            c.set(H_ENTRY_ARRAY_OFFSET, a1);
+            c.set(H_N_ENTRIES, 4);
+            let (_t, f) = c.write();
+            // The list itself gives e1 again after the error.
+            let raw: Vec<Option<u64>> = f.all_entries_rev().map(Result::ok).collect();
+            assert_eq!(raw, [Some(e1), None, Some(e1), Some(e0)]);
+            let mut driver = Driver::one(f.all_entries_rev());
+            let got: Vec<Option<u64>> = std::iter::from_fn(|| driver.next())
+                .map(|r| r.ok().map(|(off, ())| off))
+                .collect();
+            assert_eq!(got, [Some(e1), None, Some(e0)]);
+            let merged: Vec<Option<u64>> = union(vec![Box::new(
+                f.all_entries_rev().map(|r| r.map(|off| (off, ()))),
+            )])
+            .map(|r| r.ok().map(|(off, ())| off))
+            .collect();
+            assert_eq!(got, merged);
+        });
+    }
+
+    /// A walk back to a cursor far from the tail seeks: after
+    /// `SEEK_AFTER` matching entries skipped, it drops the rest of the
+    /// newer end of its list by a bisect, and gives what it gave without
+    /// the seek. Fewer to skip, or a cursor of another seqnum id, and it
+    /// reads each entry as before. Counted by the steps asked, one per
+    /// matching entry read.
+    #[test]
+    fn a_walk_far_back_seeks_past_what_it_would_skip() {
+        each_format(|format| {
+            let (mut c, l) = crafted::journal_in(format, 300);
+            let (_t, f) = c.write();
+            let files = [f];
+            let cursor =
+                |i: usize| location(&files[0], &files[0].entry(l.entries[i]).expect("entry"));
+            let boots = BootOrder::none();
+            // The merges read ahead: one match more unfiltered, two
+            // through a group's.
+            for (groups, ahead) in [(Vec::new(), 1), (u_is_x(), 2)] {
+                // The steps asked until the first match: 64 skipped, then
+                // the seek, then the cursor's own entry for `Before`.
+                for (at, before, steps) in [
+                    (250, true, 51),
+                    (237, true, 64),
+                    (236, true, 65),
+                    (235, true, 66),
+                    (100, true, 66),
+                    (100, false, 65),
+                    (2, true, 66),
+                ] {
+                    let c = cursor(at);
+                    let asked = Cell::new(0);
+                    let step = |l: &Cursor| {
+                        asked.set(asked.get() + 1);
+                        let o = l.order(&c, &boots);
+                        if o.is_lt() || (!before && o.is_eq()) {
+                            Step::Take
+                        } else {
+                            Step::Skip
+                        }
+                    };
+                    let mut errors = ReadErrors::default();
+                    let (mut walks, _) = walks(&files, &groups, step, Some(&c), &mut errors);
+                    let first = walks[0].next().map(|r| r.expect("a match").offset);
+                    let wanted = if before { at - 1 } else { at };
+                    assert_eq!(first, Some(l.entries[wanted]), "{at} {before}");
+                    assert_eq!(asked.get(), steps + ahead, "{at} {before} {groups:?}");
+                    let rest: Vec<u64> = walks[0]
+                        .by_ref()
+                        .map(|r| r.expect("a match").offset)
+                        .collect();
+                    let older: Vec<u64> = l.entries[..wanted].iter().rev().copied().collect();
+                    assert_eq!(rest, older);
+                    assert!(errors.is_empty());
+                }
+                // Another seqnum id's cursor: walked entry by entry.
+                let mut other = cursor(100);
+                other.seqnum_id = [9; 16];
+                let asked = Cell::new(0);
+                let step = |l: &Cursor| {
+                    asked.set(asked.get() + 1);
+                    if l.order(&other, &boots).is_lt() {
+                        Step::Take
+                    } else {
+                        Step::Skip
+                    }
+                };
+                let mut errors = ReadErrors::default();
+                let (mut walks, _) = walks(&files, &groups, step, Some(&other), &mut errors);
+                let first = walks[0].next().map(|r| r.expect("a match").offset);
+                assert_eq!(first, Some(l.entries[99]));
+                assert_eq!(asked.get(), 201 + ahead);
+            }
+        });
     }
 
     /// One unreadable entry is skipped and reported; the entries on both

@@ -1233,6 +1233,91 @@ impl<'a> EntriesRev<'a> {
         })
     }
 
+    /// Drop the items not yet returned for which `newer` holds, found by
+    /// a bisect over them: in a file journald wrote, a list's items rise
+    /// with their entries' sequence numbers, so the items a walk back
+    /// would skip one by one are the list's newest end. `newer` says of an
+    /// entry offset whether it is past the walk's cursor, `None` when its
+    /// entry can't be read. `false`, with nothing changed, when an item
+    /// can't be read, is 0 or isn't an entry offset, or `newer` can't
+    /// tell: the walk then goes on an entry at a time, as without this.
+    /// `index` stays the list's index of the next item returned.
+    ///
+    /// It follows sd-journal's seek to a cursor in a file of the cursor's
+    /// seqnum id, by sequence number (sd-journal.c
+    /// `find_location_for_match`). Why not this module's
+    /// `JournalFile::bisect`, which emulates journal-file.c's
+    /// `generic_array_bisect` for the forward pages: that one walks the
+    /// chain from its head and keeps systemd's quirks for parity (its
+    /// chain cache, an array cut short at a zero or unreadable item and
+    /// the bisect going on), where this one bisects only what the walk
+    /// hasn't read, the arrays' heads already read and the read buffer
+    /// included, and gives up on anything odd, so the walk reads on as
+    /// before. Why not std's `partition_point`: it can't fail, and knows
+    /// nothing of chained arrays read lazily.
+    pub(crate) fn seek_below(&mut self, newer: &mut dyn FnMut(u64) -> Option<bool>) -> bool {
+        let lefts: u64 = self.arrays.iter().map(|a| a.1).sum();
+        let total = lefts + self.buf.len() as u64;
+        // Items before `lo` aren't newer; items from `hi` on are.
+        let (mut lo, mut hi) = (0u64, total);
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            let off = if mid >= lefts {
+                let Some(off) = usize::try_from(mid - lefts)
+                    .ok()
+                    .and_then(|i| self.buf.get(i))
+                else {
+                    return false;
+                };
+                *off
+            } else {
+                let mut i = mid;
+                let mut found = None;
+                for (at, left) in &self.arrays {
+                    if i < *left {
+                        found = Some(*at);
+                        break;
+                    }
+                    i -= *left;
+                }
+                let Some(at) = found else {
+                    return false;
+                };
+                match self.f.array_item(at, i) {
+                    Ok(off) => off,
+                    Err(_) => return false,
+                }
+            };
+            if off == 0 || !self.f.plausible_entry(off) {
+                return false;
+            }
+            match newer(off) {
+                Some(true) => hi = mid,
+                Some(false) => lo = mid + 1,
+                None => return false,
+            }
+        }
+        if lo >= lefts {
+            let keep = usize::try_from(lo - lefts).unwrap_or(usize::MAX);
+            self.buf.truncate(keep);
+            return true;
+        }
+        self.buf.clear();
+        let mut left_over = lo;
+        let mut kept = 0;
+        for (i, (_, left)) in self.arrays.iter_mut().enumerate() {
+            if left_over < *left {
+                *left = left_over;
+                kept = i + 1;
+                break;
+            }
+            left_over -= *left;
+            kept = i + 1;
+        }
+        self.arrays.truncate(kept);
+        true
+    }
+
     /// The next older offset, an error where one was met, or `None` at
     /// the end.
     fn advance(&mut self) -> Option<Result<u64>> {
@@ -5039,6 +5124,96 @@ mod tests {
         for (off, stored) in all {
             assert_eq!(f.hash(&f.data_payload(off).expect("payload")), stored);
         }
+    }
+
+    /// The entries' seqnums a walk gives from here on.
+    fn rest_seqnums(f: &JournalFile, it: &mut EntriesRev<'_>) -> Vec<u64> {
+        it.map(|off| f.entry(off.expect("an offset")).expect("an entry").seqnum)
+            .collect()
+    }
+
+    /// `seek_below` drops the items newer than the cursor, in the array
+    /// being read or the older ones, and the walk goes on from the newest
+    /// item left, its index kept; one that can't tell changes nothing.
+    #[test]
+    fn a_seek_drops_the_newer_items_of_a_chain() {
+        each_format(|format| {
+            let (mut c, l) = journal_in(format, 40);
+            let a1 = c.array(&l.entries[..4], 4, 0);
+            let a2 = c.array(&l.entries[4..12], 8, 0);
+            let a3 = c.array(&l.entries[12..], 32, 0);
+            c.set(a1 + A_NEXT, a2);
+            c.set(a2 + A_NEXT, a3);
+            c.set(H_ENTRY_ARRAY_OFFSET, a1);
+            let (_t, f) = c.write();
+            let newer = |below: u64| {
+                let f = &f;
+                move |off: u64| f.entry(off).ok().map(|e| e.seqnum > below)
+            };
+            // In the array being read: from seqnum 35 on.
+            let mut it = f.all_entries_rev();
+            let first: Vec<u64> = it.by_ref().take(3).map(|o| o.expect("offset")).collect();
+            assert_eq!(first, [l.entries[39], l.entries[38], l.entries[37]]);
+            assert!(it.seek_below(&mut newer(35)));
+            assert_eq!(it.next().map(|o| o.expect("offset")), Some(l.entries[34]));
+            assert_eq!(it.index(), 34);
+            assert_eq!(
+                rest_seqnums(&f, &mut it),
+                (1..=34).rev().collect::<Vec<_>>()
+            );
+            // In an older array: from seqnum 10 on.
+            let mut it = f.all_entries_rev();
+            it.next();
+            assert!(it.seek_below(&mut newer(10)));
+            assert_eq!(it.next().map(|o| o.expect("offset")), Some(l.entries[9]));
+            assert_eq!(it.index(), 9);
+            assert_eq!(rest_seqnums(&f, &mut it), (1..=9).rev().collect::<Vec<_>>());
+            // In the first array, and every item newer: nothing left.
+            let mut it = f.all_entries_rev();
+            it.next();
+            assert!(it.seek_below(&mut newer(2)));
+            assert_eq!(rest_seqnums(&f, &mut it), [2, 1]);
+            let mut it = f.all_entries_rev();
+            it.next();
+            assert!(it.seek_below(&mut newer(0)));
+            assert_eq!(rest_seqnums(&f, &mut it), [] as [u64; 0]);
+            // Nothing newer: nothing dropped.
+            let mut it = f.all_entries_rev();
+            it.next();
+            assert!(it.seek_below(&mut newer(40)));
+            assert_eq!(rest_seqnums(&f, &mut it).len(), 39);
+            // An entry that can't be told: nothing changes.
+            let mut it = f.all_entries_rev();
+            it.next();
+            assert!(!it.seek_below(&mut |_| None));
+            assert_eq!(
+                rest_seqnums(&f, &mut it),
+                (1..=39).rev().collect::<Vec<_>>()
+            );
+        });
+    }
+
+    /// An item that is 0, or no entry's offset, met by the bisect leaves
+    /// the walk as it was: it goes on an item at a time.
+    #[test]
+    fn a_seek_over_a_bad_item_changes_nothing() {
+        each_format(|format| {
+            for bad in [0, 12] {
+                let (mut c, l) = journal_in(format, 40);
+                // The bisect's first probe of the 39 items left: item 19.
+                c.set_array_item(l.main_array, 19, bad);
+                let (_t, f) = c.write();
+                let mut it = f.all_entries_rev();
+                it.next();
+                let mut probed = 0;
+                assert!(!it.seek_below(&mut |off| {
+                    probed += 1;
+                    f.entry(off).ok().map(|e| e.seqnum > 5)
+                }));
+                assert_eq!(probed, 0, "bad {bad}");
+                assert_eq!(it.next().map(|o| o.expect("offset")), Some(l.entries[38]));
+            }
+        });
     }
 
     #[test]
