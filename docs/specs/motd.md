@@ -297,8 +297,14 @@ through a small parser of sb's own (`gpu.rs`):
   file is about 1.4 MB), as UTF-8 with invalid bytes replaced, and only
   the vendor lines (`vvvv  name`) and their device lines (a tab, then
   `dddd  name`) are used. Subsystem lines (two tabs), comments (`#`),
-  and the class section (from the first `C ` line on) are skipped. A
-  malformed line is skipped and counted in the run log.
+  and the class section (from the first `C ` line on) are skipped. sb
+  reads only the wanted vendors' blocks: it jumps to each one's vendor
+  line (memmem over the lines that start with the ID's first digit),
+  not reading the file line by line (the maintainer, 2026-11-21); a
+  block ends at the next line at the left margin. A malformed line in
+  those blocks, or one that starts with a wanted vendor's ID, is
+  skipped and counted in the run log; the other lines aren't read, so
+  their malformed lines aren't counted.
 - Each display-class device reads `<vendor> <device>`. Where the device
   ID isn't in the file, it reads `<vendor> Device <dddd>`; where the
   vendor isn't either, `Device <vvvv>:<dddd>`. These are pciutils' forms
@@ -502,7 +508,9 @@ never reach stdout, stderr or the run log.
     sb's own parser, with device IDs from sysfs (decision 2), not from an
     `lspci` child. They are the names lspci shows on that host, from the
     same file, in pciutils' forms for unknown IDs. sb-go parsed lspci's
-    output.
+    output. The run log's count of malformed pci.ids lines covers only
+    the lines sb reads, the wanted vendors' blocks (the maintainer,
+    2026-11-21).
 22. **No udev hwdb fallback** for GPU names. pciutils asks the hwdb for an
     ID missing from pci.ids (`names.c:28-31`), and sb doesn't. The hwdb is
     generated from pci.ids, so this matters only where the hwdb is newer

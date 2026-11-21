@@ -90,11 +90,12 @@ fn a_pci_ids_not_read_is_logged_with_its_cause() {
     let (value, text) = logged(sb_motd::gpu::gpu_at(sources(fixture.clone(), 10)));
     assert_eq!(value, "Device 10de:2204");
     assert!(text.contains("pci.ids not read: over 10 bytes"), "{text}");
-    // The fixture's malformed lines are counted.
+    // The malformed line in NVIDIA's block is counted; the others are
+    // in blocks sb doesn't read (the maintainer, 2026-11-21).
     let (value, text) = logged(sb_motd::gpu::gpu_at(sources(fixture, 1 << 20)));
     assert_eq!(value, "NVIDIA Corporation GA102 [GeForce RTX 3090]");
     assert!(
-        text.contains("pci.ids lines skipped") && text.contains("malformed=4"),
+        text.contains("pci.ids lines skipped") && text.contains("malformed=1"),
         "{text}"
     );
 }

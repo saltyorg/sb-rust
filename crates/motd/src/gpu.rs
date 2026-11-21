@@ -248,42 +248,100 @@ fn read_ids(path: &Path, cap: u64) -> std::io::Result<Vec<u8>> {
     Ok(bytes)
 }
 
-/// Where the parse stands: before any vendor, under a vendor line that
-/// isn't one (its device lines are skipped with it), or under a vendor.
-#[derive(Clone, Copy)]
-enum Under {
-    Start,
-    Malformed,
-    Vendor(u16),
-}
-
 /// The vendor lines (`vvvv  name`) of `wanted` and their device lines (a
 /// tab, then `dddd  name`), as pciutils' format has them. Comments,
 /// blank lines and subsystem lines (two tabs) are skipped, and so is
-/// everything from the class section (the first `C ` line) on. Any other
-/// line is malformed: skipped and counted. A repeated ID keeps its first
-/// name. The text is read as UTF-8 with invalid bytes replaced (Unicode
-/// whitespace trimmed, as `str::trim`), the same as reading the whole
-/// file so: every byte the format's structure is made of is ASCII, which
-/// a replacement never touches.
+/// everything from the class section (the first `C ` line) on. A
+/// vendor's block ends at the next line at the left margin. A malformed
+/// line in a wanted vendor's block, or a malformed line that starts with
+/// a wanted vendor's ID, is skipped and counted; the other lines aren't
+/// read, so not counted. A repeated ID keeps its first name. The
+/// text is read as UTF-8 with invalid bytes replaced (Unicode whitespace
+/// trimmed, as `str::trim`), the same as reading the whole file so:
+/// every byte the format's structure is made of is ASCII, which a
+/// replacement never touches.
 ///
-/// Why bytes, line ends found with memchr
-/// (<https://docs.rs/memchr/2.8.3/memchr/struct.Memchr.html>): of the
-/// file's 35,000 lines only the wanted vendors' few hundred are kept, so
-/// the rest are only told apart by their first bytes (well-formed or
-/// not), without checking the 1.3 MB as UTF-8 or trimming each line.
+/// Why the blocks are found with memmem
+/// (<https://docs.rs/memchr/2.8.3/memchr/memmem/fn.find_iter.html>) and
+/// not by reading every line: of the file's 35,000 lines or more only
+/// the wanted vendors' blocks are kept, and a vendor's block starts at
+/// its vendor line, so only lines that start with a wanted ID's first
+/// digit are looked at (the maintainer, 2026-11-21). Why not
+/// aho-corasick's one pass for every spelling: its ASCII case-insensitive
+/// mode drops the packed (Teddy) prefilter
+/// (<https://docs.rs/crate/aho-corasick/1.1.5/source/src/util/prefilter.rs>),
+/// leaving a pass that stops at every line, and it isn't sb-motd's
+/// dependency.
 fn parse<'a>(text: &'a [u8], wanted: &[u16]) -> Names<'a> {
     let mut names = Names::default();
-    let mut under = Under::Start;
-    let mut start = 0;
+    let starts = vendor_lines(text, wanted);
+    let Some(&last) = starts.last() else {
+        return names;
+    };
+    let classes = class_section(&text[..last]);
+    for start in starts.into_iter().take_while(|&start| start < classes) {
+        block(text, start, &mut names);
+    }
+    names
+}
+
+/// Where each line of `text` that starts with a wanted vendor's ID (in
+/// either case, as pciutils' `id_hex` reads hex) starts, in file order.
+/// One memmem pass per spelling of the IDs' first digits finds the lines
+/// that start with one: a newline and one byte, a needle measured at
+/// about half the instructions of a newline and the whole ID, which
+/// would need a pass per spelling of its letters.
+fn vendor_lines(text: &[u8], wanted: &[u16]) -> Vec<usize> {
+    let is_wanted = |start: usize| {
+        text.get(start..)
+            .and_then(<[u8]>::first_chunk)
+            .copied()
+            .and_then(hex_id)
+            .is_some_and(|id| wanted.contains(&id))
+    };
+    let mut starts = Vec::new();
+    if is_wanted(0) {
+        starts.push(0);
+    }
+    for first in *b"0123456789abcdefABCDEF" {
+        let digit = first.to_ascii_lowercase();
+        if !wanted
+            .iter()
+            .any(|&vendor| b"0123456789abcdef"[usize::from(vendor >> 12)] == digit)
+        {
+            continue;
+        }
+        let needle = [b'\n', first];
+        let found = memchr::memmem::find_iter(text, &needle).map(|at| at + 1);
+        starts.extend(found.filter(|&start| is_wanted(start)));
+    }
+    starts.sort_unstable();
+    starts
+}
+
+/// Where the class section (its first `C ` line) starts in `head`, as
+/// the newline before that line or 0 at the file's start; `usize::MAX`
+/// when it doesn't start in `head`.
+fn class_section(head: &[u8]) -> usize {
+    if head.starts_with(b"C ") {
+        return 0;
+    }
+    memchr::memmem::find(head, b"\nC ").unwrap_or(usize::MAX)
+}
+
+/// The block of the line at `start`, which starts with a wanted ID: that
+/// vendor's name and its devices' names, up to the next line at the left
+/// margin that isn't a comment or blank: another vendor's, a malformed
+/// one or the class section's `C ` line. A CR before a newline is
+/// whitespace to `id_line`, so CRLF lines read as LF ones.
+fn block<'a>(text: &'a [u8], start: usize, names: &mut Names<'a>) {
+    let text = &text[start..];
+    let mut vendor = None;
+    let mut from = 0;
     let ends = memchr::memchr_iter(b'\n', text).chain(std::iter::once(text.len()));
     for end in ends {
-        let line = &text[start..end];
-        start = end + 1;
-        let line = line.strip_suffix(b"\r").unwrap_or(line);
-        if line.starts_with(b"C ") {
-            break;
-        }
+        let line = &text[from..end];
+        from = end + 1;
         let tabs = line.iter().take_while(|&&b| b == b'\t').count();
         let rest = &line[tabs..];
         if tabs > 1 || rest.first() == Some(&b'#') {
@@ -294,32 +352,26 @@ fn parse<'a>(text: &'a [u8], wanted: &[u16]) -> Names<'a> {
             Line::Malformed => None,
             Line::Id(id, tail) => Some((id, tail)),
         };
-        match (tabs, parsed) {
-            (0, Some((vendor, tail))) => {
-                under = Under::Vendor(vendor);
-                if wanted.contains(&vendor) {
-                    names.vendors.entry(vendor).or_insert_with(|| trimmed(tail));
-                }
+        match (vendor, tabs, parsed) {
+            // The block's own vendor line, the first line.
+            (None, _, Some((id, tail))) => {
+                vendor = Some(id);
+                names.vendors.entry(id).or_insert_with(|| trimmed(tail));
             }
-            (0, None) => {
-                under = Under::Malformed;
+            (None, _, None) => {
                 names.malformed += 1;
+                return;
             }
-            (_, parsed) => match (under, parsed) {
-                (Under::Vendor(vendor), Some((device, tail))) => {
-                    if wanted.contains(&vendor) {
-                        names
-                            .devices
-                            .entry((vendor, device))
-                            .or_insert_with(|| trimmed(tail));
-                    }
-                }
-                (Under::Malformed, _) => {}
-                _ => names.malformed += 1,
-            },
+            (Some(_), 0, _) => return,
+            (Some(vendor), _, Some((device, tail))) => {
+                names
+                    .devices
+                    .entry((vendor, device))
+                    .or_insert_with(|| trimmed(tail));
+            }
+            (Some(_), _, None) => names.malformed += 1,
         }
     }
-    names
 }
 
 /// A vendor or device line past its tab: an ID and the rest of the line,
@@ -337,12 +389,10 @@ enum Line<'a> {
 /// the spaces isn't ASCII is read as text to decide.
 fn id_line(rest: &[u8]) -> Line<'_> {
     let id = rest
-        .get(..5)
-        .filter(|head| {
-            head[..4].iter().all(u8::is_ascii_hexdigit) && matches!(head[4], b' ' | b'\t')
-        })
-        .and_then(|head| std::str::from_utf8(&head[..4]).ok())
-        .and_then(|digits| u16::from_str_radix(digits, 16).ok());
+        .first_chunk::<5>()
+        .filter(|head| matches!(head[4], b' ' | b'\t'))
+        .and_then(|head| head.first_chunk().copied())
+        .and_then(hex_id);
     if let Some(id) = id {
         let tail = &rest[4..];
         let named = match tail.iter().find(|&&b| !is_space(b)) {
@@ -359,6 +409,14 @@ fn id_line(rest: &[u8]) -> Line<'_> {
     } else {
         Line::Malformed
     }
+}
+
+/// Four hex digits, in either case, as an ID.
+fn hex_id(digits: [u8; 4]) -> Option<u16> {
+    if !digits.iter().all(u8::is_ascii_hexdigit) {
+        return None;
+    }
+    u16::from_str_radix(std::str::from_utf8(&digits).ok()?, 16).ok()
 }
 
 /// The ASCII characters `char::is_whitespace` takes (vertical tab too,
@@ -610,15 +668,18 @@ mod tests {
         assert!(!names.devices.contains_key(&(0x10de, 0x12a2)));
         assert!(!names.vendors.contains_key(&0xeeee));
         assert_eq!(names.devices[&(0x10de, 0x2204)], "GA102 [GeForce RTX 3090]");
-        // `abcd` with no name, `\tzz12 ...`, `\t1` and a device line
-        // before any vendor; the devices under `abcd` go with it.
+        // `abcd` with no name, `\tzz12 ...` and `\t1`, the wanted
+        // vendors' lines; the devices under `abcd` go with it. The
+        // device line before any vendor isn't read.
         assert!(!names.vendors.contains_key(&0xabcd));
-        assert_eq!(names.malformed, 4);
-        // Only the wanted vendors are kept.
+        assert_eq!(names.malformed, 3);
+        // Only the wanted vendors are kept, and only their lines counted.
         let few = parse(&text, &[0x8086]);
         assert_eq!(few.vendors.len(), 1);
         assert_eq!(few.devices.len(), 1);
-        assert_eq!(few.malformed, 4);
+        assert_eq!(few.malformed, 1);
+        assert_eq!(parse(&text, &[0x1002]).malformed, 0);
+        assert_eq!(parse(&text, &[0x0bad]), Names::default());
     }
 
     #[test]
@@ -689,8 +750,22 @@ mod tests {
         assert_eq!(id_and_name("10d"), None);
     }
 
+    /// Where the reference parse stands: before any vendor, under a
+    /// vendor line that isn't one (its device lines are skipped with it),
+    /// or under a vendor.
+    #[derive(Clone, Copy)]
+    enum Under {
+        Start,
+        Malformed,
+        Vendor(u16),
+    }
+
     /// The reference parse, on the whole file read as UTF-8 with invalid
-    /// bytes replaced (the parser before it read bytes).
+    /// bytes replaced, line by line: the parser before it read bytes and
+    /// before it jumped to the wanted vendors' blocks. Its names are that
+    /// parser's; its count is of the lines the jumping parser reads (a
+    /// malformed line that starts with a wanted ID, or one in a wanted
+    /// vendor's block), where that parser counted every malformed line.
     fn reference(bytes: &[u8], wanted: &[u16]) -> Names<'static> {
         let text = String::from_utf8_lossy(bytes);
         let mut names = Names::default();
@@ -714,7 +789,15 @@ mod tests {
                 }
                 (0, None) => {
                     under = Under::Malformed;
-                    names.malformed += 1;
+                    let id = rest.get(..4).and_then(|digits| {
+                        digits
+                            .bytes()
+                            .all(|b| b.is_ascii_hexdigit())
+                            .then(|| u16::from_str_radix(digits, 16).ok())?
+                    });
+                    if id.is_some_and(|id| wanted.contains(&id)) {
+                        names.malformed += 1;
+                    }
                 }
                 (1, parsed) => match (under, parsed) {
                     (Under::Vendor(vendor), Some((device, name))) => {
@@ -725,8 +808,10 @@ mod tests {
                                 .or_insert_with(|| owned(name));
                         }
                     }
-                    (Under::Malformed, _) => {}
-                    _ => names.malformed += 1,
+                    (Under::Vendor(vendor), None) if wanted.contains(&vendor) => {
+                        names.malformed += 1;
+                    }
+                    _ => {}
                 },
                 _ => {}
             }
@@ -735,15 +820,16 @@ mod tests {
     }
 
     /// The byte parser gives the reference's names and count on the
-    /// fixture, on lines made of the format's edge cases in every order
-    /// of a few, and on the host's own pci.ids where it has one (read
-    /// only).
+    /// fixture and on lines made of the format's edge cases in every
+    /// order of a few.
     #[test]
     fn the_byte_parser_matches_the_text_parser() {
-        let wanted = [0x10de, 0x8086, 0x1234, 0xeeee, 0xabcd, 0x1002, 0x0001];
+        let wanted = [
+            0x10de, 0x8086, 0x1234, 0xeeee, 0xabcd, 0x1002, 0x0001, 0x000a,
+        ];
         let fixture = read_ids(&fixture(), IDS_CAP).unwrap();
         assert_eq!(parse(&fixture, &wanted), reference(&fixture, &wanted));
-        let pieces: [&[u8]; 16] = [
+        let pieces: [&[u8]; 20] = [
             b"0001  A\n",
             b"\t0002  B\n",
             b"\t\t0003 0004  C\n",
@@ -760,6 +846,10 @@ mod tests {
             b"\t#0002 x\n",
             b"C 03  Display\n",
             b"\t0006",
+            b"0001X\n",
+            b"\t0001  E\n",
+            b"000a  F\n",
+            b"000A  G\n",
         ];
         for a in pieces {
             for b in pieces {
@@ -774,12 +864,115 @@ mod tests {
                 }
             }
         }
-        if let Ok(host) = read_ids(Path::new("/usr/share/misc/pci.ids"), IDS_CAP) {
-            for wanted in [&[0x10de, 0x8086, 0x1002][..], &[0x1a03], &[0x15ad, 0x1234]] {
-                let names = parse(&host, wanted);
-                assert_eq!(names, reference(&host, wanted));
-            }
+    }
+
+    /// On the host's own pci.ids where it has one (read only), the
+    /// parser gives the reference's names for every vendor and device in
+    /// it, all wanted at once, and the same names for one vendor at a
+    /// time (a sample, and the display vendors).
+    #[test]
+    fn the_parser_matches_the_text_parser_on_the_hosts_pci_ids() {
+        let Ok(host) = read_ids(Path::new("/usr/share/misc/pci.ids"), IDS_CAP) else {
+            return;
+        };
+        let every: Vec<u16> = String::from_utf8_lossy(&host)
+            .lines()
+            .filter_map(|line| {
+                line.get(..4)
+                    .and_then(|id| u16::from_str_radix(id, 16).ok())
+            })
+            .collect();
+        assert!(every.len() > 2000, "{}", every.len());
+        let all = reference(&host, &every);
+        assert_eq!(parse(&host, &every), all);
+        assert!(all.devices.len() > 20_000, "{}", all.devices.len());
+        let sample = every.iter().step_by(20).copied();
+        for vendor in sample.chain([0x10de, 0x8086, 0x1002, 0x1a03, 0x15ad, 0x1234, 0x1af4]) {
+            let one = parse(&host, &[vendor]);
+            assert_eq!(
+                one.vendors.get(&vendor),
+                all.vendors.get(&vendor),
+                "{vendor:04x}"
+            );
+            let devices: HashMap<_, _> = all
+                .devices
+                .iter()
+                .filter(|((of, _), _)| *of == vendor)
+                .map(|(id, name)| (*id, name.clone()))
+                .collect();
+            assert_eq!(one.devices, devices, "{vendor:04x}");
         }
+        assert_eq!(parse(&host, &[0xffff]), reference(&host, &[0xffff]));
+    }
+
+    /// Each wanted vendor's block is found wherever it is: at the file's
+    /// start or end (without a newline after it), behind a device line
+    /// with its ID, in CRLF lines, in either case, once or twice, and
+    /// not after the class section.
+    #[test]
+    fn vendor_blocks_are_found_anywhere_in_the_file() {
+        let wanted = [0x10de, 0x8086, 0xabcd];
+        let cases: [&[u8]; 14] = [
+            b"10de  NVIDIA\n\t8086  Not Intel\n8086  Intel\n\t10de  Not NVIDIA\n",
+            b"# c\n8086  Intel\n\t1234  X\n10de  NVIDIA",
+            b"8086  Intel\n10de  NVIDIA\n\t2204  GA102",
+            b"10de  NVIDIA\r\n\t2204  GA102\r\n\r\n8086  Intel\r\n\t5912  HD 630\r\n",
+            b"10de  NVIDIA\n# c\n\n \n\t\t10de 2204  sub\n\t2204  GA102\n#\t2205  no\n\
+              C 03  Display controller\n\t00  VGA\n8086  Intel after the classes\n",
+            b"10DE  NVIDIA\n\t2204  first\n8086  Intel\n10de  second\n\t2204  second\n\
+              \t2205  only here\n",
+            b"C 03  Display\n10de  NVIDIA\n",
+            b"10dex  no\n\t2204  under no vendor\n10de\n\t2204  under a malformed one\n\
+              10de  NVIDIA\n\t\n\tzz  bad\n",
+            b"\t10de  a device line first\n1000  LSI\n\t10de  LSI's\n\t8086  LSI's too\n",
+            b"abcd  lower first\n\t0001  a\nABCD  upper\n\t0001  b\n\t0002  c\n",
+            b"8086  Intel\n10",
+            b"# c\n8086  Intel\n\t5912  HD 630\nC 03  Display\n10de  NVIDIA\n",
+            b"# c\nabcd  lower\n\t0001  a\nABCD  upper\n\t0001  b\n",
+            b"# c\nABCD  upper\n\t0001  b\nabcd  lower\n\t0001  a\n",
+        ];
+        for text in cases {
+            assert_eq!(
+                parse(text, &wanted),
+                reference(text, &wanted),
+                "{:?}",
+                String::from_utf8_lossy(text)
+            );
+        }
+        let first = parse(cases[0], &wanted);
+        assert_eq!(first.vendors[&0x10de], "NVIDIA");
+        assert_eq!(first.devices[&(0x10de, 0x8086)], "Not Intel");
+        assert_eq!(first.devices[&(0x8086, 0x10de)], "Not NVIDIA");
+        assert_eq!(parse(cases[1], &wanted).vendors[&0x10de], "NVIDIA");
+        assert_eq!(parse(cases[2], &wanted).devices[&(0x10de, 0x2204)], "GA102");
+        assert_eq!(
+            parse(cases[3], &wanted).devices[&(0x8086, 0x5912)],
+            "HD 630"
+        );
+        let classes = parse(cases[4], &wanted);
+        assert_eq!(classes.devices.len(), 1);
+        assert!(!classes.vendors.contains_key(&0x8086));
+        let twice = parse(cases[5], &wanted);
+        assert_eq!(twice.vendors[&0x10de], "NVIDIA");
+        assert_eq!(twice.devices[&(0x10de, 0x2204)], "first");
+        assert_eq!(twice.devices[&(0x10de, 0x2205)], "only here");
+        assert_eq!(parse(cases[6], &wanted), Names::default());
+        let malformed = parse(cases[7], &wanted);
+        assert_eq!(malformed.malformed, 3);
+        assert_eq!(malformed.devices.len(), 0);
+        assert_eq!(parse(cases[8], &wanted), Names::default());
+        let spellings = parse(cases[9], &wanted);
+        assert_eq!(spellings.vendors[&0xabcd], "lower first");
+        assert_eq!(spellings.devices[&(0xabcd, 1)], "a");
+        assert_eq!(spellings.devices[&(0xabcd, 2)], "c");
+        assert_eq!(parse(cases[10], &wanted).vendors.len(), 1);
+        let behind = parse(cases[11], &wanted);
+        assert_eq!(behind.devices[&(0x8086, 0x5912)], "HD 630");
+        assert!(!behind.vendors.contains_key(&0x10de));
+        assert_eq!(parse(cases[12], &wanted).vendors[&0xabcd], "lower");
+        let upper = parse(cases[13], &wanted);
+        assert_eq!(upper.vendors[&0xabcd], "upper");
+        assert_eq!(upper.devices[&(0xabcd, 1)], "b");
     }
 
     /// A name from the file is made safe to draw.
