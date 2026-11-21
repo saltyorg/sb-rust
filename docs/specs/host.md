@@ -413,13 +413,16 @@ comes back (the filters above), so an extra row changes nothing.
 2. `systemctl list-unit-files --type=service --output=json --
    <patterns>`, so unloaded, disabled leftovers still appear
    (proto-logs).
-3. `systemctl list-timers --all --output=json`, for next runs.
+3. `systemctl list-timers --all --output=json`, for next runs, only
+   when a matched service has a loaded timer.
 4. One `systemctl show --timestamp=utc
    --property=Id,ActiveEnterTimestamp,StateChangeTimestamp` over the
    matched units, for both timestamps, each `<English weekday>
    %Y-%m-%d %H:%M:%S UTC`. `n/a` (249's text for no time), an empty
    value, a missing property or any other text reads as unknown
-   (assumption 4, amended).
+   (assumption 4, amended). motd asks it for the active units only, the
+   only ones whose line shows a time; the log picker asks for all, and
+   no call is made when there is none to ask.
 
 **Failures.**
 - A failed `list-units` or `list-unit-files` is an error: `failed to list
@@ -430,10 +433,16 @@ comes back (the filters above), so an extra row changes nothing.
 
 **Cancellation and time.** `services(filters, token)` takes the
 caller's `CancellationToken`, which reaches every capture, so motd's
-section cap and Ctrl-C end it. `list-units`, `list-unit-files` and
-`list-timers` run concurrently, then `show` runs on the matched
-units, so the call takes at most two timeouts (20 s), not four
-(40 s), inside motd's 30 s cap. The `show` call reads both
+section cap and Ctrl-C end it. `list-units` and `list-unit-files` run
+concurrently, then `show` and `list-timers`, also concurrently, so
+the call takes at most two timeouts (20 s), not four (40 s), inside
+motd's 30 s cap. *Amended 2026-11-21 (performance research, round 5):
+the three listings ran at once, but systemd answers its calls one
+after another, so every login waited for `list-timers --all`, which
+reads every timer on the host (about 6 ms of PID 1 on systemd 249),
+though its answer is used only for a matched service with a timer,
+which most hosts don't have; and `show` costs about 1.25 ms for each
+unit more.* The `show` call reads both
 `ActiveEnterTimestamp` and `StateChangeTimestamp` (the tui spec's
 amendment to step 4). motd and tui are its consumers (decision 1);
 this part of the host plan is built before whichever of motd's

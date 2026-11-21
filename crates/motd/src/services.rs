@@ -15,7 +15,7 @@ use crate::Out;
 use std::collections::BTreeMap;
 
 use jiff::Timestamp;
-use sb_host::systemd::{Service, Systemd, format_duration, format_next_in, with_additional};
+use sb_host::systemd::{Service, Systemd, Timed, format_duration, format_next_in, with_additional};
 use tokio_util::sync::CancellationToken;
 
 use crate::Paint;
@@ -62,7 +62,8 @@ pub async fn services(
     }
     let additional = settings.map_or(&[][..], |s| s.additional_services.as_slice());
     let filters = with_additional(additional);
-    match systemd.services(&filters, token).await {
+    // Only an active service's line shows a time (`Service::runtime`).
+    match systemd.services_timed(&filters, Timed::Active, token).await {
         Ok(found) => {
             let names = settings.map(|s| &s.display_names);
             lines(&found, names, Timestamp::now(), paint)

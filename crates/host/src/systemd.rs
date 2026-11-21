@@ -2,10 +2,11 @@
 //! host/systemd.go), with sb-go's duration texts for motd.
 //!
 //! [`services`] reads systemctl's JSON tables, not sb-go's human-readable
-//! columns (host spec, assumption 4): `list-units`, `list-unit-files` and
-//! `list-timers` at once, then one `show` over the matched units for their
-//! two timestamps. Each is a capture with a 10 s timeout taking the
-//! caller's token, so the call takes at most two timeouts.
+//! columns (host spec, assumption 4): `list-units` and `list-unit-files`
+//! at once, then one `show` over the matched units for their two
+//! timestamps and, beside it, `list-timers` when a matched service has a
+//! timer. Each is a capture with a 10 s timeout taking the caller's
+//! token, so the call takes at most two timeouts.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
@@ -151,6 +152,18 @@ impl Service {
     }
 }
 
+/// Which matched services `show` is asked for their two times.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Timed {
+    /// Every one: the log picker shows when a failed or stopped one
+    /// changed state (tui spec).
+    All,
+    /// The active ones: motd shows a time for those alone
+    /// ([`Service::runtime`]), and `show` costs systemd about 1.25 ms
+    /// for each unit more (performance research, round 5).
+    Active,
+}
+
 /// The service list couldn't be read, in sb-go's words (one text for the
 /// whole list, host spec difference 6).
 #[derive(Debug, thiserror::Error)]
@@ -198,15 +211,35 @@ impl Systemd {
         self
     }
 
-    /// The services `filters` match, sorted by name, without duplicates.
+    /// The services `filters` match, sorted by name, without duplicates,
+    /// each with both timestamps ([`Systemd::services_timed`] with
+    /// [`Timed::All`]).
+    ///
+    /// # Errors
+    ///
+    /// As [`Systemd::services_timed`].
+    pub async fn services(
+        &self,
+        filters: &[Filter],
+        token: &CancellationToken,
+    ) -> Result<Vec<Service>, ServicesError> {
+        self.services_timed(filters, Timed::All, token).await
+    }
+
+    /// The services `filters` match, sorted by name, without duplicates,
+    /// with both timestamps for the ones `timed` selects.
     ///
     /// - Loaded units come from `list-units`, `not-found` ones dropped;
     ///   unit files systemd hasn't loaded (a disabled leftover) from
     ///   `list-unit-files`, as `inactive`/`dead`.
     /// - A timer is `<name>.timer` from the same `list-units` call; its
     ///   next run comes from `list-timers` (the entry activating the
-    ///   service, as sb-go's).
-    /// - Both timestamps come from one `show` over the matched units.
+    ///   service, as sb-go's), asked only when a matched service has a
+    ///   timer: `list-timers --all` reads every timer on the host, the
+    ///   dearest of the calls in PID 1 (about 6 ms on systemd 249 with 14
+    ///   timers; performance research, round 5).
+    /// - Both timestamps come from one `show` over the matched units
+    ///   `timed` selects.
     ///
     /// Both listings are scoped by the filters' patterns ([`Filter`]'s
     /// `<prefix>*` and exact names, as `.service` and `.timer` units), as
@@ -215,9 +248,12 @@ impl Systemd {
     /// about a second on a server with a few hundred. The match then runs
     /// again on what came back. No filter lists nothing.
     ///
-    /// The three listings run at once (tokio's `join!`,
-    /// <https://docs.rs/tokio/1.54.1/tokio/macro.join.html>), then `show`:
-    /// at most two timeouts. Cancelling `token` ends every call.
+    /// The two listings run at once (tokio's `join!`,
+    /// <https://docs.rs/tokio/1.54.1/tokio/macro.join.html>), then `show`
+    /// and `list-timers`, also at once: at most two timeouts. systemd
+    /// answers its calls one after another, so `list-timers` beside
+    /// `show` costs no more wait than beside the listings. Cancelling
+    /// `token` ends every call.
     ///
     /// # Errors
     ///
@@ -227,9 +263,10 @@ impl Systemd {
     /// sb-go ignores those errors; the run log gets why. So does a cancel
     /// that comes after both listings have answered: the list returns
     /// without next runs or times, and a caller that cancelled drops it.
-    pub async fn services(
+    pub async fn services_timed(
         &self,
         filters: &[Filter],
+        timed: Timed,
         token: &CancellationToken,
     ) -> Result<Vec<Service>, ServicesError> {
         // No pattern would list every unit.
@@ -259,33 +296,58 @@ impl Systemd {
         }
         let units = self.table::<UnitRow>(units, token);
         let files = self.table::<UnitFileRow>(files, token);
-        let timers = self.table::<TimerRow>(
-            self.cmd()
-                .arg("list-timers")
-                .arg("--all")
-                .arg("--output=json"),
-            token,
-        );
-        let (units, files, timers) = tokio::join!(units, files, timers);
+        let (units, files) = tokio::join!(units, files);
         let units = units.map_err(|cause| ServicesError { cause })?;
         let files = files.map_err(|cause| ServicesError { cause })?;
-        let timers = timers.unwrap_or_else(|cause| {
-            tracing::info!(cause, "systemd timers not read");
-            Vec::new()
-        });
-        let mut found = matched(filters, &units, &files, &timers);
-        if !found.is_empty() {
-            match self.times(found.keys(), token).await {
-                Ok(read) => {
-                    for (name, service) in &mut found {
-                        if let Some(&(active_enter, state_change)) = read.get(name.as_str()) {
-                            service.active_enter = active_enter;
-                            service.state_change = state_change;
-                        }
+        let mut found = matched(filters, &units, &files);
+        let asks = |service: &Service| timed == Timed::All || service.active == "active";
+        let (read, timers) = {
+            let asked: Vec<&String> = found
+                .iter()
+                .filter(|(_, service)| asks(service))
+                .map(|(name, _)| name)
+                .collect();
+            let wants_timers = found.values().any(|service| service.timer.is_some());
+            let shown = async {
+                if asked.is_empty() {
+                    None
+                } else {
+                    Some(self.times(asked.into_iter(), token).await)
+                }
+            };
+            let timers = async {
+                if wants_timers {
+                    let cmd = self
+                        .cmd()
+                        .arg("list-timers")
+                        .arg("--all")
+                        .arg("--output=json");
+                    Some(self.table::<TimerRow>(cmd, token).await)
+                } else {
+                    None
+                }
+            };
+            tokio::join!(shown, timers)
+        };
+        match timers {
+            Some(Ok(timers)) => set_next_runs(&mut found, &timers),
+            Some(Err(cause)) => tracing::info!(cause, "systemd timers not read"),
+            None => {}
+        }
+        match read {
+            Some(Ok(read)) => {
+                for (name, service) in &mut found {
+                    if !asks(service) {
+                        continue;
+                    }
+                    if let Some(&(active_enter, state_change)) = read.get(name.as_str()) {
+                        service.active_enter = active_enter;
+                        service.state_change = state_change;
                     }
                 }
-                Err(cause) => tracing::info!(cause, "systemd service times not read"),
             }
+            Some(Err(cause)) => tracing::info!(cause, "systemd service times not read"),
+            None => {}
         }
         tracing::info!(count = found.len(), "systemd services listed");
         Ok(found.into_values().collect())
@@ -376,14 +438,14 @@ struct TimerRow {
 /// The active-enter and state-change times.
 type Times = (Option<Timestamp>, Option<Timestamp>);
 
-/// The matched services by name, before their times. sb-go's rules: a
-/// `not-found` unit is dropped (its unit file too, if a listing still
-/// names one), and a name nothing loaded or on disk matches isn't there.
+/// The matched services by name, before their times and their timers'
+/// next runs. sb-go's rules: a `not-found` unit is dropped (its unit file
+/// too, if a listing still names one), and a name nothing loaded or on
+/// disk matches isn't there.
 fn matched(
     filters: &[Filter],
     units: &[UnitRow],
     files: &[UnitFileRow],
-    timers: &[TimerRow],
 ) -> BTreeMap<String, Service> {
     let wanted = |name: &str| filters.iter().any(|filter| filter.matches(name));
     let file_state: HashMap<&str, &str> = files
@@ -397,13 +459,6 @@ fn matched(
         .iter()
         .filter(|row| row.state != "alias")
         .filter_map(|row| row.unit_file.strip_suffix(".service"));
-    let next_run: HashMap<&str, Timestamp> = timers
-        .iter()
-        .filter_map(|row| {
-            let service = row.activates.as_deref()?.strip_suffix(".service")?;
-            Some((service, from_micros(row.next?)?))
-        })
-        .collect();
     let timer_units: HashMap<&str, &UnitRow> = units
         .iter()
         .filter(|row| row.load != "not-found")
@@ -419,7 +474,7 @@ fn matched(
         timer: timer_units.get(name).map(|timer| Timer {
             active: timer.active.clone(),
             sub: timer.sub.clone(),
-            next: next_run.get(name).copied(),
+            next: None,
         }),
     };
 
@@ -440,6 +495,23 @@ fn matched(
         }
     }
     found
+}
+
+/// Each matched service's timer's next run from `timers`: the entry
+/// activating the service, as sb-go's.
+fn set_next_runs(found: &mut BTreeMap<String, Service>, timers: &[TimerRow]) {
+    let next_run: HashMap<&str, Timestamp> = timers
+        .iter()
+        .filter_map(|row| {
+            let service = row.activates.as_deref()?.strip_suffix(".service")?;
+            Some((service, from_micros(row.next?)?))
+        })
+        .collect();
+    for (name, service) in found {
+        if let Some(timer) = service.timer.as_mut() {
+            timer.next = next_run.get(name.as_str()).copied();
+        }
+    }
 }
 
 /// A list-timers time: microseconds since the epoch (systemd's `usec_t`),
@@ -834,6 +906,131 @@ esac"#
         );
     }
 
+    /// A stand-in answering with 26.04's capture, writing each call's
+    /// arguments, a line each, to `calls`.
+    fn recording(dir: &Path, calls: &Path) -> PathBuf {
+        let f = fixtures("26.04");
+        let (f, calls) = (f.display(), calls.display());
+        stand_in(
+            dir,
+            "systemctl",
+            &format!(
+                r#"echo "$*" >> '{calls}'
+case "$1" in
+  list-units) cat '{f}/list-units.json' ;;
+  list-unit-files) cat '{f}/list-unit-files.json' ;;
+  list-timers) cat '{f}/list-timers.json' ;;
+  show) cat '{f}/show.txt' ;;
+  *) exit 9 ;;
+esac"#
+            ),
+        )
+    }
+
+    /// The calls a [`recording`] stand-in saw, in no order but by name.
+    fn calls(path: &Path) -> Vec<String> {
+        let mut calls: Vec<String> = std::fs::read_to_string(path)
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_string)
+            .collect();
+        calls.sort();
+        calls
+    }
+
+    /// `list-timers` reads every timer on the host: it runs only when a
+    /// matched service has a timer, and with `show`.
+    #[tokio::test]
+    async fn list_timers_runs_only_for_a_matched_timer() {
+        let _spawns = SPAWNS.lock().await;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let log = dir.path().join("calls");
+        let program = recording(dir.path(), &log);
+        let token = CancellationToken::new();
+        let systemd = Systemd::new().with_program(&program);
+        // docker has no timer.
+        let found = systemd
+            .services(&[Filter::Exact("docker".into())], &token)
+            .await
+            .expect("list");
+        assert_eq!(found.len(), 1);
+        assert!(found[0].active_enter.is_some());
+        let seen = calls(&log);
+        assert_eq!(seen.len(), 3, "{seen:?}");
+        assert!(seen.iter().all(|call| !call.starts_with("list-timers")));
+        // saltbox_managed_job has one.
+        std::fs::remove_file(&log).expect("remove");
+        let found = systemd
+            .services(&[Filter::Exact("saltbox_managed_job".into())], &token)
+            .await
+            .expect("list");
+        assert_eq!(
+            found[0].timer.as_ref().and_then(|timer| timer.next),
+            Some(at("2026-01-16T00:00:00Z"))
+        );
+        let seen = calls(&log);
+        assert_eq!(seen.len(), 4, "{seen:?}");
+        assert_eq!(seen[0], "list-timers --all --output=json");
+    }
+
+    /// With [`Timed::Active`], `show` is asked for the active services
+    /// alone, and not at all when none is; the rest keep no times.
+    #[tokio::test]
+    async fn timed_active_shows_the_active_services_only() {
+        let _spawns = SPAWNS.lock().await;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let log = dir.path().join("calls");
+        let program = recording(dir.path(), &log);
+        let token = CancellationToken::new();
+        let systemd = Systemd::new().with_program(&program);
+        let found = systemd
+            .services_timed(&default_filters(), Timed::Active, &token)
+            .await
+            .expect("list");
+        let all = systemd
+            .services(&default_filters(), &token)
+            .await
+            .expect("list");
+        assert_eq!(found.len(), 7);
+        for (active, every) in found.iter().zip(&all) {
+            assert_eq!(active.name, every.name);
+            assert_eq!(active.timer, every.timer, "{}", active.name);
+            if active.active == "active" {
+                assert_eq!(active, every);
+                assert!(active.active_enter.is_some(), "{}", active.name);
+            } else {
+                assert_eq!((active.active_enter, active.state_change), (None, None));
+            }
+        }
+        assert!(
+            all.iter()
+                .any(|s| s.active != "active" && s.state_change.is_some())
+        );
+        let shows: Vec<String> = calls(&log)
+            .into_iter()
+            .filter(|call| call.starts_with("show"))
+            .collect();
+        // Timed::Active's call, and Timed::All's over every matched one.
+        let units = "--property=Id,ActiveEnterTimestamp,StateChangeTimestamp";
+        let active = format!(
+            "show --timestamp=utc {units} docker.service saltbox_managed_once.service \
+             saltbox_managed_web.service"
+        );
+        assert_eq!(shows.len(), 2, "{shows:?}");
+        assert!(shows.contains(&active), "{shows:?}");
+        std::fs::remove_file(&log).expect("remove");
+        let none = systemd
+            .services_timed(
+                &[Filter::Exact("saltbox_managed_crash".into())],
+                Timed::Active,
+                &token,
+            )
+            .await
+            .expect("list");
+        assert_eq!(none.len(), 1);
+        assert!(calls(&log).iter().all(|call| !call.starts_with("show")));
+    }
+
     #[tokio::test]
     async fn no_match_runs_no_show() {
         let _spawns = SPAWNS.lock().await;
@@ -854,7 +1051,7 @@ esac"#
         let f = fixtures("22.04");
         let f = f.display();
         // list-units and list-unit-files answer after most of a timeout;
-        // list-timers and show never end.
+        // show and list-timers (the job has a timer) never end.
         let program = stand_in(
             dir.path(),
             "systemctl",
@@ -876,9 +1073,10 @@ esac"#
         let took = start.elapsed();
         assert_eq!(found.len(), 7);
         assert!(found.iter().all(|s| s.active_enter.is_none()));
-        // Two timeouts (4 s) and their kills; one after another the calls
+        // The listings at once, then one timeout for show and list-timers
+        // at once (3.2 s), and the kills; one after another the calls
         // would take 1.2 + 1.2 + 2 + 2 s.
-        assert!(took >= Duration::from_secs(4), "{took:?}");
+        assert!(took >= Duration::from_millis(3200), "{took:?}");
         assert!(took < Duration::from_millis(5800), "{took:?}");
     }
 
@@ -941,7 +1139,7 @@ esac"#
             unit_file: "saltbox_managed_x.service".into(),
             state: "disabled".into(),
         }];
-        assert!(matched(&default_filters(), &units, &files, &[]).is_empty());
+        assert!(matched(&default_filters(), &units, &files).is_empty());
     }
 
     #[test]
@@ -956,7 +1154,7 @@ esac"#
             row("saltbox_managed_x.service", "loaded"),
             row("saltbox_managed_x.timer", "not-found"),
         ];
-        let found = matched(&default_filters(), &units, &[], &[]);
+        let found = matched(&default_filters(), &units, &[]);
         assert_eq!(found["saltbox_managed_x"].timer, None);
         assert_eq!(found["saltbox_managed_x"].unit_file_state, None);
     }
@@ -988,7 +1186,8 @@ esac"#
             })
             .collect();
         let filters = with_additional(&["a", "b"]);
-        let found = matched(&filters, &units, &[], &timers);
+        let mut found = matched(&filters, &units, &[]);
+        set_next_runs(&mut found, &timers);
         assert_eq!(found["a"].timer.as_ref().and_then(|t| t.next), None);
         assert_eq!(found["b"].timer.as_ref().and_then(|t| t.next), None);
     }

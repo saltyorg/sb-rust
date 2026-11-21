@@ -565,14 +565,14 @@ fn a_service_change_shows_within_six_seconds() {
     assert!(pty.exit().success());
     // The refresh that saw it wrote none of its read's records (tui spec,
     // "Verification notes": the refresh's run log): the systemctl
-    // children logged are the first load's four, and the change is
-    // logged.
+    // children logged are the first load's three (no matched service has
+    // a timer, so no list-timers), and the change is logged.
     let log = world.log();
     let children = log
         .lines()
         .filter(|line| line.contains("child started") && line.contains("systemctl"))
         .count();
-    assert_eq!(children, 4, "{log}");
+    assert_eq!(children, 3, "{log}");
     assert_eq!(log.matches("systemd services listed").count(), 1, "{log}");
     assert!(
         log.lines()
