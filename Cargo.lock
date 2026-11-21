@@ -3875,6 +3875,7 @@ dependencies = [
  "ansi-to-tui",
  "anstyle",
  "anstyle-lossy",
+ "anstyle-parse",
  "anyhow",
  "crossterm",
  "futures-util",

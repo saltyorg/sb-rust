@@ -594,6 +594,14 @@ To discuss with the maintainer once every module is done, not before:
   timer armed only while a frame is pending and a tick only for a screen
   that asks (perf round 3; the maintainer, 2026-11-21; tui spec, "The
   event loop"). Revisit if the recipe's own timers change.
+- **The screens' exit drain:** sb reads the terminal itself for the
+  answer to a status query once crossterm's `EventStream` is gone, a
+  departure from crossterm 0.29, which parses such an answer into an
+  internal event no public call shows and waits a fixed 2 s for its own
+  (https://docs.rs/crossterm/0.29.0/crossterm/event/index.html; tui spec,
+  "Leaving the screen"; the maintainer, 2026-11-21, a 1 s cap on the
+  wait for the answer). Revisit if
+  crossterm exposes the answer.
 - **Edit picker:** closed by the editors' picker slice (tui spec). It
   reuses the proto-facts and proto-logs patterns (list picker, then
   `$EDITOR`). *Amended 2026-11-13 by the tui spec.*

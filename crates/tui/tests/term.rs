@@ -427,6 +427,127 @@ fn q_leaves_the_screen_once_and_mouse_codes_after_it_never_reach_the_shell() {
     panic!("the harness never sent the codes inside the drain");
 }
 
+/// The terminal's answer to the exit drain's status query (DA1).
+const ANSWER: &[u8] = b"\x1b[?62;22c";
+/// The status query (DA1), as the exit drain writes it.
+const QUERY: &[u8] = b"\x1b[c";
+
+/// The exit drain ends at the terminal's answer: mouse codes sent before
+/// it and the answer itself are read and dropped, never echoed to the
+/// shell, and the exit doesn't wait the whole drain.
+#[test]
+fn the_exit_drain_ends_at_the_terminals_answer_and_nothing_reaches_the_shell() {
+    let mut pty = Pty::spawn("screen");
+    pty.assert_up();
+    pty.send(b"q");
+    assert!(pty.wrote(QUERY), "{:?}", String::from_utf8_lossy(&pty.raw));
+    pty.send(MOUSE_MOVE);
+    pty.send(ANSWER);
+    assert!(pty.exit().success());
+    pty.assert_restored();
+    let raw = String::from_utf8_lossy(&pty.raw).into_owned();
+    let after = &raw[raw.find("\x1b[c").expect("the query")..];
+    assert!(!after.contains("<35;10;5M"), "{raw:?}");
+    assert!(!after.contains("?62;22c"), "{raw:?}");
+    // Ended by the answer, not the 1 s cap (a wall-clock bound would fail
+    // on a loaded host).
+    assert!(pty.run_log().contains("answered=true"), "{}", pty.run_log());
+}
+
+/// A slow link, its answer 200 to 900 ms after the query: the drain
+/// waits for it, mouse codes before it and the answer are dropped, and
+/// nothing reaches the shell.
+#[test]
+fn a_slow_links_answer_ends_the_drain_and_nothing_reaches_the_shell() {
+    for round_trip in [200, 500, 900] {
+        let mut pty = Pty::spawn("screen");
+        pty.assert_up();
+        pty.send(b"q");
+        assert!(pty.wrote(QUERY), "{:?}", String::from_utf8_lossy(&pty.raw));
+        std::thread::sleep(Duration::from_millis(round_trip / 2));
+        pty.send(MOUSE_MOVE);
+        std::thread::sleep(Duration::from_millis(round_trip / 2));
+        pty.send(ANSWER);
+        assert!(pty.exit().success());
+        pty.assert_restored();
+        assert!(
+            pty.run_log().contains("answered=true"),
+            "{round_trip} ms: {}",
+            pty.run_log()
+        );
+        let raw = String::from_utf8_lossy(&pty.raw).into_owned();
+        let after = &raw[raw.find("\x1b[c").expect("the query")..];
+        assert!(!after.contains("<35;10;5M"), "{round_trip} ms: {raw:?}");
+        assert!(!after.contains("?62;22c"), "{round_trip} ms: {raw:?}");
+    }
+}
+
+/// A terminal that never answers: the drain reads and drops input for
+/// its whole second, so mouse codes inside it never reach the shell.
+#[test]
+fn a_terminal_that_never_answers_drains_for_the_whole_second() {
+    let mut pty = Pty::spawn("screen");
+    pty.assert_up();
+    pty.send(b"q");
+    assert!(pty.wrote(QUERY), "{:?}", String::from_utf8_lossy(&pty.raw));
+    let asked = Instant::now();
+    for after in [0, 100, 400] {
+        std::thread::sleep(Duration::from_millis(after));
+        pty.send(MOUSE_MOVE);
+    }
+    assert!(pty.wrote(b"\x1b[?1049l"));
+    let left = asked.elapsed();
+    assert!(pty.exit().success());
+    pty.assert_restored();
+    assert!(
+        pty.run_log().contains("answered=false"),
+        "{}",
+        pty.run_log()
+    );
+    assert!(left >= Duration::from_millis(950), "{left:?}");
+    let raw = String::from_utf8_lossy(&pty.raw).into_owned();
+    assert!(!raw.contains("<35;10;5M"), "{raw:?}");
+}
+
+/// The mouse in use when the screen is left: no query (a terminal that
+/// answers it itself, as mosh does, would end the drain ahead of reports
+/// still on their way), the whole 150 ms drained as before.
+#[test]
+fn with_the_mouse_in_use_the_exit_drains_the_whole_150_ms_without_a_query() {
+    let mut pty = Pty::spawn("screen");
+    pty.assert_up();
+    pty.send(MOUSE_MOVE);
+    std::thread::sleep(Duration::from_millis(50));
+    pty.send(b"q");
+    assert!(pty.wrote(MOUSE_OFF));
+    pty.send(MOUSE_MOVE);
+    assert!(pty.exit().success());
+    pty.assert_restored();
+    let raw = String::from_utf8_lossy(&pty.raw).into_owned();
+    assert!(!raw.contains("\x1b[c"), "{raw:?}");
+    assert!(!raw.contains("<35;10;5M"), "{raw:?}");
+    assert!(
+        pty.run_log().contains("the mouse in use"),
+        "{}",
+        pty.run_log()
+    );
+}
+
+/// On the tty the query goes to the tty and its answer is read there,
+/// stdout getting none of it.
+#[test]
+fn on_the_tty_the_exit_drain_ends_at_the_answer() {
+    let mut pty = Pty::spawn_on_tty("screen");
+    pty.assert_up();
+    pty.send(b"q");
+    assert!(pty.wrote(QUERY), "{:?}", String::from_utf8_lossy(&pty.raw));
+    pty.send(ANSWER);
+    assert!(pty.exit().success());
+    pty.assert_restored();
+    pty.assert_stdout_clean();
+    assert!(pty.run_log().contains("answered=true"), "{}", pty.run_log());
+}
+
 #[test]
 fn dropping_the_screen_restores_the_terminal() {
     let mut pty = Pty::spawn("dropped");

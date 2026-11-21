@@ -64,7 +64,11 @@ tokio = { workspace = true, features = ["sync", "macros"] }
 tokio-util.workspace = true
 # The soft RLIMIT_NOFILE the logs commands raise (`setrlimit`), and the
 # errno of a follow stopped by an inotify limit (tui spec, Tech Stack).
-rustix.workspace = true
+# `event`: the exit drain's `poll` on the terminal (term.rs).
+rustix = { workspace = true, features = ["event"] }
+# The exit drain's reading of the terminal's answer, a CSI sequence
+# (term.rs; already in the tree through anstream and sb-term-ui).
+anstyle-parse.workspace = true
 
 [dev-dependencies]
 sb-cli-core.workspace = true

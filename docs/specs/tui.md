@@ -351,6 +351,15 @@ fallback); the viewer itself has no save or print (decision 24).
   turned off, so late mouse codes don't reach the shell (proto-logs
   measured 600 bytes leaked without it, 0 with it). No documentation
   covers it: marked UNVERIFIED in the code, with that measurement.
+  *Amended 2026-11-21 (the maintainer, perf round 3, option C, 1 s
+  cap):* the drain ends at the terminal's answer to a status query (DA1,
+  written after the mouse is off), 1 s at most, read on the terminal by
+  sb once crossterm's `EventStream` is gone (crossterm shows no such
+  answer, and its own waits are fixed at 2 s); only a terminal that never
+  answers waits the whole second. After a mouse report in the last
+  second it drains 150 ms without a query, as before: mosh answers the
+  query itself ahead of reports still on their way. An answer later than
+  1 s reaches the shell.
 - **Ctrl-C** is a key in raw mode: the screen closes and sb exits 130
   quietly, as sb-go (8ececcc). **SIGTERM and SIGHUP** close the screen
   through cli-core's restore hook (`Shutdown::on_forced_exit`, writing to

@@ -87,12 +87,34 @@ const FRAME_RATE: f64 = 60.0;
 /// as it did when the tick came 4 times a second.
 const TICK_RATE: f64 = 4.0;
 
-/// How long input is read and dropped after mouse capture is turned off,
-/// so mouse codes already on their way don't reach the shell.
+/// How long input is read and dropped after mouse capture is turned off
+/// while the mouse is in use ([`MOUSE_RECENT`]), so mouse codes already
+/// on their way don't reach the shell.
 /// UNVERIFIED: no ratatui or crossterm documentation covers it. proto-logs
 /// measured it (FINDINGS.md): mouse codes sent 10, 50 and 100 ms after
 /// quitting left 600 bytes in the shell without the drain, none with it.
 const DRAIN: Duration = Duration::from_millis(150);
+
+/// How long the drain waits for the terminal's answer to [`STATUS_QUERY`]
+/// at most (the 1 s cap, the maintainer 2026-11-21): it ends the moment
+/// the answer comes, so only a terminal that never answers waits it
+/// whole. 150 ms left the answer of a link slower than that to reach the
+/// shell; a second covers the round trips of SSH across the world and
+/// mobile links.
+const ANSWER_WAIT: Duration = Duration::from_secs(1);
+
+/// The primary device attributes query (DA1, `ESC [ c`), which every
+/// VT100-compatible terminal answers with `ESC [ ? ... c`
+/// (<https://vt100.net/docs/vt510-rm/DA1.html>). Written after mouse
+/// capture is turned off, its answer comes after every mouse report the
+/// terminal sent before it took the mouse off: the end of the drain.
+const STATUS_QUERY: &[u8] = b"\x1b[c";
+
+/// A mouse report this recent when the screen is left drains the whole
+/// [`DRAIN`], as before: a terminal that answers the query itself (mosh
+/// answers it at once, ahead of reports still on their way from the real
+/// terminal) can't end the drain early while the mouse is in use.
+const MOUSE_RECENT: Duration = Duration::from_secs(1);
 
 /// The screen's write buffer, in bytes: a frame fits it whole, so it is
 /// one write (a 240x70 screen's first page is about 26 KB; 8 KiB, std's
@@ -209,6 +231,8 @@ pub struct Tui {
     /// What the screen's sources wake it with (docs/specs/tui.md,
     /// "Verification notes": the wake-up path).
     wake: Arc<Notify>,
+    /// When the event task last read a mouse report.
+    mouse: Arc<Mutex<Option<std::time::Instant>>>,
     /// Removes the forced-exit hook when the screen goes.
     _restore: RestoreHook,
     left: bool,
@@ -286,13 +310,15 @@ impl Tui {
     /// The screen up, with its event task started.
     fn started(screen: Screen, shutdown: &Shutdown, restore: RestoreHook) -> Self {
         let (tx, events) = mpsc::unbounded_channel();
-        let task = tokio::spawn(read_events(EventStream::new(), tx));
+        let mouse = Arc::default();
+        let task = tokio::spawn(read_events(EventStream::new(), tx, Arc::clone(&mouse)));
         Self {
             screen,
             events,
             task,
             token: shutdown.token(),
             wake: Arc::new(Notify::new()),
+            mouse,
             _restore: restore,
             left: false,
         }
@@ -330,6 +356,22 @@ impl Tui {
                 DisableMouseCapture,
                 DisableBracketedPaste
             ),
+        }
+    }
+
+    /// [`STATUS_QUERY`], on the screen's terminal.
+    fn query(&mut self) -> io::Result<()> {
+        match &mut self.screen {
+            Screen::Stdout(terminal) => {
+                let out = terminal.backend_mut();
+                out.write_all(STATUS_QUERY)
+                    .and_then(|()| io::Write::flush(out))
+            }
+            Screen::Tty(terminal) => {
+                let out = terminal.backend_mut();
+                out.write_all(STATUS_QUERY)
+                    .and_then(|()| io::Write::flush(out))
+            }
         }
     }
 
@@ -375,11 +417,31 @@ impl Tui {
     }
 
     /// Restore the terminal: mouse capture and bracketed paste off, then
-    /// input read and dropped
-    /// for 150 ms (`DRAIN`) through the same `EventStream` (crossterm forbids
-    /// mixing it with `read`/`poll`,
-    /// <https://docs.rs/crossterm/0.29.0/crossterm/event/index.html>), then
-    /// ratatui's restore.
+    /// input read and dropped until the terminal has sent every mouse
+    /// report it will, then the rows erased and ratatui's restore.
+    ///
+    /// The drain: the event task and its `EventStream` go, then
+    /// [`STATUS_QUERY`] is written and the terminal read here, everything
+    /// dropped, until its answer comes, [`ANSWER_WAIT`] at most
+    /// ([`drain_until_answered`]): a local terminal answers within a few
+    /// milliseconds, where every exit waited the whole 150 ms before (perf
+    /// round 3; the maintainer's go-ahead, 2026-11-21), and a slow link in
+    /// its round trip. After a mouse
+    /// report in the last [`MOUSE_RECENT`], the whole [`DRAIN`] through the
+    /// `EventStream`, as before. Why not crossterm: it parses the answer
+    /// into an internal event that neither a public call nor the
+    /// `EventStream` shows, and its own waits for an answer
+    /// (`cursor::position`, `terminal::supports_keyboard_enhancement`)
+    /// are fixed at 2 s, and `cursor::position` asks on stdout, the pipe
+    /// under the `/dev/tty` screen
+    /// (<https://docs.rs/crossterm/0.29.0/crossterm/terminal/fn.supports_keyboard_enhancement.html>).
+    /// The terminal is read only once the `EventStream` is dropped
+    /// (crossterm forbids mixing it with its own `read`/`poll`,
+    /// <https://docs.rs/crossterm/0.29.0/crossterm/event/index.html>). Its
+    /// drop wakes its reader thread without joining it: should that thread
+    /// still read the answer, the drain waits its whole [`ANSWER_WAIT`].
+    /// What stays open: an answer later than [`ANSWER_WAIT`] (a link
+    /// slower than a second) reaches the shell, about 10 bytes.
     ///
     /// # Errors
     ///
@@ -392,10 +454,34 @@ impl Tui {
     /// is still restored by the drop.
     pub async fn leave(mut self) -> io::Result<()> {
         let mouse = self.mouse_off();
-        let _ = tokio::time::timeout(DRAIN, async { while self.events.recv().await.is_some() {} })
-            .await;
-        self.task.abort();
-        let _ = (&mut self.task).await;
+        let started = std::time::Instant::now();
+        let recent = self
+            .mouse
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_some_and(|at| at.elapsed() < MOUSE_RECENT);
+        if recent {
+            let _ =
+                tokio::time::timeout(DRAIN, async { while self.events.recv().await.is_some() {} })
+                    .await;
+            self.task.abort();
+            let _ = (&mut self.task).await;
+            tracing::info!(
+                millis = started.elapsed().as_millis(),
+                "exit drain, the mouse in use"
+            );
+        } else {
+            self.task.abort();
+            let _ = (&mut self.task).await;
+            let asked = self.query();
+            let answered = sb_cli_core::spawn::blocking(|| drain_until_answered(ANSWER_WAIT)).await;
+            tracing::info!(
+                asked = asked.is_ok(),
+                answered = matches!(answered, Ok(Ok(true))),
+                millis = started.elapsed().as_millis(),
+                "exit drain"
+            );
+        }
         let cleared = self.clear();
         let restored = self.restore();
         SCREEN.store(false, Ordering::SeqCst);
@@ -530,7 +616,8 @@ fn mouse_off_on_panic() {
 
 /// The recipe's event task: `input` (crossterm's `EventStream`), each
 /// event sent on `tx`, until the loop goes or the input fails or ends.
-/// Key events are sent only when pressed, as the recipe does.
+/// Key events are sent only when pressed, as the recipe does. The time of
+/// the last mouse report goes in `mouse`, for the exit drain.
 ///
 /// Where it differs from the recipe: no tick or render interval (the
 /// loop keeps its own, armed only when wanted: the module's "why not");
@@ -543,13 +630,21 @@ fn mouse_off_on_panic() {
 /// than ending its stream, so a terminal that hangs up isn't seen here;
 /// the hangup's SIGHUP ends the screen through the token instead (under
 /// `nohup` nothing does, until a key or a signal).
-async fn read_events<S>(mut input: S, tx: mpsc::UnboundedSender<Event>)
-where
+async fn read_events<S>(
+    mut input: S,
+    tx: mpsc::UnboundedSender<Event>,
+    mouse: Arc<Mutex<Option<std::time::Instant>>>,
+) where
     S: Stream<Item = io::Result<Input>> + Unpin,
 {
     loop {
         let event = match input.next().await {
             Some(Ok(Input::Key(key))) if !key.is_press() => continue,
+            Some(Ok(Input::Mouse(report))) => {
+                *mouse.lock().unwrap_or_else(PoisonError::into_inner) =
+                    Some(std::time::Instant::now());
+                Event::Input(Input::Mouse(report))
+            }
             Some(Ok(read)) => Event::Input(read),
             Some(Err(err)) => Event::Failed(err),
             None => Event::Failed(io::Error::new(
@@ -720,6 +815,80 @@ where
             Flow::Unchanged => {}
             Flow::Quit => return Ok(Ending::Quit),
         }
+    }
+}
+
+/// Read the terminal and drop what comes until its answer to
+/// [`STATUS_QUERY`], `limit` at most; whether the answer came. The
+/// terminal is the one crossterm reads, stdin when it is one, else
+/// `/dev/tty` (crossterm's `tty_fd`). Its bytes go through anstyle-parse's
+/// VT parser
+/// (<https://docs.rs/anstyle-parse/1.0.0/anstyle_parse/struct.Parser.html>),
+/// so an answer split across reads, or after mouse reports, is still
+/// seen. A blocking `poll` and `read` (rustix's), run on the blocking
+/// pool. The `read` follows a `poll` that saw input, so it doesn't wait,
+/// as long as nothing else reads the terminal in between: crossterm's
+/// reader thread could, briefly, after its `EventStream` is dropped.
+/// UNVERIFIED against a race, by reading crossterm 0.29.0's
+/// `event/stream.rs` and `event/source/unix/mio.rs`: the drop's wake is
+/// queued before any answer can come, so the thread returns on it
+/// without reading the terminal.
+fn drain_until_answered(limit: Duration) -> io::Result<bool> {
+    use rustix::event::{PollFd, PollFlags, Timespec, poll};
+    use std::io::IsTerminal as _;
+    let end = std::time::Instant::now() + limit;
+    let stdin = io::stdin();
+    let tty;
+    let fd = if stdin.is_terminal() {
+        stdin.as_fd()
+    } else {
+        tty = File::open("/dev/tty")?;
+        tty.as_fd()
+    };
+    let mut parser = anstyle_parse::Parser::<anstyle_parse::DefaultCharAccumulator>::new();
+    let mut answer = Answer(false);
+    let mut buffer = [0_u8; 1024];
+    loop {
+        let left = end.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            return Ok(false);
+        }
+        let timeout = Timespec::try_from(left).map_err(io::Error::other)?;
+        let mut fds = [PollFd::new(&fd, PollFlags::IN)];
+        match poll(&mut fds, Some(&timeout)) {
+            Ok(0) | Err(rustix::io::Errno::INTR) => continue,
+            Ok(_) => {}
+            Err(err) => return Err(err.into()),
+        }
+        let n = match rustix::io::read(fd, &mut buffer) {
+            Ok(0) => return Ok(false),
+            Ok(n) => n,
+            Err(rustix::io::Errno::INTR | rustix::io::Errno::AGAIN) => continue,
+            Err(err) => return Err(err.into()),
+        };
+        for &byte in &buffer[..n] {
+            parser.advance(&mut answer, byte);
+        }
+        if answer.0 {
+            return Ok(true);
+        }
+    }
+}
+
+/// Whether the parsed input held the answer to [`STATUS_QUERY`]: a CSI
+/// sequence with the `?` marker ending in `c`.
+#[derive(Debug)]
+struct Answer(bool);
+
+impl anstyle_parse::Perform for Answer {
+    fn csi_dispatch(
+        &mut self,
+        _params: &anstyle_parse::Params,
+        intermediates: &[u8],
+        _ignore: bool,
+        action: u8,
+    ) {
+        self.0 |= action == b'c' && intermediates == b"?";
     }
 }
 
@@ -1336,7 +1505,7 @@ mod tests {
     /// Collect what the event task sends until it stops.
     async fn sent(input: Vec<io::Result<Input>>) -> Vec<Event> {
         let (tx, mut rx) = mpsc::unbounded_channel();
-        read_events(stream::iter(input), tx).await;
+        read_events(stream::iter(input), tx, Arc::default()).await;
         let mut events = Vec::new();
         while let Ok(event) = rx.try_recv() {
             events.push(event);
@@ -1389,11 +1558,61 @@ mod tests {
         assert!(!events.iter().any(|event| matches!(event, Event::Input(_))));
     }
 
+    /// A mouse report's time is kept for the exit drain; a key's isn't.
+    #[tokio::test]
+    async fn the_event_task_keeps_the_last_mouse_reports_time() {
+        use crossterm::event::{MouseEvent, MouseEventKind};
+        let mouse = Arc::new(Mutex::new(None));
+        let (tx, _rx) = mpsc::unbounded_channel();
+        read_events(stream::iter([Ok(char_key('a'))]), tx, Arc::clone(&mouse)).await;
+        assert_eq!(*mouse.lock().expect("lock"), None);
+        let report = Input::Mouse(MouseEvent {
+            kind: MouseEventKind::Moved,
+            column: 1,
+            row: 1,
+            modifiers: KeyModifiers::NONE,
+        });
+        let before = std::time::Instant::now();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        read_events(stream::iter([Ok(report)]), tx, Arc::clone(&mouse)).await;
+        let at = mouse.lock().expect("lock").expect("kept");
+        assert!(at >= before);
+    }
+
+    /// The drain's end: the answer to the status query (`ESC [ ? ... c`),
+    /// whole or split, after mouse reports or not; nothing else ends it,
+    /// a secondary attributes answer (`ESC [ > ... c`) included.
+    #[test]
+    fn the_status_querys_answer_is_found_in_the_input() {
+        let found = |chunks: &[&[u8]]| {
+            let mut parser = anstyle_parse::Parser::<anstyle_parse::DefaultCharAccumulator>::new();
+            let mut answer = Answer(false);
+            for chunk in chunks {
+                for &byte in *chunk {
+                    parser.advance(&mut answer, byte);
+                }
+            }
+            answer.0
+        };
+        assert!(found(&[b"\x1b[?62;22c"]));
+        assert!(found(&[b"\x1b[?1;2c"]));
+        assert!(found(&[
+            b"\x1b[<35;10;5M\x1b[<35;11;5M",
+            b"\x1b[?6",
+            b"2;c"
+        ]));
+        assert!(found(&[b"typed c\x1b[A\x1b[?65;1;9c"]));
+        assert!(!found(&[b"\x1b[<35;10;5M\x1b[<0;10;5m"]));
+        assert!(!found(&[b"c\x1b[c"]));
+        assert!(!found(&[b"\x1b[>0;95;0c"]));
+        assert!(!found(&[b"\x1b[?62;22"]));
+    }
+
     /// The event task sends input only: no tick or render of its own.
     #[tokio::test(start_paused = true)]
     async fn the_event_task_sends_nothing_without_input() {
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let task = tokio::spawn(read_events(stream::pending(), tx));
+        let task = tokio::spawn(read_events(stream::pending(), tx, Arc::default()));
         tokio::time::sleep(Duration::from_secs(10)).await;
         task.abort();
         assert!(rx.try_recv().is_err());
@@ -1405,7 +1624,7 @@ mod tests {
         drop(rx);
         // Returns at its first send instead of running forever.
         let input = stream::iter([Ok(char_key('b'))]).chain(stream::pending());
-        read_events(input, tx).await;
+        read_events(input, tx, Arc::default()).await;
     }
 
     /// What reaches the terminal, each write as it came.
