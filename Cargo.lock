@@ -3578,7 +3578,6 @@ dependencies = [
  "sb-cli-core",
  "sb-term-ui",
  "serde",
- "serde-saphyr",
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",

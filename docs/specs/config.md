@@ -380,8 +380,13 @@ pass; and confirms that their Cloudflare and Docker Hub credentials work.
 - **Strict loading:** an unknown schema key, rule type, format, validator
   name, or a malformed value is an error naming the schema file and the
   line and column (and the key or value at fault, where there is one;
-  serde-saphyr reports positions, not key paths). Everywhere, also in a
-  user's run (decision 5).
+  the schema reader reports positions, not key paths). Everywhere, also
+  in a user's run (decision 5). The reader is sb's own, over
+  saphyr-parser's events (decision 12, ADR-028): a duplicate key in any
+  mapping, a second document, an anchor or alias, a tag, a merge key
+  (`<<`) and a character YAML doesn't allow are refused, naming the
+  line and column; collections nest at most 64 deep, a file holds at
+  most 250,000 nodes.
 - **Validators.** Type validators (usable as `type`): `ansible_bool`
   (sb-go trims for `required_when_true` but not here: kept),
   `subdomain`, `hostname`, `directory_path`, `url`, `timezone`
@@ -543,7 +548,8 @@ pass; and confirms that their Cloudflare and Docker Hub credentials work.
 - Docker Hub's login body properly encoded; `CLOUDFLARE_CUSTOM_HEADERS`
   and cloudflare-go's other environment variables not read.
 - `required_with`'s list printed as `a, b`.
-- `not_equals` takes its value as serde-saphyr resolves it: unquoted
+- `not_equals` takes its value as serde-saphyr 2.0.0 resolved it, which
+  sb's schema reader keeps (ADR-028): unquoted
   `yes`, `on` and `y` are booleans, `017` is 17 and a date is a string
   (yaml.v3: the strings, 15, and a `time.Time` that matches a date in the
   config). Saltbox quotes its `not_equals` values.
@@ -604,6 +610,14 @@ pass; and confirms that their Cloudflare and Docker Hub credentials work.
   *Amended 2026-11-18 by the maintainer's decision: `-v` and `--verbose` are accepted, hidden from help, and change nothing; the run prints one notice on stderr before its steps, naming this run in the run log (`-v isn't needed: sb logs full detail to <file> (run <id>)`), once however often the flag is given (crates/sb/src/verbose.rs).*
 - No `validate_rclone_remote` (decision 6): a schema naming it fails
   loading, naming it.
+- A schema file with an anchor, an alias, a tag or a merge key fails
+  loading, naming the line (decision 12; sb-go's yaml.v3 reads them).
+  So does one with a byte order mark past its start or content after a
+  document's end (`...`), which serde-saphyr's parser read in some
+  places; a quoted scalar continued at its key's indentation reads, as
+  in yaml.v3 (serde-saphyr refused it). A block scalar that ends the
+  file on a blank line with no final line break can keep one line
+  break more than serde-saphyr gave it (saphyr-parser's reading).
 
 ### Other specs
 
@@ -624,8 +638,12 @@ on `sb-config`).
 - saphyr 0.3.3 `MarkedYaml` for the config files (positions on every
   node; already in sb for the inventory) and saphyr-parser's events for
   the duplicate-key pass, both on cli-core's pre-passed text (ADR-022;
-  no dependency); serde-saphyr 2.0 (`deserialize` only) for the
-  schema files (typed, `deny_unknown_fields`); `regex` for `pattern`.
+  no dependency); the schema files read into serde's derived rules
+  (typed, `deny_unknown_fields`) by sb's own deserializer over
+  saphyr-parser's events, cli-core's pre-pass used only for a text
+  saphyr refuses as written (decision 12,
+  [ADR-028](../decisions/ADR-028-own-schema-reader.md); serde-saphyr
+  2.0 read them before); `regex` for `pattern`.
 - reqwest (rustls, aws-lc-rs; the stack table) for the two checks; `psl`
   for the public suffix list (both sections, compiled in) and `jiff`
   (`TimeZone::tzif` on the zoneinfo file sb finds as Go does; decision
@@ -801,3 +819,12 @@ docs/specs/config.md      this spec
     purely a file doesn't exist thing": an existing file is never
     replaced, even when it is empty, doesn't parse or fails
     validation.
+12. **sb's own schema reader** (the maintainer, 2026-11-21, performance
+    round 5, infra finding 1;
+    [ADR-028](../decisions/ADR-028-own-schema-reader.md)): the schema
+    files are read from saphyr-parser's events into the derived rules,
+    in place of serde-saphyr, whose layer was a third of
+    validate-config's work and of motd's check. Scalars resolve as
+    serde-saphyr's did. Anchors, aliases, tags and merge keys are
+    refused with an error naming the file and the line: Saltbox's
+    schemas use none.

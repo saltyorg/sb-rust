@@ -19,7 +19,6 @@ sb-term-ui.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
 serde.workspace = true
-serde-saphyr.workspace = true
 regex.workspace = true
 regex-syntax.workspace = true
 jiff.workspace = true

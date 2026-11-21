@@ -185,7 +185,7 @@ GitHub API (last push, archived flag).
 | Timestamps | `jiff` | 0.2.38 / 2026-10 | 98M | time | proto-logs |
 | Atomic file saves (facts, config) | `tempfile` (`NamedTempFile::persist`), keeping owner and mode; fact files: a temp file on the pinned directory fd (`rustix::fs::openat`, `O_EXCL`), not tempfile, which re-resolves the path (tui spec, Editors). *Amended 2026-11-13 by the tui spec.* | 3.27.0 / 2026-03 | 227M | os.CreateTemp + rename | proto-facts |
 | TOML (sb's own config) | `toml` (serde, parse only) | 1.1.8 / 2026-10 | 286M | viper/koanf config | cli-core (theme file) |
-| YAML, typed | `serde-saphyr` (`deserialize` only for sb-config) | 2.0.0 / 2026-10 | 16M | yaml.v3 | proto-yaml, proto-markdown, config Task 1 |
+| YAML, typed | sb-config's own deserializer over `saphyr-parser`'s events for the schema files ([ADR-028](../decisions/ADR-028-own-schema-reader.md); `serde-saphyr` 2.0.0 until 2026-11-21, still the proto-markdown prototype's) | saphyr-parser 0.3.3 | — | yaml.v3 | proto-yaml, proto-markdown, config Task 1, performance round 5 |
 | YAML, schema-validated config | `saphyr` (`MarkedYaml`, positions, duplicate-key rejection) | 0.3.3 / 2026-10 | 1.1M | yaml.v3 nodes + custom duplicate-key walker | proto-yaml, cli-core (inventory) |
 | Schema `pattern` rules | `regex` | 1.13.1 / 2026-07 | 1.3B | (not enforced by sb-go) | proto-yaml, config Task 1 |
 | XML-RPC (rTorrent) | `quick-xml` (thin client) | 0.42.0 / 2026-08 | 151M | go-rtorrent | the motd spec. *Amended 2026-11-13 by the motd spec.* |

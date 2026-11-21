@@ -12,6 +12,8 @@ use std::path::Path;
 use serde::Deserialize;
 use serde::de::{self, Deserializer, IntoDeserializer, MapAccess, Visitor};
 
+mod events;
+
 /// A schema file's rules: its top-level keys, each a config file's key.
 pub type Rules = BTreeMap<String, Rule>;
 
@@ -108,8 +110,8 @@ pub enum Validator {
     ValidateHostname,
 }
 
-/// A `not_equals` value: a scalar, as serde-saphyr resolves it
-/// (serde-saphyr has no generic value type). Unquoted `yes`, `on`, `y`
+/// A `not_equals` value: a scalar, as serde-saphyr 2.0.0 resolved it and
+/// sb's schema reader still does ([`events`]). Unquoted `yes`, `on`, `y`
 /// and leading-zero numbers resolve differently from sb-go's yaml.v3 (the
 /// spec's differences); Saltbox quotes its values.
 #[derive(Clone, Debug, PartialEq)]
@@ -145,7 +147,7 @@ pub enum SchemaError {
 
 /// `Scalar` by hand rather than serde's `untagged`, which reports any
 /// mismatch as "did not match any variant" at the mapping's start; a
-/// visitor keeps serde-saphyr's own error and position
+/// visitor keeps the reader's own error and position
 /// (<https://serde.rs/impl-deserialize.html>).
 impl<'de> Deserialize<'de> for Scalar {
     fn deserialize<D: Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
@@ -218,7 +220,7 @@ where
 
 /// A `pattern`, compiled when the schema loads, so one that doesn't
 /// compile fails loading where it stands (serde's custom error, which
-/// serde-saphyr places at the value).
+/// the reader places at the value).
 fn pattern<'de, D: Deserializer<'de>>(de: D) -> Result<Option<regex::Regex>, D::Error> {
     Option::<String>::deserialize(de)?
         .map(|source| {
@@ -289,26 +291,6 @@ fn compile(source: &str) -> Result<regex::Regex, String> {
     Ok(compiled)
 }
 
-/// serde-saphyr's error in one line, without its source snippet, ending
-/// with the line and column; two of its messages advise the programmer
-/// (which API to call), so they are worded for the reader here.
-fn message(err: &serde_saphyr::Error) -> String {
-    match err.without_snippet() {
-        serde_saphyr::Error::DuplicateMappingKey { key, location } => format!(
-            "duplicate key{} at line {}, column {}",
-            key.as_deref().map_or_default(|key| format!(" `{key}`")),
-            location.line(),
-            location.column()
-        ),
-        serde_saphyr::Error::MultipleDocuments { location, .. } => format!(
-            "more than one YAML document, the second at line {}, column {}",
-            location.line(),
-            location.column()
-        ),
-        other => other.to_string(),
-    }
-}
-
 /// `text`, the schema file shown as `file` (already escaped for the
 /// screen), as rules.
 ///
@@ -317,9 +299,9 @@ fn message(err: &serde_saphyr::Error) -> String {
 /// [`SchemaError::Invalid`] when the text isn't a valid schema.
 pub fn parse(file: &str, text: &str) -> Result<Rules, SchemaError> {
     let _compiled = Compiled::start();
-    serde_saphyr::from_str(text).map_err(|err| SchemaError::Invalid {
+    events::from_str(text).map_err(|err| SchemaError::Invalid {
         file: file.to_string(),
-        message: message(&err),
+        message: err.to_string(),
     })
 }
 
@@ -584,6 +566,173 @@ h:
         let message = error("a:\n  type: string\n---\nb:\n  type: string\n");
         assert!(message.contains("more than one YAML document"), "{message}");
         assert!(!message.contains("from_str_multiple"), "{message}");
+    }
+
+    /// Schema files don't use anchors, aliases, tags or merge keys
+    /// (the maintainer, 2026-11-21): each is refused where it stands.
+    #[test]
+    fn anchors_aliases_tags_and_merge_keys_are_refused() {
+        for (text, refused) in [
+            (
+                "a: &x\n  type: string\n",
+                "YAML anchors and aliases aren't supported in schema files at line 1, column 4",
+            ),
+            (
+                "a: &x\n  type: string\nb: *x\n",
+                "YAML anchors and aliases aren't supported in schema files at line 1, column 4",
+            ),
+            (
+                "a:\n  type: !!str string\n",
+                "YAML tags aren't supported in schema files at line 2, column 9",
+            ),
+            (
+                "a: !rule\n  type: string\n",
+                "YAML tags aren't supported in schema files at line 1, column 4",
+            ),
+            (
+                "a:\n  <<: {type: string}\n",
+                "YAML merge keys aren't supported in schema files at line 2, column 3",
+            ),
+        ] {
+            assert_eq!(error(text), format!("schema strict.schema.yml: {refused}"));
+        }
+        // Quoted, `<<` is a key like any other.
+        let message = error("a:\n  '<<': {type: string}\n");
+        assert!(message.contains("unknown field `<<`"), "{message}");
+    }
+
+    /// A plain whole number is one key however it is spelt.
+    #[test]
+    fn a_whole_number_key_is_a_duplicate_by_value() {
+        let message = error("a:\n  example: {1: x, 0x1: y}\n");
+        assert_eq!(
+            message,
+            "schema strict.schema.yml: duplicate key `0x1` at line 2, column 19"
+        );
+        let message = error("a:\n  example: {-0: x, 0: y}\n");
+        assert!(message.contains("duplicate key `0`"), "{message}");
+        // Quoted, it is text.
+        let rules =
+            parse("keys.schema.yml", "a:\n  example: {1: p, '1': q, -1: r}\n").expect("loads");
+        assert_eq!(
+            rules["a"].example,
+            Some(serde_json::json!({"1": "q", "-1": "r"}))
+        );
+    }
+
+    /// A null reads as none where an option belongs, as an empty list or
+    /// mapping where one of those does, and an empty file as no rules.
+    #[test]
+    fn a_null_reads_as_nothing() {
+        let rules = parse(
+            "nulls.schema.yml",
+            "a:\nb:\n  required_with: ~\n  properties: null\n  items:\n  description:\n",
+        )
+        .expect("loads");
+        assert!(rules["a"].kind.is_none() && !rules["a"].required);
+        assert_eq!(rules["b"].required_with, Vec::<String>::new());
+        assert!(rules["b"].properties.is_none() && rules["b"].items.is_none());
+        assert!(rules["b"].description.is_none());
+        for empty in ["", "# only a comment\n", "~\n", "---\n"] {
+            assert!(parse("empty.schema.yml", empty).expect("loads").is_empty());
+        }
+        let message = error("~: {type: string}\n");
+        assert_eq!(
+            message,
+            "schema strict.schema.yml: null where a string belongs at line 1, column 1"
+        );
+        let message = error("a:\n  required_with: [x, ~]\n");
+        assert!(message.contains("null where a string belongs"), "{message}");
+    }
+
+    /// A value of the wrong shape names what was found.
+    #[test]
+    fn a_value_of_the_wrong_shape_is_named() {
+        for (text, expected) in [
+            (
+                "- a\n",
+                "expected a mapping, found a sequence at line 1, column 1",
+            ),
+            (
+                "a: x\n",
+                "expected a mapping, found a scalar at line 1, column 4",
+            ),
+            (
+                "a:\n  required_with: x\n",
+                "expected a sequence, found a scalar at line 2, column 18",
+            ),
+            (
+                "a:\n  required: [true]\n",
+                "expected a boolean, found a sequence at line 2, column 13",
+            ),
+            (
+                "a:\n  min_length: {}\n",
+                "expected a whole number, found a mapping at line 2, column 15",
+            ),
+            (
+                "a:\n  min_length: 1.5\n",
+                "invalid whole number at line 2, column 15",
+            ),
+            (
+                "a:\n  description: [x]\n",
+                "expected a string, found a sequence at line 2, column 16",
+            ),
+            (
+                "a:\n  example: .inf\n",
+                "`.inf` isn't a finite number at line 2, column 12",
+            ),
+            (
+                "a:\n  type: string\n...\n]\n",
+                "syntax error: misplaced bracket at line 4, column 1",
+            ),
+        ] {
+            assert_eq!(
+                error(text),
+                format!("schema strict.schema.yml: {expected}"),
+                "{text:?}"
+            );
+        }
+    }
+
+    /// Booleans and whole numbers read from any scalar style, as
+    /// serde-saphyr read them.
+    #[test]
+    fn booleans_and_lengths_read_as_before() {
+        let rules = parse(
+            "forms.schema.yml",
+            "a:\n  required: yes\n  min_length: 0x10\n  max_length: 1_000\nb:\n  required: \"ON\"\n  min_length: '7'\n",
+        )
+        .expect("loads");
+        assert!(rules["a"].required && rules["b"].required);
+        assert_eq!((rules["a"].min_length, rules["a"].max_length), (16, 1000));
+        assert_eq!(rules["b"].min_length, 7);
+    }
+
+    /// A quoted scalar's continuation at its key's indentation, which
+    /// libyaml and yaml.v3 read and saphyr-parser (and serde-saphyr's
+    /// parser) refuse,
+    /// is read through cli-core's pre-pass; an error after it keeps the
+    /// file's own line and column.
+    #[test]
+    fn a_continuation_saphyr_refuses_is_read_through_the_pre_pass() {
+        let rules = parse(
+            "wrapped.schema.yml",
+            "a:\n  description: \"first\n  second\"\n  type: string\n",
+        )
+        .expect("loads");
+        assert_eq!(rules["a"].description.as_deref(), Some("first second"));
+        assert_eq!(rules["a"].kind, Some(Kind::String));
+        let message = error("a:\n  description: \"first\n  second\"\n  typ: string\n");
+        assert!(
+            message.contains("unknown field `typ`") && message.ends_with("at line 4, column 3"),
+            "{message}"
+        );
+        // A syntax error the pre-pass can't mend is saphyr's own.
+        let message = error("a: {type: string\n");
+        assert!(
+            message.starts_with("schema strict.schema.yml: syntax error: "),
+            "{message}"
+        );
     }
 
     /// A pattern repeated in a schema (motd's colour) is one compiled
