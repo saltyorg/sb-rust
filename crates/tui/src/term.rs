@@ -1,26 +1,39 @@
 //! Terminal setup and restore, and the event loop (tui spec, "Terminal,
 //! signals and the run log").
 //!
-//! - **Setup** is ratatui's documented path, `ratatui::try_init` and
-//!   `ratatui::try_restore`
-//!   (<https://docs.rs/ratatui/0.30.2/ratatui/init/index.html>), with mouse
+//! - **Setup** is ratatui's `ratatui::try_init`'s steps
+//!   (<https://docs.rs/ratatui/0.30.2/ratatui/init/index.html>): raw mode,
+//!   the alternate screen, then `Terminal::new` over a `CrosstermBackend`,
+//!   as `CrosstermBackend`'s own example builds one over any writer
+//!   (<https://docs.rs/ratatui-crossterm/0.1.2/ratatui_crossterm/struct.CrosstermBackend.html>),
+//!   here a [`FRAME_BUFFER`]-sized `BufWriter`; ratatui's
+//!   `ratatui::try_restore` on the way out. With mouse
 //!   capture through crossterm's `EnableMouseCapture`
 //!   (<https://docs.rs/crossterm/0.29.0/crossterm/event/struct.EnableMouseCapture.html>)
 //!   and bracketed paste through its `EnableBracketedPaste`
 //!   (<https://docs.rs/crossterm/0.29.0/crossterm/event/struct.EnableBracketedPaste.html>),
 //!   so a paste comes as one `Event::Paste` and its newlines aren't
 //!   Enter; every way out turns both off again.
+//! - **Why not `ratatui::try_init` itself:** it builds its backend on
+//!   std's `Stdout`, which is line-buffered with a 1 KiB buffer
+//!   (<https://doc.rust-lang.org/std/io/struct.Stdout.html>), and a frame
+//!   holds no newline: a frame went out 1 KiB at a time, 4 to 26 writes,
+//!   each taking stdout's lock (perf round 3). Over the buffer a frame is
+//!   one write, crossterm's lazy execution
+//!   (<https://docs.rs/crossterm/0.29.0/crossterm/index.html#lazy-execution>).
+//!   Its panic hook (raw mode off, the alternate screen left) is private:
+//!   [`mouse_off_on_panic`]'s hook does that through `ratatui::restore`.
 //! - **On `/dev/tty`** (the inline fallback, tui spec "The inline
 //!   fallback"; [`Tui::on_tty`]) the same steps run on a `CrosstermBackend`
-//!   over the tty file. Why not `ratatui::try_init`: it writes to stdout,
-//!   which is then the pipe the chosen log goes to. crossterm reads its
+//!   over the tty file, buffered the same. Why not stdout there: it is the
+//!   pipe the chosen log goes to. crossterm reads its
 //!   input and the size from the terminal either way (stdin when it is
 //!   one, else `/dev/tty`: its `tty_fd` and `window_size`).
-//! - **A panic** runs ratatui's hook (raw mode off, the alternate screen
-//!   left), chained before cli-core's run-log hook and std's message
-//!   (`RunLog::record_panics` is installed first, as ratatui's docs ask),
-//!   plus [`mouse_off_on_panic`]'s hook for the mouse, bracketed paste and
-//!   the cursor, which ratatui's restore leaves as they are.
+//! - **A panic** runs [`mouse_off_on_panic`]'s hook: the mouse, bracketed
+//!   paste and the cursor, then ratatui's restore (raw mode off, the
+//!   alternate screen left), chained before cli-core's run-log hook and
+//!   std's message (`RunLog::record_panics` is installed first, as
+//!   ratatui's docs ask of its own hook).
 //! - **A second signal** (cli-core's forced exit) runs [`Tui::enter`]'s
 //!   restore hook on cli-core's restore thread: raw mode off and the
 //!   restoring sequence written through its own file descriptor
@@ -34,7 +47,7 @@
 //!   the loop draws on a render event only when something changed.
 
 use std::fs::File;
-use std::io::{self, BufWriter, Write as _};
+use std::io::{self, BufWriter, Stdout, Write as _};
 use std::os::fd::AsFd as _;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Once, PoisonError};
@@ -48,11 +61,10 @@ use crossterm::event::{
 use crossterm::terminal::{
     Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
-use crossterm::{Command as _, execute};
+use crossterm::{Command as _, execute, queue};
 use futures_util::{FutureExt as _, Stream, StreamExt as _};
 use ratatui::backend::{Backend, CrosstermBackend};
-use ratatui::layout::Position;
-use ratatui::{DefaultTerminal, Frame, Terminal};
+use ratatui::{Frame, Terminal};
 use sb_cli_core::cancel::{RestoreHook, Shutdown};
 use tokio::sync::{Notify, mpsc};
 use tokio::task::JoinHandle;
@@ -72,6 +84,11 @@ const TICK_RATE: f64 = 4.0;
 /// measured it (FINDINGS.md): mouse codes sent 10, 50 and 100 ms after
 /// quitting left 600 bytes in the shell without the drain, none with it.
 const DRAIN: Duration = Duration::from_millis(150);
+
+/// The screen's write buffer, in bytes: a frame fits it whole, so it is
+/// one write (a 240x70 screen's first page is about 26 KB; 8 KiB, std's
+/// `BufWriter` default, still split a wheel frame there in two or three).
+const FRAME_BUFFER: usize = 64 * 1024;
 
 /// Whether a screen is up and not yet restored: set by [`Tui::enter`],
 /// taken by whichever restores it first (the panic hook, [`Tui::leave`]
@@ -141,16 +158,20 @@ enum Event {
     Failed(io::Error),
 }
 
-/// Where a screen draws.
+/// `out` behind a [`FRAME_BUFFER`], for a screen's backend.
+fn framed<W: io::Write>(out: W) -> BufWriter<W> {
+    BufWriter::with_capacity(FRAME_BUFFER, out)
+}
+
+/// Where a screen draws, each behind a [`FRAME_BUFFER`]: the backend
+/// queues each cell's commands and ratatui flushes once a frame,
+/// crossterm's lazy execution
+/// (<https://docs.rs/crossterm/0.29.0/crossterm/index.html#lazy-execution>).
 #[derive(Debug)]
 enum Screen {
-    /// stdout, through ratatui's init.
-    Stdout(DefaultTerminal),
-    /// `/dev/tty` (stdout isn't a terminal), buffered: the backend queues
-    /// each cell's commands and ratatui flushes once a frame, crossterm's
-    /// lazy execution
-    /// (<https://docs.rs/crossterm/0.29.0/crossterm/index.html#lazy-execution>),
-    /// as std's `Stdout` buffers the stdout screen.
+    /// stdout.
+    Stdout(Terminal<CrosstermBackend<BufWriter<Stdout>>>),
+    /// `/dev/tty` (stdout isn't a terminal).
     Tty(Terminal<CrosstermBackend<BufWriter<File>>>),
 }
 
@@ -187,8 +208,11 @@ impl Tui {
         // Its own handle for the restore thread, which mustn't take std's
         // stdout lock (`Shutdown::on_forced_exit`).
         let out = File::from(io::stdout().as_fd().try_clone_to_owned()?);
-        let terminal = ratatui::try_init().inspect_err(|_| ratatui::restore())?;
         mouse_off_on_panic();
+        let terminal = enable_raw_mode()
+            .and_then(|()| execute!(io::stdout(), EnterAlternateScreen))
+            .and_then(|()| Terminal::new(CrosstermBackend::new(framed(io::stdout()))))
+            .inspect_err(|_| ratatui::restore())?;
         SCREEN.store(true, Ordering::SeqCst);
         let restore = shutdown.on_forced_exit(forced_exit_restore(out));
         if let Err(err) = execute!(io::stdout(), EnableMouseCapture, EnableBracketedPaste) {
@@ -225,7 +249,7 @@ impl Tui {
             EnableMouseCapture,
             EnableBracketedPaste
         )
-        .and_then(|()| Terminal::new(CrosstermBackend::new(BufWriter::new(tty))));
+        .and_then(|()| Terminal::new(CrosstermBackend::new(framed(tty))));
         let terminal = entered.inspect_err(|_| {
             let _ = hook_out.write_all(restore_sequence().as_bytes());
             let _ = disable_raw_mode();
@@ -274,7 +298,11 @@ impl Tui {
     /// Mouse capture and bracketed paste off, on the screen's terminal.
     fn mouse_off(&mut self) -> io::Result<()> {
         match &mut self.screen {
-            Screen::Stdout(_) => execute!(io::stdout(), DisableMouseCapture, DisableBracketedPaste),
+            Screen::Stdout(terminal) => execute!(
+                terminal.backend_mut(),
+                DisableMouseCapture,
+                DisableBracketedPaste
+            ),
             Screen::Tty(terminal) => execute!(
                 terminal.backend_mut(),
                 DisableMouseCapture,
@@ -381,9 +409,11 @@ fn forced_exit_restore(out: File) -> impl Fn() + Send + 'static {
 }
 
 /// Every row of the backend's screen erased in place, one at a time
-/// (ratatui's `Backend::set_cursor_position` and
-/// `Backend::clear_region(ClearType::CurrentLine)`, crossterm's `MoveTo`
-/// and `Clear(CurrentLine)`), then the cursor home.
+/// (crossterm's `MoveTo` and `Clear(CurrentLine)`, what ratatui's
+/// `Backend::set_cursor_position` and
+/// `Backend::clear_region(ClearType::CurrentLine)` write), then the cursor
+/// home: queued and flushed once, crossterm's lazy execution, where each
+/// backend call flushes on its own (144 writes at 240x70).
 ///
 /// Why not ratatui's `Terminal::clear`
 /// (<https://docs.rs/ratatui/0.30.2/ratatui/struct.Terminal.html#method.clear>)
@@ -395,14 +425,18 @@ fn forced_exit_restore(out: File) -> impl Fn() + Send + 'static {
 /// first (ratatui-core 0.1.2 `terminal/buffers.rs`) and fails without
 /// clearing when no answer comes. The size is the backend's (an ioctl, no
 /// query).
-fn erase_rows<B: Backend>(backend: &mut B) -> Result<(), B::Error> {
-    let size = backend.size()?;
-    for row in 0..size.height {
-        backend.set_cursor_position(Position::new(0, row))?;
-        backend.clear_region(ratatui::backend::ClearType::CurrentLine)?;
+fn erase_rows<W: io::Write>(backend: &mut CrosstermBackend<W>) -> io::Result<()> {
+    let rows = backend.size()?.height;
+    erase(backend, rows)
+}
+
+/// [`erase_rows`] of `rows` rows, on `out`.
+fn erase(out: &mut impl io::Write, rows: u16) -> io::Result<()> {
+    for row in 0..rows {
+        queue!(out, MoveTo(0, row), Clear(ClearType::CurrentLine))?;
     }
-    backend.set_cursor_position(Position::ORIGIN)?;
-    backend.flush()
+    queue!(out, MoveTo(0, 0))?;
+    out.flush()
 }
 
 /// The rows the prepared restore sequence erases: the hook can't ask the
@@ -434,8 +468,9 @@ fn restore_sequence() -> String {
 
 /// Turn mouse capture and bracketed paste off and show the cursor when a
 /// panic comes while a
-/// screen is up, then run the hook before it (ratatui's restore, then
-/// cli-core's and std's). ratatui's restore does neither. The hook takes
+/// screen is up, then raw mode off and the alternate screen left
+/// (ratatui's restore, which `ratatui::try_init`'s own hook would run),
+/// then the hook before it (cli-core's and std's). The hook takes
 /// [`SCREEN`], so the [`Tui`] dropped by the unwinding doesn't restore
 /// the terminal a second time, after std's message. A panic on another
 /// thread or task restores the terminal too (ratatui's hook does so for
@@ -443,12 +478,10 @@ fn restore_sequence() -> String {
 /// the end of the screen.
 /// std's `take_hook`/`set_hook` chaining
 /// (<https://doc.rust-lang.org/std/panic/fn.take_hook.html>). Installed
-/// once: ratatui adds a hook of its own on every `try_init`, so on a later
-/// screen ratatui's restore runs before this one, which still turns the
-/// mouse off. A screen on the tty ([`Tui::on_tty`]) has no ratatui hook:
-/// this one restores it whole there ([`restore_sequence`], then raw mode
-/// off). `try_lock`: a hook mustn't wait on a lock the panicking thread
-/// may hold.
+/// once, for every screen of the process. A screen on the tty
+/// ([`Tui::on_tty`]) is restored whole there ([`restore_sequence`], then
+/// raw mode off). `try_lock`: a hook mustn't wait on a lock the panicking
+/// thread may hold.
 fn mouse_off_on_panic() {
     MOUSE_HOOK.call_once(|| {
         let previous = std::panic::take_hook();
@@ -465,6 +498,7 @@ fn mouse_off_on_panic() {
                         DisableBracketedPaste,
                         Show
                     );
+                    ratatui::restore();
                 }
             }
             previous(info);
@@ -1099,6 +1133,84 @@ mod tests {
         drop(rx);
         // Returns at its first send instead of running forever.
         read_events(stream::pending(), tx).await;
+    }
+
+    /// What reaches the terminal, each write as it came.
+    #[derive(Clone, Default)]
+    struct Writes(Arc<Mutex<Vec<Vec<u8>>>>);
+
+    impl io::Write for Writes {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(buf.to_vec());
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl Writes {
+        fn taken(&self) -> Vec<Vec<u8>> {
+            std::mem::take(&mut self.0.lock().unwrap_or_else(PoisonError::into_inner))
+        }
+    }
+
+    /// A full 240x70 frame of styled text is one write, and so is the
+    /// next one that changes every cell.
+    #[test]
+    fn a_frame_is_one_write() {
+        use ratatui::style::{Color, Style};
+        use ratatui::text::{Line as TextLine, Span};
+        use ratatui::{TerminalOptions, Viewport};
+
+        let writes = Writes::default();
+        let area = ratatui::layout::Rect::new(0, 0, 240, 70);
+        let mut terminal = Terminal::with_options(
+            CrosstermBackend::new(framed(writes.clone())),
+            TerminalOptions {
+                viewport: Viewport::Fixed(area),
+            },
+        )
+        .expect("terminal");
+        for round in 0..2_u8 {
+            terminal
+                .draw(|frame| {
+                    let lines: Vec<TextLine<'_>> = (0..70_u8)
+                        .map(|row| {
+                            let colour = Color::Indexed(row.wrapping_add(round));
+                            let text = format!("{round}{row:>3} ").repeat(48);
+                            TextLine::from(Span::styled(text, Style::new().fg(colour)))
+                        })
+                        .collect();
+                    frame.render_widget(Paragraph::new(lines), frame.area());
+                })
+                .expect("draws");
+            let taken = writes.taken();
+            assert_eq!(taken.len(), 1, "round {round}");
+            assert!(taken[0].len() > 16_800, "every cell: {}", taken[0].len());
+        }
+    }
+
+    /// The rows erased at the exit are one write, crossterm's `MoveTo`
+    /// and `Clear(CurrentLine)` for each row, then the cursor home.
+    #[test]
+    fn the_exit_erases_every_row_in_one_write() {
+        let writes = Writes::default();
+        let mut backend = CrosstermBackend::new(framed(writes.clone()));
+        erase(&mut backend, 70).expect("erases");
+        let mut expected = String::new();
+        for row in 0..70 {
+            MoveTo(0, row).write_ansi(&mut expected).expect("write");
+            Clear(ClearType::CurrentLine)
+                .write_ansi(&mut expected)
+                .expect("write");
+        }
+        MoveTo(0, 0).write_ansi(&mut expected).expect("write");
+        assert_eq!(writes.taken(), [expected.into_bytes()]);
     }
 
     #[test]
