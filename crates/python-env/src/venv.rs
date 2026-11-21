@@ -347,10 +347,15 @@ pub enum InspectError {
 /// the lock match the toolchain and the environment check passes. A
 /// manifest that is missing or isn't JSON of the right shape makes it
 /// unhealthy too (sb-go fails; spec, difference 17). Why a check failed
-/// goes to the run log.
+/// goes to the run log. Under a `force` the environment check doesn't
+/// run and the venv counts as unhealthy: the rebuild replaces it whatever
+/// the check would say, and its seven probes are about a second of CPU
+/// (performance research, round 5; sb-go runs them first,
+/// `python/venv.go:126`).
 pub(crate) async fn inspect(
     env: &Env<'_>,
     toolchain: &Toolchain,
+    force: Force,
     token: &CancellationToken,
 ) -> Result<Active, InspectError> {
     let active = &env.layout.active_venv;
@@ -396,7 +401,13 @@ pub(crate) async fn inspect(
     let matches = manifest.schema_version == manifest::SCHEMA
         && manifest.python_version == toolchain.python
         && manifest.lock_sha256 == toolchain.lock_sha256;
-    let healthy = if matches {
+    let healthy = if matches && force != Force::None {
+        tracing::info!(
+            ?force,
+            "the active venv isn't checked: the rebuild replaces it"
+        );
+        false
+    } else if matches {
         match check_environment(env, &target, &toolchain.python, token).await {
             Ok(()) => true,
             // A probe Ctrl-C ended says nothing of the venv: the
@@ -521,7 +532,7 @@ pub async fn reconcile_venv(
     );
     let active = step
         .step(inspecting, async |step| {
-            inspect(env, &toolchain, &step.token())
+            inspect(env, &toolchain, force, &step.token())
                 .await
                 .map_err(|err| anyhow::Error::from(VenvError::Inspect(err)))
         })

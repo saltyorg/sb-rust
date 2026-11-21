@@ -153,6 +153,14 @@ build it on a temporary root (sb-go's `releaseLayout` injection).
      about a second. After a failure, or after Ctrl-C, the probes not
      yet started don't run. The failure reported is the first in this
      order, so its text is sb-go's.
+   - Under a force (`reinstall-venv`, `reinstall-python`) the
+     environment check doesn't run and the venv counts as unhealthy:
+     the rebuild replaces it whatever the check says, and nothing reads
+     its answer. *Amended 2026-11-21 (performance research, round 5):
+     its probes were 0.35 s of a 7.5 s `reinstall-venv` and 16% of the
+     command's CPU; sb-go runs them before its force test
+     (`python/venv.go:126`, `:135`). The run log no longer says why such
+     a venv would be unhealthy.*
 4a. **With `sb update --verify-venv` only** (decision 25; hidden, as
    `Env::verify`), when the active venv has a manifest: step
    **"Verifying Ansible virtual environment files"** (done "Ansible

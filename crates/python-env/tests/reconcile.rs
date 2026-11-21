@@ -405,6 +405,21 @@ async fn a_forced_rebuild_says_so_and_builds() {
         assert_ne!(active_generation(&tree), active.dir, "{label}");
         assert!(!active.dir.exists(), "{label}");
         let calls = uv_calls(&tree);
+        // The venv the force replaces isn't health-checked: the one
+        // `pip check` is the new build's.
+        let checks: Vec<&String> = calls
+            .iter()
+            .filter(|call| call.starts_with("pip check"))
+            .collect();
+        assert_eq!(checks.len(), 1, "{label}: {calls:?}");
+        let replaced = active.dir.display().to_string();
+        assert!(!checks[0].contains(&replaced), "{label}: {checks:?}");
+        assert!(
+            ran.screen
+                .contains("Active Ansible virtual environment inspected"),
+            "{label}:\n{}",
+            ran.screen
+        );
         let install: Vec<&String> = calls
             .iter()
             .filter(|call| call.starts_with("python install"))
