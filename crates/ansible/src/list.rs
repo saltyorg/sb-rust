@@ -412,9 +412,13 @@ fn display_width(text: &str) -> usize {
 fn columns(cells: Vec<String>, widest: usize, width: usize) -> String {
     let padded: Vec<String> = cells
         .into_iter()
-        .map(|cell| {
+        .map(|mut cell| {
+            // The spaces pushed onto the cell itself: `format!`'s padding
+            // wrote them one at a time into a new string (performance
+            // round 5: 8% of `sb list`).
             let pad = widest.saturating_sub(display_width(&cell));
-            format!("{cell}{:pad$}", "")
+            cell.extend(std::iter::repeat_n(' ', pad));
+            cell
         })
         .collect();
     let options = GridOptions {
