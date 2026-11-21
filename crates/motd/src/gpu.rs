@@ -149,7 +149,16 @@ fn gpu(sources: &Sources) -> String {
         }
     };
     let wanted: Vec<u16> = found.iter().map(|device| device.vendor).collect();
-    let names = text.as_deref().map_or_default(|text| parse(text, &wanted));
+    // Only the host's devices are named: Intel's block alone has over
+    // 5,000 device lines (performance research, round 5).
+    let on_host = |vendor: u16, id: u16| {
+        found
+            .iter()
+            .any(|device| (device.vendor, device.device) == (vendor, id))
+    };
+    let names = text
+        .as_deref()
+        .map_or_default(|text| names(text, &wanted, on_host));
     if names.malformed > 0 {
         tracing::warn!(
             file = %sources.ids.display(),
@@ -249,13 +258,15 @@ fn read_ids(path: &Path, cap: u64) -> std::io::Result<Vec<u8>> {
 }
 
 /// The vendor lines (`vvvv  name`) of `wanted` and their device lines (a
-/// tab, then `dddd  name`), as pciutils' format has them. Comments,
+/// tab, then `dddd  name`) that `keep` keeps, as pciutils' format has
+/// them. Comments,
 /// blank lines and subsystem lines (two tabs) are skipped, and so is
 /// everything from the class section (the first `C ` line) on. A
 /// vendor's block ends at the next line at the left margin. A malformed
 /// line in a wanted vendor's block, or a malformed line that starts with
 /// a wanted vendor's ID, is skipped and counted; the other lines aren't
-/// read, so not counted. A repeated ID keeps its first name. The
+/// read, so not counted; a device line `keep` drops is still read, so
+/// counted alike. A repeated ID keeps its first name. The
 /// text is read as UTF-8 with invalid bytes replaced (Unicode whitespace
 /// trimmed, as `str::trim`), the same as reading the whole file so:
 /// every byte the format's structure is made of is ASCII, which a
@@ -272,7 +283,7 @@ fn read_ids(path: &Path, cap: u64) -> std::io::Result<Vec<u8>> {
 /// (<https://docs.rs/crate/aho-corasick/1.1.5/source/src/util/prefilter.rs>),
 /// leaving a pass that stops at every line, and it isn't sb-motd's
 /// dependency.
-fn parse<'a>(text: &'a [u8], wanted: &[u16]) -> Names<'a> {
+fn names<'a>(text: &'a [u8], wanted: &[u16], keep: impl Fn(u16, u16) -> bool + Copy) -> Names<'a> {
     let mut names = Names::default();
     let starts = vendor_lines(text, wanted);
     let Some(&last) = starts.last() else {
@@ -280,9 +291,15 @@ fn parse<'a>(text: &'a [u8], wanted: &[u16]) -> Names<'a> {
     };
     let classes = class_section(&text[..last]);
     for start in starts.into_iter().take_while(|&start| start < classes) {
-        block(text, start, &mut names);
+        block(text, start, &mut names, keep);
     }
     names
+}
+
+/// [`names`] keeping every device of `wanted`.
+#[cfg(test)]
+fn parse<'a>(text: &'a [u8], wanted: &[u16]) -> Names<'a> {
+    names(text, wanted, |_, _| true)
 }
 
 /// Where each line of `text` that starts with a wanted vendor's ID (in
@@ -334,7 +351,7 @@ fn class_section(head: &[u8]) -> usize {
 /// margin that isn't a comment or blank: another vendor's, a malformed
 /// one or the class section's `C ` line. A CR before a newline is
 /// whitespace to `id_line`, so CRLF lines read as LF ones.
-fn block<'a>(text: &'a [u8], start: usize, names: &mut Names<'a>) {
+fn block<'a>(text: &'a [u8], start: usize, names: &mut Names<'a>, keep: impl Fn(u16, u16) -> bool) {
     let text = &text[start..];
     let mut vendor = None;
     let mut from = 0;
@@ -364,10 +381,12 @@ fn block<'a>(text: &'a [u8], start: usize, names: &mut Names<'a>) {
             }
             (Some(_), 0, _) => return,
             (Some(vendor), _, Some((device, tail))) => {
-                names
-                    .devices
-                    .entry((vendor, device))
-                    .or_insert_with(|| trimmed(tail));
+                if keep(vendor, device) {
+                    names
+                        .devices
+                        .entry((vendor, device))
+                        .or_insert_with(|| trimmed(tail));
+                }
             }
             (Some(_), _, None) => names.malformed += 1,
         }
@@ -680,6 +699,28 @@ mod tests {
         assert_eq!(few.malformed, 1);
         assert_eq!(parse(&text, &[0x1002]).malformed, 0);
         assert_eq!(parse(&text, &[0x0bad]), Names::default());
+    }
+
+    /// Keeping only some devices keeps their names and every wanted
+    /// vendor's, and counts the same malformed lines.
+    #[test]
+    fn only_the_kept_devices_are_named() {
+        let text = read_ids(&fixture(), IDS_CAP).unwrap();
+        let wanted = [0x10de, 0x8086, 0x1234, 0xeeee, 0xabcd, 0x1002];
+        let every = parse(&text, &wanted);
+        let host = [(0x10de, 0x1eb8), (0x8086, 0x5912), (0x8086, 0xffff)];
+        let kept = names(&text, &wanted, |vendor, id| host.contains(&(vendor, id)));
+        assert_eq!(kept.vendors, every.vendors);
+        assert_eq!(kept.malformed, every.malformed);
+        let expected: HashMap<_, _> = every
+            .devices
+            .iter()
+            .filter(|(pair, _)| host.contains(pair))
+            .map(|(pair, name)| (*pair, name.clone()))
+            .collect();
+        assert_eq!(kept.devices, expected);
+        assert_eq!(kept.devices.len(), 2);
+        assert!(every.devices.len() > 2);
     }
 
     #[test]
