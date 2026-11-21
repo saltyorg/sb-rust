@@ -13,6 +13,7 @@ use sb_cli_core::exit::Exit;
 use sb_term_ui::{Labels, Runner, Step};
 
 use crate::cloudflare::{self, Check};
+use crate::defaults::Root;
 use crate::dockerhub;
 use crate::http::Http;
 use crate::issue::{Issue, escape_controls};
@@ -274,12 +275,15 @@ pub async fn run_recording(
     let result = runner
         .step(labels, async |step| {
             let mut failed = false;
+            // One root for every file's default copy (`defaults::Root`).
+            let root = Root::new(&settings.root);
             for file in FILES {
                 let result = step
                     .step(file_labels(file), async |step| {
                         validate_file_into(
                             step,
                             settings,
+                            &root,
                             file,
                             Checks::Run,
                             backups,
@@ -652,13 +656,16 @@ pub async fn validate_file(
     file: File,
     checks: Checks,
 ) -> anyhow::Result<()> {
-    validate_checked(step, settings, file, checks, None, None).await
+    let root = Root::new(&settings.root);
+    validate_checked(step, settings, &root, file, checks, None, None).await
 }
 
-/// [`validate_file`], its outcome recorded in `results` when given.
+/// [`validate_file`], its outcome recorded in `results` when given, a
+/// missing file's default copied in through `root`.
 async fn validate_checked(
     step: &mut Step,
     settings: &Settings,
+    root: &Root<'_>,
     file: File,
     checks: Checks,
     results: Option<&RefCell<Results>>,
@@ -669,7 +676,7 @@ async fn validate_checked(
             results.borrow_mut().files.push(result);
         }
     };
-    let mut notes = Notes::of_copy(step, &settings.root, file);
+    let mut notes = Notes::of_copy(step, root, file);
     let ended = |outcome, detail, notes: Notes| FileResult {
         file: file.path,
         outcome,
@@ -771,9 +778,9 @@ struct Notes {
 
 impl Notes {
     /// The default copy's note ([`copy_missing`]), if any.
-    fn of_copy(step: &mut Step, root: &Path, file: File) -> Self {
+    fn of_copy(step: &mut Step, root: &Root<'_>, file: File) -> Self {
         let mut notes = Self::default();
-        match copy_missing(step, root, file) {
+        match copy_missing_in(step, root, file) {
             Some(CopyNote::Info(notice)) => notes.notices.push(notice),
             Some(CopyNote::Warning(warning)) => notes.warnings.push(warning),
             None => {}
@@ -798,8 +805,13 @@ pub enum CopyNote {
 /// file that is there, has no default entry or no default file (its
 /// missing-file issue says enough).
 pub fn copy_missing(step: &mut Step, root: &Path, file: File) -> Option<CopyNote> {
-    use crate::defaults::{CopyOutcome, copy_default};
-    match copy_default(root, file) {
+    copy_missing_in(step, &Root::new(root), file)
+}
+
+/// [`copy_missing`] through a root already opened for the run's files.
+fn copy_missing_in(step: &mut Step, root: &Root<'_>, file: File) -> Option<CopyNote> {
+    use crate::defaults::{CopyOutcome, copy_default_in};
+    match copy_default_in(root, file) {
         CopyOutcome::Copied => {
             let notice = format!("{} was missing; copied Saltbox's default", file.path);
             step.info(notice.as_str());
@@ -835,7 +847,8 @@ pub async fn validate_file_migrating(
     checks: Checks,
     backups: &Path,
 ) -> anyhow::Result<()> {
-    validate_file_into(step, settings, file, checks, backups, None).await
+    let root = Root::new(&settings.root);
+    validate_file_into(step, settings, &root, file, checks, backups, None).await
 }
 
 /// [`validate_file_migrating`], its outcome recorded in `results` when
@@ -843,6 +856,7 @@ pub async fn validate_file_migrating(
 async fn validate_file_into(
     step: &mut Step,
     settings: &Settings,
+    root: &Root<'_>,
     file: File,
     checks: Checks,
     backups: &Path,
@@ -862,7 +876,7 @@ async fn validate_file_into(
             }
         }
     }
-    validate_checked(step, settings, file, checks, results, parsed).await
+    validate_checked(step, settings, root, file, checks, results, parsed).await
 }
 
 /// A check under `step`, ended early when the step is cancelled (Ctrl-C,

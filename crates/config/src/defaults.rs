@@ -73,6 +73,40 @@ pub enum CopyOutcome {
     Failed(String),
 }
 
+/// The Saltbox root as the default copies open it ([`open_folder`]: no
+/// link anywhere on its path), opened at most once, by the first copy
+/// that needs it: one root for a run's files, so each file's look costs
+/// its `statat` alone, where opening the root for each file cost an
+/// `openat2`, a `statat` and a `close` a file on every run (performance
+/// round 5). The outcome of that open, a failure included, is every
+/// file's.
+#[derive(Debug)]
+pub struct Root<'a> {
+    path: &'a Path,
+    opened: std::sync::OnceLock<rustix::io::Result<OwnedFd>>,
+}
+
+impl<'a> Root<'a> {
+    /// The root at `path`, not opened yet.
+    #[must_use]
+    pub fn new(path: &'a Path) -> Self {
+        Self {
+            path,
+            opened: std::sync::OnceLock::new(),
+        }
+    }
+
+    fn opened(&self) -> &rustix::io::Result<OwnedFd> {
+        self.opened.get_or_init(|| open_folder(self.path))
+    }
+}
+
+/// [`copy_default_in`] with the root at `root` opened for this file alone.
+#[must_use]
+pub fn copy_default(root: &Path, file: File) -> CopyOutcome {
+    copy_default_in(&Root::new(root), file)
+}
+
 /// `file`'s default copied to its path under `root` when nothing is
 /// there: the default's bytes (a regular file, read up to cli-core's
 /// 1 MiB through a handle that follows no link), written to a new
@@ -83,33 +117,33 @@ pub enum CopyOutcome {
 /// A root reached through a link isn't written in (motd.yml's
 /// migration's rule): the copy fails, saying why. Logged.
 #[must_use]
-pub fn copy_default(root: &Path, file: File) -> CopyOutcome {
+pub fn copy_default_in(root: &Root<'_>, file: File) -> CopyOutcome {
     let Some(default) = file.default else {
         return CopyOutcome::NotNeeded;
     };
     // In a build for tests, never the host's checkout (as motd.yml's
     // migration: a mutant dropping `SB_SALTBOX_DIR` points there).
-    if cfg!(any(test, feature = "testing")) && root.starts_with("/srv") {
+    if cfg!(any(test, feature = "testing")) && root.path.starts_with("/srv") {
         return CopyOutcome::Failed("a test build doesn't write under /srv".to_string());
     }
-    let dir = match open_folder(root) {
+    let dir = match root.opened() {
         Ok(dir) => dir,
         Err(Errno::NOENT) => return CopyOutcome::NotNeeded,
         Err(errno) => {
             let why = format!(
                 "the Saltbox root can't be opened without following a link: {}",
-                std::io::Error::from(errno)
+                std::io::Error::from(*errno)
             );
             tracing::warn!(file = file.path, default, error = %why, "missing config file not copied from Saltbox's default");
             return CopyOutcome::Failed(why);
         }
     };
-    match rustix::fs::statat(&dir, file.path, AtFlags::SYMLINK_NOFOLLOW) {
+    match rustix::fs::statat(dir, file.path, AtFlags::SYMLINK_NOFOLLOW) {
         Err(Errno::NOENT) => {}
         _ => return CopyOutcome::NotNeeded,
     }
-    let copy = match read_default(&dir, default) {
-        Ok(Some(found)) => match write_new(&dir, file.path, &found.bytes, found.owner) {
+    let copy = match read_default(dir, default) {
+        Ok(Some(found)) => match write_new(dir, file.path, &found.bytes, found.owner) {
             Ok(true) => CopyOutcome::Copied,
             Ok(false) => CopyOutcome::NotNeeded,
             Err(err) => CopyOutcome::Failed(err.to_string()),
@@ -278,6 +312,36 @@ mod tests {
             .expect("motd.yml");
         assert_eq!(copy_default(root.path(), motd), CopyOutcome::NotNeeded);
         assert!(!root.path().join("motd.yml").exists());
+    }
+
+    /// One root serves a run's files: opened by the first file with a
+    /// default entry (not by one without), and that open kept for the
+    /// next, so a root moved away meanwhile is still the one written in.
+    #[test]
+    fn a_root_is_opened_once_for_every_file() {
+        let root = with_default("duckdns:\n  token:\n");
+        let shared = Root::new(root.path());
+        let motd = *FILES
+            .iter()
+            .find(|file| file.path == "motd.yml")
+            .expect("motd.yml");
+        assert_eq!(copy_default_in(&shared, motd), CopyOutcome::NotNeeded);
+        assert!(shared.opened.get().is_none(), "no default, no open");
+        std::fs::write(root.path().join("providers.yml"), "mine\n").expect("mine");
+        assert_eq!(
+            copy_default_in(&shared, providers()),
+            CopyOutcome::NotNeeded
+        );
+        assert!(shared.opened.get().is_some_and(Result::is_ok));
+        // The root moves away; the open root is still the one copied into.
+        let moved = tempfile::tempdir().expect("moved");
+        let elsewhere = moved.path().join("saltbox");
+        std::fs::rename(root.path(), &elsewhere).expect("move");
+        std::fs::remove_file(elsewhere.join("providers.yml")).expect("remove");
+        assert_eq!(copy_default_in(&shared, providers()), CopyOutcome::Copied);
+        assert!(elsewhere.join("providers.yml").exists());
+        assert!(!root.path().exists());
+        std::fs::rename(&elsewhere, root.path()).expect("move back");
     }
 
     /// A Saltbox root that isn't there needs no copy: the file's check
