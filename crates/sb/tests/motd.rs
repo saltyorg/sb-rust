@@ -358,12 +358,18 @@ fn motd_yml_colours_paint_the_keys() {
         "{stdout:?}"
     );
     assert!(!stdout.contains("Config:"), "{stdout:?}");
-    // The whole run opened motd.yml once (criterion 5).
+    // The whole run opened motd.yml once (criterion 5), read without its
+    // schema (decision 29).
     let mut log = String::new();
     for entry in std::fs::read_dir(logs.path()).expect("log dir") {
         log.push_str(&std::fs::read_to_string(entry.expect("entry").path()).expect("log"));
     }
-    assert_eq!(log.matches("config file checked").count(), 1, "{log}");
+    assert_eq!(
+        log.matches("config file read without its schema").count(),
+        1,
+        "{log}"
+    );
+    assert_eq!(log.matches("config file checked").count(), 0, "{log}");
     // Under ansi256 the file's colour is converted (criterion 8).
     let out = motd(
         &["--kernel"],
@@ -427,20 +433,19 @@ fn a_theme_file_leaves_motds_colours() {
     );
 }
 
-/// An invalid motd.yml (the older bare list among them, decision 4) or
-/// an unloadable schema shows the one `Config:` line first, and the
-/// system sections still show (criterion 5); without motd.yml there is
-/// none.
+/// A motd.yml that doesn't parse shows the one `Config:` line first,
+/// and the system sections still show (criterion 5); the schema isn't
+/// checked or even loaded at login (decision 17, amended 2026-11-21), so
+/// a file only validate-config faults, or an unloadable schema, shows
+/// none; without motd.yml there is none.
 #[test]
 fn an_invalid_motd_yml_shows_the_config_line() {
     if !root_gate::requested() {
         return;
     }
     let logs = temp();
-    let bare = saltbox(Some(
-        "plex:\n  - name: Plex\n    url: http://plex:32400\n    token: t\ncolors:\n  text:\n    label: pink\n",
-    ));
-    let out = motd(&["--kernel"], logs.path(), &[root_env(&bare)]);
+    let broken = saltbox(Some("plex: {}\nplex: {}\ncolors: {}\ncolors: {}\n"));
+    let out = motd(&["--kernel"], logs.path(), &[root_env(&broken)]);
     assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
     let stdout = text(&out.stdout);
     let lines: Vec<&str> = stdout.lines().collect();
@@ -450,16 +455,18 @@ fn an_invalid_motd_yml_shows_the_config_line() {
     );
     assert!(lines[1].starts_with("Kernel:  "), "{stdout:?}");
 
-    let unloadable = saltbox(Some("colors: {}\n"));
+    let bare = saltbox(Some(
+        "plex:\n  - name: Plex\n    url: http://plex:32400\n    token: t\ncolors:\n  text:\n    label: pink\n",
+    ));
     std::fs::write(
-        unloadable.path().join("schema/motd.schema.yml"),
+        bare.path().join("schema/motd.schema.yml"),
         "colors:\n  kind: object\n",
     )
     .expect("schema");
-    let out = motd(&["--kernel"], logs.path(), &[root_env(&unloadable)]);
+    let out = motd(&["--kernel"], logs.path(), &[root_env(&bare)]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
     assert!(
-        text(&out.stdout)
-            .starts_with("Config:  motd.yml's schema can't be loaded; run sb validate-config\n"),
+        text(&out.stdout).starts_with("Kernel:  "),
         "{:?}",
         text(&out.stdout)
     );
@@ -685,9 +692,7 @@ fn json_prints_the_sections_document() {
         return;
     }
     let logs = temp();
-    let bare = saltbox(Some(
-        "plex:\n  - name: Plex\n    url: http://plex:32400\n    token: t\ncolors:\n  text:\n    label: pink\n",
-    ));
+    let bare = saltbox(Some("plex: {}\nplex: {}\ncolors: {}\ncolors: {}\n"));
     let out = motd(
         // The banner's flags aren't read: an unknown type is no error.
         &[

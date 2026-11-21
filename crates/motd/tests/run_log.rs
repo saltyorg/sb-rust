@@ -118,11 +118,12 @@ fn a_timeout_a_panic_and_an_empty_value_are_logged_as_such() {
     assert!(line("uptime").contains("outcome=\"empty\""));
 }
 
-/// motd.yml is opened once per run, its issues logged with their
-/// positions in sb-config's wording, and no credential's value with them
-/// (criteria 5 and 12).
+/// motd.yml is opened once per run and read without its schema
+/// (decision 17, amended 2026-11-21), what keeps it from parsing logged
+/// with its position in sb-config's wording, and no credential's value
+/// with it (criteria 5 and 12).
 #[test]
-fn motd_yml_is_checked_once_and_its_issues_logged() {
+fn motd_yml_is_read_once_and_its_issues_logged() {
     let root = tempfile::tempdir().expect("root");
     std::fs::create_dir(root.path().join("schema")).expect("schema dir");
     std::fs::copy(
@@ -133,7 +134,7 @@ fn motd_yml_is_checked_once_and_its_issues_logged() {
     .expect("schema");
     std::fs::write(
         root.path().join("motd.yml"),
-        "colors:\n  text:\n    label: pink\nsonarr:\n  instances:\n    - name: Sonarr\n      url: not a url\n      apikey: canary-apikey-zz\n",
+        "colors:\n  text:\n    label: pink\nsonarr:\n  instances:\n    - name: Sonarr\n      timeout: !!int soon\n      apikey: !!int canary-apikey-zz\n",
     )
     .expect("motd.yml");
     let settings = sb_config::run::Settings {
@@ -151,17 +152,18 @@ fn motd_yml_is_checked_once_and_its_issues_logged() {
         Some("motd.yml has 2 issues; run sb validate-config")
     );
     assert_eq!(
-        text.matches("config file checked").count(),
+        text.matches("config file read without its schema").count(),
         1,
         "opened once: {text}"
     );
+    assert!(!text.contains("config file checked"), "{text}");
     assert!(text.contains("file=\"motd.yml\" issues=2"), "{text}");
     assert!(
-        text.contains("motd.yml issue issue=motd.yml:3:12: colors.text.label: "),
+        text.contains("motd.yml issue issue=motd.yml:7:16: sonarr.instances[0].timeout: "),
         "{text}"
     );
     assert!(
-        text.contains("motd.yml:7:12: sonarr.instances[0].url: "),
+        text.contains("motd.yml issue issue=motd.yml:8:15: sonarr.instances[0].apikey: "),
         "{text}"
     );
     assert!(!text.contains("canary-apikey-zz"), "{text}");

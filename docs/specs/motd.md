@@ -408,7 +408,14 @@ never reach stdout, stderr or the run log.
    sections, the colours, and Services' additions (decision 3). sb-go hid
    every config section silently. A fractional `timeout` is such an
    issue in both, as Saltbox's schema takes a whole number there
-   (Difference 19).
+   (Difference 19). *Amended 2026-11-21 (decision 29): at login the file is parsed but not
+   checked against its schema, as sb-go's motd doesn't validate it
+   there either. The line shows for a file that doesn't parse (a syntax
+   error, a duplicate key, a tag that doesn't fit its text) or can't be
+   read; what only the schema faults reads leniently: a value of another
+   type as absent, an unknown key or a section in the older bare-list
+   form as nothing, a fractional `timeout` as its fraction.
+   validate-config, `sb edit` and `sb update` still check the file.*
 3. **The older bare-list form** (`sonarr: [ {...} ]`) is migrated by
    validate-config and `sb update` to the current form (decision 4),
    with a backup of the original; motd itself reads it as an issue under
@@ -501,7 +508,8 @@ never reach stdout, stderr or the run log.
     sb-go's validator does, takes as a whole number, so `timeout: 1.5` is
     an issue under Difference 2 today (2026-11-15). The
     model reads fractions, for a schema that allows them; sb-go's `int`
-    field couldn't.
+    field couldn't. *Amended 2026-11-21 (decision 29): motd reads the fraction at login, where
+    the schema isn't checked; validate-config still reports it.*
 20. **A GPU on a non-zero PCI domain** shows its name. sb-go's colon split
     showed `02.0 VGA compatible controller: <name>` there.
 21. **GPU names come from the host's `/usr/share/misc/pci.ids`** through
@@ -619,6 +627,12 @@ never reach stdout, stderr or the run log.
     nothing, but for a flag written between sb-go's check and the
     script's; sb hides the line without starting it, one child fewer at
     each login. With the flag the line is as before.
+38. **motd.yml isn't checked against its schema at login** (the
+    maintainer, 2026-11-21; decision 29). sb-go's motd reads the file
+    into its structs without validating it either. The schema file
+    isn't even loaded, so one that won't load no longer shows its own
+    `Config:` line at login; validate-config, `sb edit` and `sb update`
+    still load it and check the file.
 
 ### Scope
 
@@ -825,7 +839,9 @@ Nothing touches a real host's state, and every fixture is synthetic.
   - Saltbox's 01-motd flags with stdout piped and `CLICOLOR_FORCE=1`, which
     should colour the output;
   - `--color=never` and `NO_COLOR`;
-  - no motd.yml, an invalid one, and an unloadable schema;
+  - no motd.yml, an invalid one, and an unloadable schema (*amended
+    2026-11-21, decision 29: a file that doesn't parse shows the line,
+    one only the schema faults and an unloadable schema don't*);
   - `--share`;
   - `--generate-config`;
   - the error exits.
@@ -900,7 +916,10 @@ Nothing touches a real host's state, and every fixture is synthetic.
    - An invalid file (a pattern miss, a bare list, an unknown key) prints
      the one `Config:` line with the right count. The system sections
      still show, and the HTTP sections don't.
-   - An unloadable schema prints the line in its own words.
+   - An unloadable schema prints the line in its own words. *Amended
+     2026-11-21 (decision 29): the schema isn't read at login; the line
+     is for a file that doesn't parse, and a file only the schema faults
+     is read.*
    - The file is opened once (a test counts it through the run log).
    - `--generate-config` is byte-identical to sb-go's golden. *Amended
      2026-11-19 (Difference 36): to the committed golden, sb-go's output
@@ -1133,7 +1152,10 @@ Nothing touches a real host's state, and every fixture is synthetic.
     `read_small` at 1 MiB, `sb_config::parse` with ADR-022's acceptance,
     the duplicate keys, the schema rules, no network), and the tree it
     returns is mapped to motd's typed model. The schema is loaded
-    strictly (config decision 5).
+    strictly (config decision 5). *Amended 2026-11-21 (decision 29):
+    through config's `read_file`, the same read and parse without the
+    schema; validate-config, `sb edit` and `sb update` keep
+    `check_file`.*
 18. **`--generate-config` reads Saltbox's schema** (config assumption 2:
     Saltbox owns the schemas, nothing embedded), keeping sb-go's order and
     quoting.
@@ -1188,6 +1210,17 @@ Nothing touches a real host's state, and every fixture is synthetic.
     and each section's keys keep the order above. Not chosen: the lines
     as strings (a script would parse sb-go's sentences), and a section
     left out when hidden (`empty` says it ran).
+29. **No schema check at login** (the maintainer, 2026-11-21;
+    performance round 5, motd finding 2, round 3's open item). motd
+    reads motd.yml through config's `read_file`: cli-core's read, the
+    pre-pass, the parse, the duplicate keys and the tags' fit, no
+    schema. The schema's load and rules were 6.6 M instructions of a
+    login (9%; 15% with no provider) and 1.3 ms before any section
+    started. A file that doesn't parse keeps its `Config:` line; what only
+    the schema faults is validate-config's, `sb edit`'s and `sb
+    update`'s to report, and motd's model reads it leniently (Difference
+    2, amended). sb-go's motd doesn't validate at login either
+    (Difference 38).
 
 ## Known limits
 
@@ -1295,7 +1328,9 @@ Nothing touches a real host's state, and every fixture is synthetic.
     can't be read (over the cap included), but `motd.yml can't be read:
     permission denied` when opening it again (without blocking, as
     cli-core's reader opens it) answers EACCES or EPERM (Difference 33);
-  - `motd.yml's schema can't be loaded; run sb validate-config`.
+  - `motd.yml's schema can't be loaded; run sb validate-config`
+    (*removed 2026-11-21, decision 29: the schema isn't loaded at
+    login*).
 
   The text is in motd's built-in warning colour (decision 5, amended
   2026-11-19; sb's Warn before), as the file's colours are skipped. Each

@@ -1,16 +1,19 @@
 //! motd.yml (motd spec, Command flow step 4; decisions 3, 4, 5, 17 and
-//! 18; Differences 2, 3, 4, 19 and 36): the file read and checked once
-//! through sb-config's `check_file`, the one per-file check `sb edit` and
-//! validate-config use, and its tree mapped to motd's typed model. A file
-//! with issues, or one that can't be read or checked, gives one `Config:`
-//! line and no model, so only the config-driven parts are skipped.
+//! 18; Differences 2, 3, 4, 19 and 36): the file read once through
+//! sb-config's `read_file`, which parses it as `sb edit` and
+//! validate-config do but doesn't check it against its schema (decision
+//! 17, amended 2026-11-21: they and `sb update` still do), and its tree
+//! mapped to motd's typed model, where a value of another type reads as
+//! absent. A file that doesn't parse, or can't be read, gives one
+//! `Config:` line and no model, so only the config-driven parts are
+//! skipped.
 //! `--generate-config` writes sb-go's example file from Saltbox's schema,
 //! its colours motd's built-in ones.
 //!
-//! Library-backed: the read, the YAML parse, the schema and its rules,
-//! the issues and their secret-safe wording are sb-config's; the colours
+//! Library-backed: the read, the YAML parse, the schema (for the
+//! generator), the issues and their secret-safe wording are sb-config's; the colours
 //! are resolved by cli-core's `Profile::resolve`. motd's own code is the
-//! mapping from the checked tree (domain logic: Saltbox's motd.yml
+//! mapping from the parsed tree (domain logic: Saltbox's motd.yml
 //! layout), the `#rgb` form, and sb-go's example writer.
 
 use std::collections::BTreeMap;
@@ -260,7 +263,7 @@ pub struct Motd {
 }
 
 impl Motd {
-    /// The model of a checked tree with no issues.
+    /// The model of a parsed tree with no issues.
     #[must_use]
     pub fn from_tree(root: &Node) -> Self {
         let apps = App::ALL
@@ -351,8 +354,8 @@ fn seconds(node: &Node) -> Option<Duration> {
 }
 
 /// motd.yml as this run uses it: the model, or the `Config:` line's text
-/// when the file has issues or can't be read or checked (decision 3);
-/// neither when there is no file.
+/// when the file doesn't parse or can't be read (decision 3); neither
+/// when there is no file.
 #[derive(Debug, Default)]
 pub struct Loaded {
     pub motd: Option<Motd>,
@@ -383,15 +386,14 @@ fn unreadable_line(open: &std::io::Result<()>) -> &'static str {
     }
 }
 
-/// The line for a schema that can't be loaded.
-const UNCHECKED: &str = "motd.yml's schema can't be loaded; run sb validate-config";
-
-/// motd.yml read and checked once (decision 17), the issues and causes
-/// logged: each issue with its position, in sb-config's wording, which
-/// never shows a credential's value.
+/// motd.yml read once, without its schema (decision 17, amended
+/// 2026-11-21: the schema's load and rules were 6.6 M instructions of a
+/// login, performance round 5; sb-go's motd doesn't validate there
+/// either), the issues and causes logged: each issue with its position,
+/// in sb-config's wording, which never shows a credential's value.
 #[must_use]
 pub fn load(settings: &Settings) -> Loaded {
-    let mut loaded = loaded(run::check_file(settings, FILE));
+    let mut loaded = loaded(run::read_file(settings, FILE));
     if loaded.line.as_deref() == Some(UNREADABLE) {
         // Opened as cli-core's reader opens it: never blocking on a FIFO,
         // never taking a terminal.
@@ -432,7 +434,7 @@ pub fn load_here() -> Loaded {
         root: sb_cli_core::config::saltbox_dir(std::env::var_os("SB_SALTBOX_DIR")),
         zoneinfo: Saltbox::zoneinfo_places(std::env::var_os("ZONEINFO")),
         http,
-        // No request is made: `check_file` runs no credential check.
+        // No request is made: `read_file` runs no credential check.
         cloudflare_url: String::new(),
         dockerhub_url: String::new(),
         backoff: sb_config::cloudflare::backoff,
@@ -459,15 +461,12 @@ fn loaded(checked: Result<Checked, FileError>) -> Loaded {
             tracing::info!("motd.yml not found; its sections are off");
             Loaded::default()
         }
+        // `read_file` loads no schema, so the error is a read's.
         Err(err) => {
-            tracing::warn!(error = %err, "motd.yml not checked");
-            let line = match err {
-                FileError::Schema(_) => UNCHECKED,
-                _ => UNREADABLE,
-            };
+            tracing::warn!(error = %err, "motd.yml not read");
             Loaded {
                 motd: None,
-                line: Some(line.to_string()),
+                line: Some(UNREADABLE.to_string()),
             }
         }
     }
@@ -1054,14 +1053,12 @@ mod tests {
     /// no model: a pattern miss, the older bare list (decision 4), an
     /// unknown key.
     #[test]
-    fn a_file_with_issues_gives_the_config_line() {
+    fn a_file_that_does_not_parse_gives_the_config_line() {
         for (motd, count) in [
-            ("colors:\n  text:\n    label: pink\n", "1 issue"),
-            (
-                "sonarr:\n  - name: Sonarr\n    url: http://sonarr:8989\n    apikey: k\n",
-                "1 issue",
-            ),
-            ("colors:\n  text:\n    label: pink\nsonar: {}\n", "2 issues"),
+            ("colors:\n  text: [\n", "1 issue"),
+            ("plex: {}\nplex: {}\n", "1 issue"),
+            ("colors: {}\ncolors: {}\nplex: {}\nplex: {}\n", "2 issues"),
+            ("plex:\n  enabled: !!bool maybe\n", "1 issue"),
         ] {
             let root = root_with(Some(motd));
             let loaded = load(&settings(root.path()));
@@ -1074,6 +1071,35 @@ mod tests {
         }
     }
 
+    /// The schema isn't checked at login (decision 17, amended
+    /// 2026-11-21): a file with what validate-config calls issues is read,
+    /// a value of another type as absent, an unknown key or a section in
+    /// the older bare-list form as nothing, and gives no line.
+    #[test]
+    fn schema_issues_are_not_checked_at_login() {
+        let root = root_with(Some(
+            "colors:\n  text:\n    label: pink\n    value: '#abc'\nsonar: {}\n\
+             sonarr:\n  - name: Sonarr\n    url: http://sonarr:8989\n    apikey: k\n\
+             plex:\n  instances:\n    - name: Plex\n      url: http://plex:32400\n      token: t\n      timeout: 1.5\n",
+        ));
+        let loaded = load(&settings(root.path()));
+        assert_eq!(loaded.line, None);
+        let motd = loaded.motd.expect("a model");
+        assert_eq!(motd.colours.get(Slot::Label), None);
+        assert_eq!(
+            motd.colours.get(Slot::Value),
+            Some(RgbColor(0xaa, 0xbb, 0xcc))
+        );
+        assert_eq!(motd.apps.keys().collect::<Vec<_>>(), [&App::Plex]);
+        let plex = &motd.apps[&App::Plex].instances[0];
+        assert_eq!(
+            (plex.name.as_str(), plex.token.as_deref()),
+            ("Plex", Some("t"))
+        );
+        // A fraction where the schema takes a whole number (Difference 19).
+        assert_eq!(plex.timeout, Some(Duration::from_millis(1500)));
+    }
+
     /// No file: no model and no line (the built-in colours, no HTTP
     /// section).
     #[test]
@@ -1083,10 +1109,10 @@ mod tests {
         assert_eq!((loaded.motd, loaded.line), (None, None));
     }
 
-    /// An unreadable file and an unloadable schema each have their own
-    /// line (decision 3).
+    /// An unreadable file has its own line (decision 3); a schema that
+    /// won't load isn't read at login.
     #[test]
-    fn an_unreadable_file_or_schema_has_its_own_line() {
+    fn an_unreadable_file_has_its_own_line_and_the_schema_is_not_read() {
         let root = root_with(None);
         std::fs::create_dir(root.path().join("motd.yml")).unwrap();
         assert_eq!(
@@ -1100,8 +1126,8 @@ mod tests {
         )
         .unwrap();
         let loaded = load(&settings(root.path()));
-        assert_eq!(loaded.line.as_deref(), Some(UNCHECKED));
-        assert_eq!(loaded.motd, None);
+        assert_eq!(loaded.line, None);
+        assert_eq!(loaded.motd, Some(Motd::default()));
         assert_eq!(UNREADABLE, "motd.yml can't be read; run sb validate-config");
         assert_eq!(DENIED, "motd.yml can't be read: permission denied");
         // A read refused with a permission error drops the validate-config
@@ -1129,10 +1155,6 @@ mod tests {
         .expect("thread");
         let line = received.recv_timeout(Duration::from_secs(10));
         assert_eq!(line.expect("load returns").as_deref(), Some(UNREADABLE));
-        assert_eq!(
-            UNCHECKED,
-            "motd.yml's schema can't be loaded; run sb validate-config"
-        );
     }
 
     /// An unquoted credential that looks like a number or a boolean reads

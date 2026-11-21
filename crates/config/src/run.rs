@@ -501,6 +501,79 @@ pub(crate) struct Parsed {
     pub(crate) parse: Parse,
 }
 
+/// `file`'s text, read as cli-core reads Saltbox's files (capped at
+/// 1 MiB, or whole for the inventory).
+fn read_text(settings: &Settings, file: File) -> Result<String, FileError> {
+    let path = settings.root.join(file.path);
+    let read = if file.capped {
+        read_small
+    } else {
+        read_inventory
+    };
+    match read(&path) {
+        Ok(Some(text)) => Ok(text),
+        Ok(None) if file.required => Err(FileError::Missing(escape_controls(
+            &path.display().to_string(),
+        ))),
+        Ok(None) => Err(FileError::Skipped(file.path)),
+        Err(err) => Err(FileError::Read(format!(
+            "{}: {err}",
+            escape_controls(&path.display().to_string())
+        ))),
+    }
+}
+
+/// `file` read and parsed as [`check_file`] reads it, but not checked
+/// against its schema, which isn't loaded: motd's read at login (motd
+/// spec, decision 17, amended 2026-11-21; sb-go's motd doesn't validate
+/// there either). Its issues are what keeps the file from being read:
+/// the pre-pass's refusals, a syntax error, a duplicate key, a scalar
+/// whose tag doesn't fit its text, each never showing the value of a key
+/// named as a credential (`rules::secret_paths` without a schema).
+/// validate-config, `sb edit` and `sb update` still check the file.
+///
+/// # Errors
+///
+/// [`FileError`]: the file isn't there or can't be read.
+pub fn read_file(settings: &Settings, file: File) -> Result<Checked, FileError> {
+    let text = read_text(settings, file)?;
+    let issues = |issues| Checked {
+        report: Report {
+            issues,
+            ..Report::default()
+        },
+        tree: None,
+        notices: Vec::new(),
+    };
+    let checked = match parse::prepare(file.path, &text) {
+        Err(found) => issues(found),
+        Ok(prepared) => {
+            let no_schema = schema::Rules::new();
+            let built = yaml::with_stack(prepared.depth(), || {
+                let root = parse::load(file.path, &prepared)?;
+                tree::build(file.path, &root, &rules::secret_paths(&no_schema)).map(Tree::new)
+            })
+            .map_err(|err| {
+                FileError::Read(format!("can't start the YAML reader's thread: {err}"))
+            })?;
+            match built {
+                Ok(tree) => Checked {
+                    report: Report::default(),
+                    tree: Some(tree),
+                    notices: Vec::new(),
+                },
+                Err(found) => issues(found),
+            }
+        }
+    };
+    tracing::info!(
+        file = file.path,
+        issues = checked.report.issues.len(),
+        "config file read without its schema"
+    );
+    Ok(checked)
+}
+
 /// [`check_file`], with `parsed` used instead of a parse of its own when
 /// its text is the file's.
 fn check_file_parsed(
@@ -508,27 +581,7 @@ fn check_file_parsed(
     file: File,
     parsed: Option<Parsed>,
 ) -> Result<Checked, FileError> {
-    let path = settings.root.join(file.path);
-    let read = if file.capped {
-        read_small
-    } else {
-        read_inventory
-    };
-    let text = match read(&path) {
-        Ok(Some(text)) => text,
-        Ok(None) if file.required => {
-            return Err(FileError::Missing(escape_controls(
-                &path.display().to_string(),
-            )));
-        }
-        Ok(None) => return Err(FileError::Skipped(file.path)),
-        Err(err) => {
-            return Err(FileError::Read(format!(
-                "{}: {err}",
-                escape_controls(&path.display().to_string())
-            )));
-        }
-    };
+    let text = read_text(settings, file)?;
     let mut notices = Vec::new();
     let rules = match file.schema {
         Some(schema) => {
@@ -2001,6 +2054,67 @@ mod tests {
         assert!(broken.tree.is_none());
         assert_eq!(broken.issue_count(), 1, "{:?}", broken.report.issues);
         assert!(broken.report.warnings.is_empty() && broken.report.requests.is_empty());
+        assert_eq!(fake.seen(), [] as [crate::testing::Seen; 0]);
+    }
+
+    /// motd's login read: the file parsed, its schema neither loaded nor
+    /// applied; what keeps it from parsing are its issues, which name no
+    /// credential's value; a file that isn't there or can't be read is
+    /// the same error as the check's.
+    #[test]
+    fn read_file_parses_without_the_schema() {
+        let root = saltbox_root("valid").expect("root");
+        let fake = Fake::start().expect("fake");
+        let settings = settings_on(root.path(), &fake);
+        let motd = file("motd.yml");
+        // What the schema refuses, and a schema that won't load.
+        write(
+            root.path(),
+            "motd.yml",
+            "colors:\n  text:\n    label: nope\nnope: 1\n",
+        );
+        write(root.path(), "schema/motd.schema.yml", "[not, a, mapping]\n");
+        let read = read_file(&settings, motd).expect("read");
+        assert_eq!(read.issue_count(), 0, "{:?}", read.report.issues);
+        let tree = read.tree.as_ref().expect("a tree");
+        assert!(tree.get("nope").is_some());
+        assert_eq!(read.notices.len(), 0);
+        for (text, issue) in [
+            ("a: [unclosed\n", "motd.yml:2:1: syntax error: "),
+            ("a: 1\na: 2\n", "motd.yml:2:1: a: duplicate key"),
+            ("\u{2028}a: 1\n", "motd.yml:1:1: syntax error: U+2028"),
+        ] {
+            write(root.path(), "motd.yml", text);
+            let read = read_file(&settings, motd).expect("read");
+            assert!(read.tree.is_none(), "{text:?}");
+            assert_eq!(read.issue_count(), 1, "{:?}", read.report.issues);
+            let shown = read.report.issues[0].to_string();
+            assert!(shown.starts_with(issue), "{shown}");
+        }
+        write(
+            root.path(),
+            "motd.yml",
+            "plex:\n  instances:\n    - token: !!int not-a-real-token\n",
+        );
+        let read = read_file(&settings, motd).expect("read");
+        assert_eq!(read.issue_count(), 1, "{:?}", read.report.issues);
+        let shown = read.report.issues[0].to_string();
+        assert!(!shown.contains("not-a-real-token"), "{shown}");
+        std::fs::remove_file(root.path().join("motd.yml")).expect("remove");
+        assert_eq!(
+            read_file(&settings, motd).expect_err("skipped"),
+            FileError::Skipped("motd.yml")
+        );
+        write(
+            root.path(),
+            "motd.yml",
+            &format!("# {}\n", "x".repeat(1 << 20)),
+        );
+        let big = read_file(&settings, motd).expect_err("too big");
+        assert!(
+            matches!(&big, FileError::Read(text) if text.contains("is bigger than")),
+            "{big:?}"
+        );
         assert_eq!(fake.seen(), [] as [crate::testing::Seen; 0]);
     }
 
