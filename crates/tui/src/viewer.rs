@@ -798,6 +798,9 @@ impl Viewer {
                     more: more_newer,
                     asked: false,
                 };
+                // A search typed before the first page read no side
+                // (`start_whole` waits for the buffer's edges).
+                let unloaded_search = !self.loaded && self.whole.is_some();
                 self.loaded = true;
                 self.append(lines);
                 // The buffer is new: a search starts again at the newest
@@ -810,7 +813,11 @@ impl Viewer {
                     self.placing = Placing::Anchor;
                 }
                 if kind == PageKind::Tail {
-                    if self.whole.as_ref().is_some_and(Whole::read_newer) {
+                    if unloaded_search {
+                        // Started again from this page's edges, with its
+                        // matches as the middle.
+                        self.start_whole();
+                    } else if self.whole.as_ref().is_some_and(Whole::read_newer) {
                         // Back at the end from a search that read the newer
                         // side: its matches and the tail's can't be put in
                         // order, so the search starts again as a search

@@ -2746,6 +2746,58 @@ fn a_search_asks_the_source_to_read_the_rest_of_the_log() {
     assert!(!h.header().contains("/m45"), "{}", h.header());
 }
 
+/// A search typed before the first page has come (a slow tail) starts
+/// again when the page comes: from the page's oldest edge, with its
+/// matches, so `N` finds what lies before the buffer.
+#[test]
+fn a_search_typed_while_the_first_page_loads_starts_again_with_it() {
+    let mut h = open(60, 8, Limits::default());
+    h.requests();
+    h.search("m4");
+    let (asked, _) = searches(&h.requests());
+    let [first] = &asked[..] else {
+        panic!("one search: {asked:?}")
+    };
+    assert_eq!((first.older.clone(), first.newer.clone()), (None, None));
+    h.send(tail(40..50, true));
+    let (asked, stops) = searches(&h.requests());
+    assert_eq!(stops, 1, "the first search stops");
+    let [again] = &asked[..] else {
+        panic!("one search again: {asked:?}")
+    };
+    assert_eq!(again.id, first.id + 1);
+    assert_eq!(again.older, Some(position(40)));
+    assert_eq!(again.newer, None, "following: nothing newer to read");
+    assert!(
+        h.header().contains("/m4 10/10+  searching…"),
+        "{}",
+        h.header()
+    );
+    // The older side's match counts among the log's.
+    h.send(step(again.id, Side::Older, Order::NearestFirst, &[4], None));
+    assert!(h.header().contains("/m4 11/11+"), "{}", h.header());
+    // Back through the buffer's ten, then past it: a jump to it.
+    h.requests();
+    for _ in 0..10 {
+        h.key(KeyCode::Char('N'));
+    }
+    assert_eq!(jumps(&h.requests()), [Request::Around(position(4))]);
+}
+
+/// A search typed while a later tail loads (End from a page back) keeps
+/// its sides: the buffer was loaded when it started.
+#[test]
+fn a_search_while_a_later_tail_loads_is_not_started_again() {
+    let mut h = open(60, 8, Limits::default());
+    h.requests();
+    h.send(tail(40..50, true));
+    h.search("m4");
+    h.requests();
+    h.send(tail(40..50, true));
+    let (asked, stops) = searches(&h.requests());
+    assert_eq!((asked.len(), stops), (0, 0));
+}
+
 /// Paged away from the end, the newer side is read too.
 #[test]
 fn a_search_off_the_end_reads_the_newer_side() {
