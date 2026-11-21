@@ -8,7 +8,10 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use sb_cli_core::cancel::Shutdown;
+use sb_cli_core::theme::Role;
 use sb_term_ui::{Cell, Table};
+
+use super::label;
 
 /// The least free space the test runs with (host's disk-space floor, ops
 /// decision 12).
@@ -133,29 +136,39 @@ pub enum Outcome {
     Runs(Vec<Option<f64>>),
 }
 
-/// The Disk write table: `1st run` to `3rd run` and `Average` (of the runs
-/// that measured), one decimal, right-aligned; or the one row saying why
-/// it didn't run.
+/// The Disk write section's rows (bench's ruled layout): `1st run` to
+/// `3rd run` and `Average` (of the runs that measured, label and value
+/// bold), one decimal, right-aligned in a column 14 wide (`RATE`), a
+/// failed run's `Test failed` in Problem; or the one `Skipped` row saying
+/// why it didn't run, in Warn.
 #[must_use]
 pub fn table(outcome: &Outcome) -> Table {
-    let mut table = Table::spanning("Disk write").right_align(1);
     match outcome {
-        Outcome::Skipped(why) => table.row([Cell::new("Skipped"), Cell::new(*why)]),
+        Outcome::Skipped(why) => {
+            let mut table = super::rows();
+            table.row([label("Skipped"), Cell::new(*why).role(Role::Warn)]);
+            table
+        }
         Outcome::Runs(runs) => {
-            let shown =
-                |rate: Option<f64>| rate.map_or(FAILED.to_owned(), |r| format!("{r:.1} MB/s"));
-            for (label, rate) in ["1st run", "2nd run", "3rd run"].iter().zip(runs) {
-                table.row([Cell::new(*label), Cell::new(shown(*rate))]);
+            let mut table = super::rows().right_align(1).min_width(1, super::RATE);
+            let shown = |rate: Option<f64>| {
+                rate.map_or_else(
+                    || Cell::new(FAILED).role(Role::Problem),
+                    |r| Cell::new(format!("{r:.1} MB/s")),
+                )
+            };
+            for (text, rate) in ["1st run", "2nd run", "3rd run"].iter().zip(runs) {
+                table.row([label(text), shown(*rate)]);
             }
             let measured: Vec<f64> = runs.iter().flatten().copied().collect();
             let average = (!measured.is_empty()).then(|| {
                 measured.iter().sum::<f64>()
                     / f64::from(u32::try_from(measured.len()).unwrap_or(u32::MAX))
             });
-            table.row([Cell::new("Average"), Cell::new(shown(average))]);
+            table.row([Cell::new("Average").bold(), shown(average).bold()]);
+            table
         }
     }
-    table
 }
 
 #[cfg(test)]
@@ -258,33 +271,40 @@ mod tests {
     #[test]
     fn the_table_shows_each_run_and_their_average() {
         let text = rendered(&Outcome::Runs(vec![Some(100.0), Some(200.04), Some(300.0)]));
-        for line in [
-            "│ 1st run │ 100.0 MB/s │",
-            "│ 2nd run │ 200.0 MB/s │",
-            "│ 3rd run │ 300.0 MB/s │",
-            "│ Average │ 200.0 MB/s │",
-        ] {
-            assert!(text.contains(line), "{line}\n{text}");
-        }
-        assert!(text.contains("Disk write"), "{text}");
+        // The rates right-aligned in a 14-wide column after the 21-wide
+        // label column.
+        assert_eq!(
+            text,
+            "\
+1st run                  100.0 MB/s
+2nd run                  200.0 MB/s
+3rd run                  300.0 MB/s
+Average                  200.0 MB/s"
+        );
     }
 
     #[test]
     fn a_failed_run_is_left_out_of_the_average() {
         let text = rendered(&Outcome::Runs(vec![Some(100.0), None, Some(301.0)]));
-        assert!(text.contains("│ 2nd run │ Test failed │"), "{text}");
-        assert!(text.contains("│ Average │  200.5 MB/s │"), "{text}");
+        assert!(
+            text.contains("\n2nd run                 Test failed\n"),
+            "{text}"
+        );
+        assert!(
+            text.ends_with("\nAverage                  200.5 MB/s"),
+            "{text}"
+        );
         let text = rendered(&Outcome::Runs(vec![None, None, None]));
-        assert!(text.contains("│ Average │ Test failed │"), "{text}");
+        assert!(
+            text.ends_with("\nAverage                 Test failed"),
+            "{text}"
+        );
     }
 
     #[test]
     fn a_skipped_test_has_one_row() {
         let text = rendered(&Outcome::Skipped(NO_SPACE));
-        assert!(
-            text.contains(&format!("│ Skipped │ {NO_SPACE} │")),
-            "{text}"
-        );
+        assert_eq!(text, format!("Skipped              {NO_SPACE}"));
         assert!(!text.contains("run"), "{text}");
     }
 }

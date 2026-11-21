@@ -510,11 +510,11 @@ shows it:
   wide (`TCP Congestion Ctrl` and two spaces), the labels Muted, a
   value starting in column 22 and wrapping at words within the rest of
   the width;
-- Disk write's rates right-aligned in a column 13 wide, which ends
-  where Speedtest's Upload column ends; `Average`, label and value,
+- Disk write's rates right-aligned in a column 14 wide, which ends
+  where Speedtest's Upload column ends, over 1 Gbps too; `Average`, label and value,
   bold; a run's `Test failed` right-aligned there too, in Problem;
 - Speedtest's `Upload`, `Download` and `Latency` right-aligned in
-  columns 13, 13 and 11 wide (two spaces before the widest value at
+  columns 14, 14 and 11 wide (two spaces before the widest value at
   the least), under muted headings aligned as their columns (`Node`
   over the node names), the node names in the terminal's colour; a
   failed node's `Test failed` or `Failed to parse results`
@@ -1683,8 +1683,8 @@ the real services.
   command through the binary in a namespace with a tmpfs working
   directory and the network fakes; the ruled layout as snapshots of the
   whole report from the design example's values (plain, which is the
-  example's text byte for byte, and coloured, at 80 and 120 columns,
-  with the network and without), and the roles of the failure and
+  example's text but for the rate columns one wider, and coloured, at
+  80 and 120 columns, with the network and without), and the roles of the failure and
   `Skipped` cells (2026-11-21).
 - **gha matrix (by hand, capped):** `sb gha` in `ubuntu:22.04`, `24.04`
   and `26.04` containers with a synthetic Saltbox checkout symlinked at
@@ -2183,7 +2183,11 @@ the real services.
     section headings and one shared label column instead of three boxed
     tables of three widths (section "`sb bench`", "Layout"; differences
     67 to 69). The heading is term-ui's, shared with `sb list`, whose
-    output stays byte for byte as it was. Decided, where the
+    output stays byte for byte as it was. Amended the same day by the
+    maintainer, after a look at the built bench: the rate columns are
+    14 wide, not the example's 13, so Disk write's and Speedtest's
+    columns end flush with four digits before the point (over 1 Gbps)
+    too; Latency stays 11. Decided, where the
     example shows no case: a failed disk run's `Test failed` takes
     Problem and stays right-aligned in its column, as a failed node's
     does; a failure text longer than the Upload column (`Failed to

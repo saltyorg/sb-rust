@@ -12,6 +12,8 @@ use sb_cli_core::cancel::CancellationToken;
 use sb_cli_core::theme::Role;
 use sb_term_ui::Cell;
 
+use super::label;
+
 /// Each request's limit (`curl -s -m 4`).
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(4);
 
@@ -207,24 +209,21 @@ pub fn rows(online: Online, isp: &Isp) -> Vec<[Cell; 2]> {
         _ => Role::Warn,
     };
     let mut rows = vec![[
-        Cell::new("IPv4/IPv6"),
+        label("IPv4/IPv6"),
         Cell::new(format!("{} / {}", state(online.v4), state(online.v6))).role(role),
     ]];
     if let Some(org) = &isp.org {
-        rows.push([Cell::new("Organization"), Cell::new(org.as_str())]);
+        rows.push([label("Organization"), Cell::new(org.as_str())]);
     }
     if let (Some(city), Some(country)) = (&isp.city, &isp.country) {
-        rows.push([
-            Cell::new("Location"),
-            Cell::new(format!("{city} / {country}")),
-        ]);
+        rows.push([label("Location"), Cell::new(format!("{city} / {country}"))]);
     }
     if let Some(region) = &isp.region {
-        rows.push([Cell::new("Region"), Cell::new(region.as_str())]);
+        rows.push([label("Region"), Cell::new(region.as_str())]);
     }
     if isp.org.is_none() {
         rows.push([
-            Cell::new("Region"),
+            label("Region"),
             Cell::new("No ISP detected").role(Role::Problem),
         ]);
     }

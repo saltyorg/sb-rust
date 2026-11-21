@@ -17,6 +17,8 @@ use sb_cli_core::cancel::CancellationToken;
 use sb_cli_core::theme::Role;
 use sb_exec::{Cmd, Ending};
 use sb_term_ui::{Cell, Table};
+
+use super::label;
 use sysinfo::{CpuRefreshKind, RefreshKind, System};
 
 use super::network::{self, Endpoints, Isp, Online};
@@ -370,8 +372,8 @@ pub struct Facts {
 }
 
 /// A two-column row's cells.
-fn row(label: &str, value: impl Into<String>) -> [Cell; 2] {
-    [Cell::new(label), Cell::new(value)]
+fn row(text: &str, value: impl Into<String>) -> [Cell; 2] {
+    [label(text), Cell::new(value)]
 }
 
 /// `✓ Enabled` in the Ok role, or `✗ Disabled` in the Problem role.
@@ -383,11 +385,12 @@ fn enabled(on: bool) -> Cell {
     }
 }
 
-/// The System table: bench.sh's rows in its order, CPU Cache left out
-/// without a cache size and Total Swap without swap, as the script did.
+/// The System section's rows (bench's ruled layout): bench.sh's rows in
+/// its order, CPU Cache left out without a cache size and Total Swap
+/// without swap, as the script did.
 #[must_use]
 pub fn table(facts: &Facts) -> Table {
-    let mut table = Table::spanning("System");
+    let mut table = super::rows();
     let model = if facts.cpu.model.is_empty() {
         "CPU model not detected"
     } else {
@@ -407,8 +410,8 @@ pub fn table(facts: &Facts) -> Table {
     if let Some(cache) = &facts.cpu.cache {
         table.row(row("CPU Cache", cache.as_str()));
     }
-    table.row([Cell::new("AES-NI"), enabled(facts.cpu.aes)]);
-    table.row([Cell::new("VM-x/AMD-V"), enabled(facts.cpu.virt)]);
+    table.row([label("AES-NI"), enabled(facts.cpu.aes)]);
+    table.row([label("VM-x/AMD-V"), enabled(facts.cpu.virt)]);
     table.row(row(
         "Total Disk",
         facts.disk.map_or_else(|| BLANK.to_owned(), usage),
@@ -1117,34 +1120,31 @@ mod tests {
     #[test]
     fn the_table_has_every_row_in_order() {
         let text = rendered(&facts());
-        let rows = [
-            "│ CPU Model           │ Example CPU               │",
-            "│ CPU Cores           │ 8 @ 2400.000 MHz          │",
-            "│ CPU Cache           │ 32768 KB                  │",
-            "│ AES-NI              │ ✓ Enabled                 │",
-            "│ VM-x/AMD-V          │ ✗ Disabled                │",
-            "│ Total Disk          │ 100.0 GiB (25.0 GiB Used) │",
-            "│ Total RAM           │ 16.0 GiB (4.0 GiB Used)   │",
-            "│ Total Swap          │ 2.0 GiB (0 KiB Used)      │",
-            "│ System Uptime       │ 1 day, 1 hour, 1 min      │",
-            "│ Load Average        │ 0.10, 0.20, 0.30          │",
-            "│ OS                  │ Ubuntu 24.04.1 LTS        │",
-            "│ Arch                │ x86_64 (64 Bit)           │",
-            "│ Kernel              │ 6.8.0-1-generic           │",
-            "│ TCP Congestion Ctrl │ bbr                       │",
-            "│ Virtualization      │ KVM                       │",
-            "│ IPv4/IPv6           │ ✓ Online / ✗ Offline      │",
-            "│ Organization        │ AS1 Example               │",
-            "│ Location            │ Falkenstein / DE          │",
-            "│ Region              │ Saxony                    │",
-        ];
-        let mut at = text.find("System").expect("heading");
-        for line in rows {
-            let found = text[at..]
-                .find(line)
-                .unwrap_or_else(|| panic!("{line}\n{text}"));
-            at += found;
-        }
+        // One 21-wide label column, no rule between rows (ops spec,
+        // "Layout").
+        assert_eq!(
+            text,
+            "\
+CPU Model            Example CPU
+CPU Cores            8 @ 2400.000 MHz
+CPU Cache            32768 KB
+AES-NI               ✓ Enabled
+VM-x/AMD-V           ✗ Disabled
+Total Disk           100.0 GiB (25.0 GiB Used)
+Total RAM            16.0 GiB (4.0 GiB Used)
+Total Swap           2.0 GiB (0 KiB Used)
+System Uptime        1 day, 1 hour, 1 min
+Load Average         0.10, 0.20, 0.30
+OS                   Ubuntu 24.04.1 LTS
+Arch                 x86_64 (64 Bit)
+Kernel               6.8.0-1-generic
+TCP Congestion Ctrl  bbr
+Virtualization       KVM
+IPv4/IPv6            ✓ Online / ✗ Offline
+Organization         AS1 Example
+Location             Falkenstein / DE
+Region               Saxony"
+        );
     }
 
     #[test]
@@ -1164,8 +1164,11 @@ mod tests {
             ..facts()
         };
         let text = rendered(&facts);
-        assert!(text.contains("│ CPU model not detected "), "{text}");
-        assert!(text.contains("│ CPU Cores           │ 8 "), "{text}");
+        assert!(
+            text.starts_with("CPU Model            CPU model not detected\n"),
+            "{text}"
+        );
+        assert!(text.contains("\nCPU Cores            8\n"), "{text}");
         let no_cores = Facts {
             cpu: Cpu {
                 mhz: Some("1.0".to_owned()),
@@ -1174,13 +1177,13 @@ mod tests {
             ..facts.clone()
         };
         // The table trims the cell's leading space.
-        assert!(rendered(&no_cores).contains("│ CPU Cores           │ @ 1.0 MHz "));
+        assert!(rendered(&no_cores).contains("\nCPU Cores            @ 1.0 MHz\n"));
         assert!(
-            text.contains("│ AES-NI              │ ✗ Disabled"),
+            text.contains("\nAES-NI               ✗ Disabled\n"),
             "{text}"
         );
         assert!(
-            text.contains("│ VM-x/AMD-V          │ ✗ Disabled"),
+            text.contains("\nVM-x/AMD-V           ✗ Disabled\n"),
             "{text}"
         );
         for gone in ["CPU Cache", "Total Swap"] {
@@ -1190,16 +1193,16 @@ mod tests {
             "Total Disk",
             "System Uptime",
             "Load Average",
-            "OS  ",
+            "OS",
             "Kernel",
             "TCP Congestion Ctrl",
         ] {
             let line = text
                 .lines()
-                .find(|line| line.contains(row))
+                .find(|line| line.starts_with(row))
                 .unwrap_or_else(|| panic!("{row}\n{text}"));
-            let value = line.rsplit('│').nth(1).expect("value cell");
-            assert_eq!(value.trim(), "", "{row}\n{text}");
+            // Nothing after the label: the line ends there.
+            assert_eq!(line, row, "{row}\n{text}");
         }
     }
 
@@ -1310,7 +1313,7 @@ mod tests {
         assert_eq!(facts.isp.org.as_deref(), Some("AS1 Example"));
         let text = rendered(&facts);
         assert!(
-            text.contains("│ IPv4/IPv6           │ ✓ Online / ✓ Online"),
+            text.contains("\nIPv4/IPv6            ✓ Online / ✓ Online\n"),
             "{text}"
         );
         assert!(!text.contains("ADDRESS"), "{text}");

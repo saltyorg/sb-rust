@@ -69,8 +69,8 @@ fn bench_prints_the_system_and_skips_the_disk_test_without_space() {
         "Not enough space for the disk test",
         // Its whole reason wraps (piped_the_tables_wrap_at_80_columns).
         "Speedtest unavailable: a testing build needs",
-        "Finished in: ",
-        "Timestamp:   ",
+        "\nFinished in          ",
+        "\nTimestamp            ",
     ] {
         assert!(stdout.contains(row), "{row}\n{stdout}");
     }
@@ -78,25 +78,26 @@ fn bench_prints_the_system_and_skips_the_disk_test_without_space() {
     assert!(stderr.is_empty(), "{stderr}");
 }
 
-/// The Speedtest table in `stdout`: from the border above its title row
-/// to the line before `Finished in:`.
+/// The Speedtest section in `stdout`: from its heading to the blank line
+/// before the footer's rule and `Finished in`.
 fn speedtest_table(stdout: &str) -> String {
     let lines: Vec<&str> = stdout.lines().collect();
     let end = lines
         .iter()
-        .position(|line| line.starts_with("Finished in: "))
+        .position(|line| line.starts_with("Finished in "))
         .expect("finished line");
-    let title = lines[..end]
+    let heading = lines[..end]
         .iter()
-        .rposition(|line| line.trim_matches(['│', ' ']) == "Speedtest")
-        .expect("speedtest title");
-    lines[title - 1..end].join("\n")
+        .rposition(|line| line.starts_with("Speedtest") && !line.starts_with("Speedtest."))
+        .expect("speedtest heading");
+    lines[heading..end - 2].join("\n")
 }
 
-/// Piped, every table lays out as at 80 columns, its cells wrapped as on
-/// a terminal (ops spec, "`sb bench`", Results; the maintainer,
-/// 2026-11-18): the Speedtest row's long reason wraps in its cell
-/// instead of drawing the table about 110 columns wide.
+/// Piped, every section lays out as at 80 columns, its cells wrapped as
+/// on a terminal (ops spec, "`sb bench`", Results; the maintainer,
+/// 2026-11-18): the Speedtest row's long reason wraps in its column
+/// instead of drawing the line about 110 columns wide, and the rules are
+/// 80 wide.
 #[test]
 fn piped_the_tables_wrap_at_80_columns() {
     if !root_gate::requested() {
@@ -177,13 +178,12 @@ fn bench_asks_the_fakes_and_keeps_the_addresses_out() {
     assert_eq!(out.status.code(), Some(0), "{stdout}\n{stderr}");
     for row in [
         "✓ Online / ✓ Online",
-        "│ Organization        │ AS1 Example",
-        "│ Location            │ Falkenstein / DE",
-        "│ Region              │ Saxony",
-        "Node Name",
-        "Upload Speed",
-        "Download Speed",
-        "Latency",
+        "\nOrganization         AS1 Example\n",
+        "\nLocation             Falkenstein / DE\n",
+        "\nRegion               Saxony\n",
+        // The headings, the Upload column widened by the failure text.
+        "\nNode  ",
+        "Upload      Download    Latency\n",
         "Speedtest.net",
         "Tokyo, JP",
     ] {

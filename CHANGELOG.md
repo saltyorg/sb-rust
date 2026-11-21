@@ -110,6 +110,11 @@ you could trip over.
   the run no longer sits silent between steps.
 - **New layouts** for `sb list`, `sb docker ps`, `sb motd`'s Docker and
   queue lines, `sb bench` and `sb fact`.
+- **`sb bench` reads as one report:** each section opens with a heading
+  and a rule, as `sb list`'s repositories do, and every section shares
+  one label column, with no boxes and no line between rows. Rates are
+  right-aligned so their decimals line up, a failed Speedtest node or
+  disk run shows in red, and a skipped test's reason in yellow.
 - **`sb motd`'s default colours** are the GitHub Dark Colorblind palette
   (GitHub Primer's dark colorblind terminal colours) wherever motd.yml
   sets none: blue labels, values, successes and low bars, purple app

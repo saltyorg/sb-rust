@@ -3732,6 +3732,7 @@ dependencies = [
  "hex",
  "http-body-util",
  "indicatif",
+ "insta",
  "jiff",
  "pbkdf2",
  "procfs",

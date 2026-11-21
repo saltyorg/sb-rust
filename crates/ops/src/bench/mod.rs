@@ -1,11 +1,14 @@
 //! `sb bench` (ops spec, "`sb bench`"; decision 11): this server's system
 //! and its disk measured in Rust, in sb's own output. Progress is
 //! term-ui's runner on stderr, one transient step per measurement, so a
-//! run that succeeds leaves only the results; each section's table goes
-//! to stdout when the section ends (the runner done first, so the two
-//! never draw over each other), then the total time and a timestamp.
-//! The sections follow sb-go's bench.sh (`cmd/bench_script.sh`): System
-//! (with the network rows), Disk write, Speedtest.
+//! run that succeeds leaves only the results; each section goes to
+//! stdout when it ends (the runner done first, so the two never draw over
+//! each other), then the total time and a timestamp. The sections follow
+//! sb-go's bench.sh (`cmd/bench_script.sh`): System (with the network
+//! rows), Disk write, Speedtest. They are drawn in the "ruled" layout
+//! (ops spec, "Layout"; decision 43): term-ui's section heading, `sb
+//! list`'s, over a ruled table of label and value rows, one label column
+//! for every section and the footer.
 
 pub mod disk;
 pub mod network;
@@ -25,9 +28,9 @@ use std::time::{Duration, Instant};
 use sb_cli_core::cancel::Shutdown;
 use sb_cli_core::exit::output_error;
 use sb_cli_core::log::RunLog;
-use sb_cli_core::theme;
+use sb_cli_core::theme::{self, Role, Theme};
 use sb_host::DiskError;
-use sb_term_ui::{Labels, Options, Runner, Table};
+use sb_term_ui::{Cell, Heading, Labels, Options, Runner, Table};
 
 use disk::{Outcome, RunError, Size};
 use network::Endpoints;
@@ -124,7 +127,34 @@ fn services(user_agent: &str) -> (Option<Endpoints>, Result<Pin, String>) {
 /// `DEFAULT_WIDTH`; 79 on Windows), and the spec fixes 80.
 const PIPED_WIDTH: usize = 80;
 
-/// Where the tables go: stdout, fitted to its terminal or, piped, to
+/// The label column's width, every section's and the footer's: `TCP
+/// Congestion Ctrl` and the two-space gap (ops spec, "Layout").
+const LABEL: usize = 21;
+
+/// The width of Disk write's rates column and Speedtest's Upload and
+/// Download columns, the two-space gap included: `1234.56 Mbps` and the
+/// gap, so the columns end flush over 1 Gbps too (the maintainer,
+/// 2026-11-21, after the example's 13).
+const RATE: usize = 14;
+
+/// A section's heading: its name bold in the Service role, over a Muted
+/// rule (`sb list`'s heading, term-ui's).
+fn heading(name: &str) -> Heading {
+    Heading::new(name, Role::Service)
+}
+
+/// A row's label, Muted.
+fn label(text: &str) -> Cell {
+    Cell::new(text).role(Role::Muted)
+}
+
+/// A ruled table of label and value rows, without headings, the label
+/// column [`LABEL`] wide.
+fn rows() -> Table {
+    Table::ruled(Vec::<String>::new()).min_width(0, LABEL)
+}
+
+/// Where the sections go: stdout, fitted to its terminal or, piped, to
 /// [`PIPED_WIDTH`], and in colour as its choice says, as term-ui's
 /// `Table::print` does; or a test's buffer. Why not `Table::print`: it
 /// writes to stdout only and keeps a piped table's natural width, and
@@ -133,8 +163,12 @@ const PIPED_WIDTH: usize = 80;
 #[derive(Debug)]
 pub struct Out<W> {
     writer: W,
+    theme: Theme,
     colour: bool,
     width: Option<usize>,
+    /// How many sections are written: a blank line goes before every
+    /// heading but the first.
+    sections: usize,
 }
 
 impl Out<sb_cli_core::tail::Tracked<io::Stdout>> {
@@ -142,24 +176,69 @@ impl Out<sb_cli_core::tail::Tracked<io::Stdout>> {
     /// it isn't a terminal.
     #[must_use]
     pub fn stdout() -> Self {
-        Self {
+        Out::new(
             // Recorded for the blank line at the end (cli-core's `tail`).
-            writer: sb_cli_core::tail::Tracked::stdout(io::stdout()),
-            colour: sb_term_ui::colour_on(sb_term_ui::Stream::Stdout),
-            width: Some(sb_term_ui::stdout_width().unwrap_or(PIPED_WIDTH)),
-        }
+            sb_cli_core::tail::Tracked::stdout(io::stdout()),
+            theme::current().clone(),
+            sb_term_ui::colour_on(sb_term_ui::Stream::Stdout),
+            Some(sb_term_ui::stdout_width().unwrap_or(PIPED_WIDTH)),
+        )
     }
 }
 
 impl<W: Write> Out<W> {
-    fn table(&mut self, table: &Table) -> anyhow::Result<()> {
-        let text = table.render(theme::current(), self.colour, self.width);
-        writeln!(self.writer, "{text}").map_err(output_error)?;
+    /// Sections written to `writer` in `theme`, coloured when `colour` is
+    /// on, fitted to `width` (natural width with none, the rules then
+    /// [`PIPED_WIDTH`] long).
+    fn new(writer: W, theme: Theme, colour: bool, width: Option<usize>) -> Self {
+        Self {
+            writer,
+            theme,
+            colour,
+            width,
+            sections: 0,
+        }
+    }
+
+    /// The writer, the sections written to it.
+    #[cfg(test)]
+    fn into_inner(self) -> W {
+        self.writer
+    }
+
+    /// The rules' width.
+    fn rule_width(&self) -> usize {
+        self.width.unwrap_or(PIPED_WIDTH)
+    }
+
+    /// A section: a blank line unless it is the first, its heading, then
+    /// its rows.
+    ///
+    /// # Errors
+    ///
+    /// The writer failing.
+    fn section(&mut self, heading: &Heading, table: &Table) -> anyhow::Result<()> {
+        let gap = if self.sections == 0 { "" } else { "\n" };
+        self.sections += 1;
+        let heading = heading.render(&self.theme, self.colour, self.rule_width());
+        let table = table.render(&self.theme, self.colour, self.width);
+        writeln!(self.writer, "{gap}{heading}{table}").map_err(output_error)?;
         Ok(())
     }
 
-    fn line(&mut self, text: &str) -> anyhow::Result<()> {
-        writeln!(self.writer, "{text}").map_err(output_error)?;
+    /// The footer: a blank line, a Muted rule, then `Finished in` and
+    /// `Timestamp` as rows of the label column.
+    ///
+    /// # Errors
+    ///
+    /// The writer failing.
+    fn footer(&mut self, finished: &str, timestamp: &str) -> anyhow::Result<()> {
+        let rule = sb_term_ui::rule(&self.theme, Role::Muted, self.colour, self.rule_width());
+        let mut table = rows();
+        table.row([label("Finished in"), Cell::new(finished)]);
+        table.row([label("Timestamp"), Cell::new(timestamp)]);
+        let table = table.render(&self.theme, self.colour, self.width);
+        writeln!(self.writer, "\n{rule}\n{table}").map_err(output_error)?;
         Ok(())
     }
 }
@@ -211,12 +290,12 @@ pub async fn run<W: Write>(
         )
         .await;
     runner.finish();
-    out.table(&system::table(&facts?))?;
+    out.section(&heading("System"), &system::table(&facts?))?;
 
     let mut runner = Runner::start("sb bench", shutdown, log, Options::default());
     let outcome = disk_test(&mut runner, bench, shutdown).await;
     runner.finish();
-    out.table(&disk::table(&outcome?))?;
+    out.section(&heading("Disk write"), &disk::table(&outcome?))?;
 
     // No runner without steps: one with none would print its title.
     let outcome = match &bench.speedtest {
@@ -231,15 +310,13 @@ pub async fn run<W: Write>(
             speedtest::Outcome::Unavailable(why.clone())
         }
     };
-    out.table(&speedtest::table(&outcome))?;
+    out.section(&speedtest::heading(&outcome), &speedtest::table(&outcome))?;
 
-    out.line(&format!("Finished in: {}", finished_in(started.elapsed())))?;
     let now = jiff::Timestamp::now().to_zoned(sb_tui::line::local_zone());
-    out.line(&format!(
-        "Timestamp:   {}",
-        now.strftime("%Y-%m-%d %H:%M:%S %Z")
-    ))?;
-    Ok(())
+    out.footer(
+        &finished_in(started.elapsed()),
+        &now.strftime("%Y-%m-%d %H:%M:%S %Z").to_string(),
+    )
 }
 
 /// The Speedtest section's steps: `Preparing Speedtest` (the download,
@@ -433,13 +510,9 @@ mod tests {
     }
 
     async fn output(bench: &Bench, shutdown: &Shutdown) -> (anyhow::Result<()>, String) {
-        let mut out = Out {
-            writer: Vec::new(),
-            colour: false,
-            width: None,
-        };
+        let mut out = Out::new(Vec::new(), Theme::plain(), false, None);
         let result = run(bench, shutdown, None, &mut out).await;
-        (result, String::from_utf8(out.writer).expect("utf-8"))
+        (result, String::from_utf8(out.into_inner()).expect("utf-8"))
     }
 
     #[test]
@@ -468,16 +541,19 @@ mod tests {
         assert!(at("System") < at("CPU Model"));
         assert!(at("Virtualization") < at("Disk write"));
         assert!(at("1st run") < at("2nd run") && at("2nd run") < at("3rd run"));
-        assert!(at("3rd run") < at("│ Average") && at("│ Average") < at("Finished in: "));
-        assert!(text.contains("│ Virtualization      │ Dedicated"), "{text}");
-        assert_eq!(text.matches(" MB/s │").count(), 4, "{text}");
+        assert!(at("3rd run") < at("\nAverage ") && at("\nAverage ") < at("\nFinished in "));
+        assert!(
+            text.contains("\nVirtualization       Dedicated\n"),
+            "{text}"
+        );
+        assert_eq!(text.matches(" MB/s\n").count(), 4, "{text}");
         let last = text.lines().last().expect("a line");
-        assert!(last.starts_with("Timestamp:   20"), "{text}");
+        assert!(last.starts_with("Timestamp            20"), "{text}");
         // Its shape: the exact text is `finished_in`'s test (a busy disk
         // can make the run take seconds).
         let finished = text
             .lines()
-            .find_map(|line| line.strip_prefix("Finished in: "))
+            .find_map(|line| line.strip_prefix("Finished in          "))
             .expect("finished line");
         assert!(finished.ends_with(" sec"), "{text}");
         assert!(finished.starts_with(|c: char| c.is_ascii_digit()), "{text}");
@@ -492,7 +568,7 @@ mod tests {
         result.expect("run");
         assert!(text.contains(disk::NO_SPACE), "{text}");
         assert!(!text.contains("1st run"), "{text}");
-        assert!(text.contains("Finished in: "), "{text}");
+        assert!(text.contains("\nFinished in "), "{text}");
     }
 
     #[tokio::test]
@@ -596,7 +672,7 @@ mod tests {
         };
         let (result, text) = output(&bench, &Shutdown::new()).await;
         result.expect("run");
-        assert!(at_most_once(&text, "Node Name"), "{text}");
+        assert!(at_most_once(&text, SPEEDTEST_HEADINGS), "{text}");
         assert_eq!(
             text.matches("Failed to parse results").count(),
             12,
@@ -607,7 +683,7 @@ mod tests {
             "{text}"
         );
         assert!(
-            text.find("Node Name") < text.find("Finished in: "),
+            text.find(SPEEDTEST_HEADINGS) < text.find("\nFinished in "),
             "{text}"
         );
         let seen = fake.seen();
@@ -729,6 +805,9 @@ mod tests {
         assert_eq!(entries(parent.path()), Vec::<PathBuf>::new());
     }
 
+    /// Speedtest's headings line, there only when the nodes ran.
+    const SPEEDTEST_HEADINGS: &str = "Upload      Download    Latency";
+
     fn at_most_once(text: &str, needle: &str) -> bool {
         text.matches(needle).count() == 1
     }
@@ -754,10 +833,10 @@ mod tests {
         let (result, text) = output(&bench, &Shutdown::new()).await;
         result.expect("run");
         assert!(
-            text.contains("│ Skipped │ Speedtest unavailable: "),
+            text.contains("\nSkipped              Speedtest unavailable: "),
             "{text}"
         );
-        assert!(!text.contains("Node Name"), "{text}");
+        assert!(!text.contains(SPEEDTEST_HEADINGS), "{text}");
         // Refused after its download: nothing left of it.
         assert_eq!(entries(&dir.path().join("tmp")), Vec::<PathBuf>::new());
         // Another digest: refused as it downloads.
@@ -790,7 +869,7 @@ mod tests {
             text.contains("Speedtest unavailable: not in this test"),
             "{text}"
         );
-        assert!(text.contains("Finished in: "), "{text}");
+        assert!(text.contains("\nFinished in "), "{text}");
     }
 
     #[test]
@@ -807,5 +886,247 @@ mod tests {
         assert_eq!(short_of_space(dir, PLENTY), None);
         assert_eq!(short_of_space(dir, SHORT), Some(disk::NO_SPACE));
         assert_eq!(short_of_space(dir, unreadable), Some(disk::NO_FREE_SPACE));
+    }
+
+    /// The design example's System values (invented values,
+    /// ops decision 43), with the network rows of a run with network or
+    /// without.
+    fn example_facts(network: bool) -> system::Facts {
+        use network::{Isp, Online};
+        use system::{Cpu, Facts, Usage};
+        let isp = if network {
+            Isp {
+                org: Some("AS64500 Example Hosting Ltd".to_owned()),
+                city: Some("Lisbon".to_owned()),
+                country: Some("PT".to_owned()),
+                region: Some("Lisbon".to_owned()),
+            }
+        } else {
+            Isp::default()
+        };
+        Facts {
+            cpu: Cpu {
+                model: "Example CPU 16-Core Processor".to_owned(),
+                cores: 16,
+                mhz: Some("3000.000".to_owned()),
+                cache: Some("1024 KB".to_owned()),
+                aes: true,
+                virt: true,
+            },
+            disk: Some(Usage {
+                total: (40 << 40) / 10,
+                used: (15 << 40) / 10,
+            }),
+            ram: Usage {
+                total: (1000 << 30) / 10,
+                used: (250 << 30) / 10,
+            },
+            swap: Usage {
+                total: 4 << 30,
+                used: (10 << 30) / 10,
+            },
+            uptime: Some(12 * 86_400 + 3 * 3_600 + 30 * 60),
+            load: Some((0.50, 0.40, 0.30)),
+            os: Some("Ubuntu 24.04.5 LTS".to_owned()),
+            arch: "x86_64".to_owned(),
+            kernel: Some("6.8.0-90-generic".to_owned()),
+            congestion: Some("bbr".to_owned()),
+            virtualization: "Dedicated".to_owned(),
+            online: Online {
+                v4: network,
+                v6: false,
+            },
+            isp,
+        }
+    }
+
+    /// The example's Speedtest: nine nodes measured, three failed.
+    fn example_nodes() -> speedtest::Outcome {
+        use speedtest::Measured;
+        let speeds = [
+            Some(("900.00", "950.00", "1.00")),
+            None,
+            Some(("700.00", "750.00", "120.00")),
+            Some(("600.00", "650.00", "100.00")),
+            Some(("500.00", "550.00", "20.00")),
+            Some(("400.00", "450.00", "10.00")),
+            None,
+            None,
+            Some(("300.00", "350.00", "200.00")),
+            Some(("200.00", "250.00", "250.00")),
+            Some(("100.00", "150.00", "220.00")),
+            Some(("600.00", "640.00", "270.00")),
+        ];
+        let nodes = speedtest::NODES.iter().zip(speeds).map(|(&node, speed)| {
+            let measured = speed.map_or(Measured::Failed, |(up, down, latency)| Measured::Speeds {
+                upload: format!("{up} Mbps"),
+                download: format!("{down} Mbps"),
+                latency: format!("{latency} ms"),
+            });
+            (node, measured)
+        });
+        speedtest::Outcome::Nodes(nodes.collect())
+    }
+
+    /// The example's whole report, through the sections `run` writes,
+    /// with the network or without (the example's offline run: its own
+    /// disk rates and Speedtest unavailable).
+    fn example(network: bool, theme: Theme, colour: bool, width: usize) -> String {
+        let mut out = Out::new(Vec::new(), theme, colour, Some(width));
+        out.section(&heading("System"), &system::table(&example_facts(network)))
+            .expect("system");
+        let rates = if network {
+            [800.0, 820.0, 840.0]
+        } else {
+            [700.00, 710.00, 720.00]
+        };
+        let disk = disk::Outcome::Runs(rates.map(Some).to_vec());
+        out.section(&heading("Disk write"), &disk::table(&disk))
+            .expect("disk");
+        let speedtest = if network {
+            example_nodes()
+        } else {
+            speedtest::Outcome::Unavailable(
+                "download release asset \"ookla-speedtest-1.2.0-linux-x86_64.tgz\": error \
+                 sending request: client error (Connect): dns error: error resolving DNS: \
+                 failed to lookup address information: Temporary failure in name resolution"
+                    .to_owned(),
+            )
+        };
+        out.section(
+            &speedtest::heading(&speedtest),
+            &speedtest::table(&speedtest),
+        )
+        .expect("speedtest");
+        let (finished, timestamp) = if network {
+            ("4 min 10 sec", "2026-01-15 10:00:00 UTC")
+        } else {
+            ("10 sec", "2026-01-15 10:05:00 UTC")
+        };
+        out.footer(finished, timestamp).expect("footer");
+        String::from_utf8(out.into_inner()).expect("utf-8")
+    }
+
+    fn truecolor() -> Theme {
+        use sb_cli_core::theme::{Palette, Profile};
+        Theme::resolve(&Palette::default(), Profile::TrueColor)
+    }
+
+    /// The ruled layout, as the maintainer chose it (ops decision 43):
+    /// plain and coloured at 80 and 120 columns, and the offline run's;
+    /// the plain forms are the example's text but for the rate columns,
+    /// 14 wide where the example's were 13 (decision 43, amended).
+    #[test]
+    fn the_report_is_the_ruled_layout() {
+        for width in [80, 120] {
+            insta::assert_snapshot!(
+                format!("ruled-plain-{width}"),
+                example(true, Theme::plain(), false, width)
+            );
+            insta::assert_snapshot!(
+                format!("ruled-colour-{width}"),
+                example(true, truecolor(), true, width).replace('\x1b', "␛")
+            );
+            insta::assert_snapshot!(
+                format!("ruled-offline-plain-{width}"),
+                example(false, Theme::plain(), false, width)
+            );
+            insta::assert_snapshot!(
+                format!("ruled-offline-colour-{width}"),
+                example(false, truecolor(), true, width).replace('\x1b', "␛")
+            );
+        }
+    }
+
+    /// Every line fits the width and none ends in a space; plain is the
+    /// colour form without its codes; wider only lengthens the rules.
+    #[test]
+    fn the_report_fits_and_only_its_rules_grow() {
+        // term-ui's own parser drops the codes (anstyle-parse's); its text
+        // has no final newline.
+        let strip = |text: &str| {
+            sb_term_ui::DisplayText::from_bytes(text.as_bytes(), false)
+                .as_str()
+                .replace('─', "-")
+        };
+        for network in [true, false] {
+            for width in [80, 120] {
+                let text = example(network, truecolor(), true, width);
+                let plain = example(network, Theme::plain(), false, width);
+                assert_eq!(strip(&text), plain.trim_end_matches('\n'));
+                for line in plain.lines() {
+                    assert!(line.chars().count() <= width, "{line:?}");
+                    assert!(!line.ends_with(' '), "{line:?}");
+                }
+            }
+        }
+        // Without a cell to wrap, a wider terminal only lengthens the rules.
+        let narrow = example(true, Theme::plain(), false, 80);
+        let wide = example(true, Theme::plain(), false, 120);
+        assert_eq!(wide.replace(&"-".repeat(120), &"-".repeat(80)), narrow);
+    }
+
+    /// The roles of the failure and skip cells: a failed node, a failed
+    /// disk run and a run that couldn't parse in Problem; every
+    /// `Skipped` reason in Warn; `Average` bold.
+    #[test]
+    fn failures_take_problem_and_skips_take_warn() {
+        use sb_term_ui::style::paint;
+        let theme = truecolor();
+        let render = |table: &Table| table.render(&theme, true, Some(80));
+        let failed = render(&speedtest::table(&speedtest::Outcome::Nodes(vec![
+            (speedtest::NODES[1], speedtest::Measured::Failed),
+            (speedtest::NODES[2], speedtest::Measured::Unparsed),
+        ])));
+        for text in ["Test failed", "Failed to parse results"] {
+            assert!(
+                failed.contains(&paint(&theme, Role::Problem, true, text)),
+                "{failed:?}"
+            );
+        }
+        let runs = render(&disk::table(&disk::Outcome::Runs(vec![
+            Some(1.0),
+            None,
+            None,
+        ])));
+        assert!(
+            runs.contains(&paint(&theme, Role::Problem, true, disk::FAILED)),
+            "{runs:?}"
+        );
+        let bold = theme.style(Role::Muted).bold();
+        assert!(!runs.contains(&bold.to_string()), "{runs:?}");
+        assert!(runs.contains("\x1b[1mAverage\x1b[0m"), "{runs:?}");
+        // The padding outside the codes, as tabled pads (decision 43).
+        assert!(runs.contains("    \x1b[1m1.0 MB/s\x1b[0m"), "{runs:?}");
+        for why in [disk::NO_SPACE, disk::NO_FREE_SPACE, disk::NO_WRITE] {
+            let text = render(&disk::table(&disk::Outcome::Skipped(why)));
+            assert!(
+                text.contains(&paint(&theme, Role::Warn, true, why)),
+                "{text:?}"
+            );
+            assert!(
+                text.contains(&paint(&theme, Role::Muted, true, "Skipped")),
+                "{text:?}"
+            );
+        }
+        let unavailable = render(&speedtest::table(&speedtest::Outcome::Unavailable(
+            "no network".to_owned(),
+        )));
+        assert!(
+            unavailable.contains(&paint(
+                &theme,
+                Role::Warn,
+                true,
+                "Speedtest unavailable: no network"
+            )),
+            "{unavailable:?}"
+        );
+        // No node count without nodes.
+        let plain = Theme::plain();
+        assert_eq!(
+            speedtest::heading(&speedtest::Outcome::Unavailable(String::new()))
+                .render(&plain, false, 3),
+            "Speedtest\n---\n"
+        );
     }
 }

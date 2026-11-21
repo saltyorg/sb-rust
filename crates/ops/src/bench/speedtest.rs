@@ -13,9 +13,12 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use sb_cli_core::cancel::CancellationToken;
+use sb_cli_core::theme::Role;
 use sb_exec::{Cmd, Ending};
 use sb_release::Arch;
-use sb_term_ui::{Cell, Table};
+use sb_term_ui::{Cell, Heading, Table};
+
+use super::label;
 
 /// A pinned archive: its URL, size and SHA-256 (hex).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -334,42 +337,63 @@ pub enum Outcome {
     Nodes(Vec<(Node, Measured)>),
 }
 
-/// The Speedtest table: its title, then bench.sh's columns, a failed
-/// node's text in its second column; or the one row saying why it didn't
-/// run.
+/// The Speedtest section's heading: its name, and the node count, muted,
+/// when the nodes ran (`sb list`'s `  31 tags`).
+#[must_use]
+pub fn heading(outcome: &Outcome) -> Heading {
+    let heading = super::heading("Speedtest");
+    match outcome {
+        Outcome::Unavailable(_) => heading,
+        Outcome::Nodes(nodes) => heading.hint(format!("  {} nodes", nodes.len()), Role::Muted),
+    }
+}
+
+/// The Speedtest section's rows (bench's ruled layout): `Node`, `Upload`,
+/// `Download` and `Latency` under muted headings, the figures
+/// right-aligned in columns 14, 14 and 11 wide, a failed node's text
+/// right-aligned in the Upload column in Problem; or the one `Skipped`
+/// row saying why it didn't run, in Warn.
 #[must_use]
 pub fn table(outcome: &Outcome) -> Table {
     match outcome {
         Outcome::Unavailable(cause) => {
-            let mut table = Table::spanning("Speedtest");
+            let mut table = super::rows();
             table.row([
-                Cell::new("Skipped"),
-                Cell::new(format!("Speedtest unavailable: {cause}")),
+                label("Skipped"),
+                Cell::new(format!("Speedtest unavailable: {cause}")).role(Role::Warn),
             ]);
             table
         }
         Outcome::Nodes(nodes) => {
-            // The title across the table, as System's and Disk write's,
-            // over bench.sh's column names as headings (the maintainer).
-            let mut table = Table::titled(
-                "Speedtest",
-                ["Node Name", "Upload Speed", "Download Speed", "Latency"],
-            );
+            let mut table = Table::ruled(["Node", "Upload", "Download", "Latency"])
+                .min_width(0, super::LABEL)
+                .right_align(1)
+                .min_width(1, super::RATE)
+                .right_align(2)
+                .min_width(2, super::RATE)
+                .right_align(3)
+                .min_width(3, LATENCY);
             for (node, measured) in nodes {
+                let failed =
+                    |text: &str| [Cell::new(node.name), Cell::new(text).role(Role::Problem)];
                 match measured {
                     Measured::Speeds {
                         upload,
                         download,
                         latency,
                     } => table.row([node.name, upload, download, latency].map(Cell::new)),
-                    Measured::Failed => table.row([node.name, "Test failed"]),
-                    Measured::Unparsed => table.row([node.name, "Failed to parse results"]),
+                    Measured::Failed => table.row(failed("Test failed")),
+                    Measured::Unparsed => table.row(failed("Failed to parse results")),
                 }
             }
             table
         }
     }
 }
+
+/// The Latency column's width, its gap included: `270.00 ms` and two
+/// spaces.
+const LATENCY: usize = 11;
 
 /// A prepared Speedtest: the private directory holding the program (and
 /// the CLI's `HOME`), removed when dropped.
@@ -803,22 +827,21 @@ mod tests {
             (NODES[1], failed),
             (NODES[2], logged),
         ]));
-        // Each node's row: its name, then the text in the next column.
+        // Each node's row: its name, then the text in the Upload column.
         let row = |name: &str| -> Vec<String> {
             text.lines()
-                .find(|line| line.contains(name))
-                .map_or_default(|line| line.split('│').map(|cell| cell.trim().to_owned()).collect())
+                .find(|line| line.starts_with(name))
+                .map_or_default(|line| {
+                    line[name.len()..]
+                        .split("  ")
+                        .map(str::trim)
+                        .filter(|cell| !cell.is_empty())
+                        .map(str::to_owned)
+                        .collect()
+                })
         };
-        assert_eq!(
-            row(NODES[1].name).get(2).map(String::as_str),
-            Some("Test failed"),
-            "{text}"
-        );
-        assert_eq!(
-            row(NODES[2].name).get(2).map(String::as_str),
-            Some("Failed to parse results"),
-            "{text}"
-        );
+        assert_eq!(row(NODES[1].name), ["Test failed"], "{text}");
+        assert_eq!(row(NODES[2].name), ["Failed to parse results"], "{text}");
     }
 
     #[tokio::test]
@@ -839,72 +862,62 @@ mod tests {
     }
 
     #[test]
-    fn the_table_has_bench_sh_s_columns_and_texts() {
+    fn the_table_has_the_ruled_columns_and_bench_sh_s_texts() {
         let text = rendered(&Outcome::Nodes(vec![
             (NODES[0], parse(RESULT)),
             (NODES[1], Measured::Failed),
+        ]));
+        // Muted headings over right-aligned figures, a failed node's text
+        // right-aligned in the Upload column (ops spec, "Layout").
+        assert_eq!(
+            text,
+            "\
+Node                         Upload      Download    Latency
+Speedtest.net           800.00 Mbps   900.00 Mbps   12.35 ms
+Los Angeles, US         Test failed"
+        );
+        let text = rendered(&Outcome::Nodes(vec![
+            (NODES[0], parse(RESULT)),
             (NODES[2], Measured::Unparsed),
         ]));
-        for needle in [
-            "Node Name",
-            "Upload Speed",
-            "Download Speed",
-            "Latency",
-            "│ Speedtest.net   │ 800.00 Mbps             │ 900.00 Mbps",
-            "│ Los Angeles, US │ Test failed",
-            "│ Dallas, US      │ Failed to parse results",
-            "12.35 ms",
-        ] {
-            assert!(text.contains(needle), "{needle}\n{text}");
-        }
+        // A longer text widens the column, every figure still aligned.
+        assert!(
+            text.ends_with("\nDallas, US             Failed to parse results"),
+            "{text}"
+        );
         for never in ["EXTERNAL", "INTERNAL", "MAC", "HOST", "SERVERIP"] {
             assert!(!text.contains(never), "{never}\n{text}");
         }
-        // A "Speedtest" title row across the table, above the columns, as
-        // System's and Disk write's (the maintainer).
-        let lines: Vec<&str> = text.lines().collect();
-        assert_eq!(
-            lines[1].trim_matches(|c| c == '│' || c == ' '),
-            "Speedtest",
-            "{text}"
-        );
-        // bench.sh's column names: headings under the title, centred
-        // (term-ui's `Table::titled`), and bold with colour.
-        assert!(lines[3].contains("│    Node Name    │"), "{text}");
         let theme = sb_cli_core::theme::Theme::resolve(
             &sb_cli_core::theme::Palette::default(),
             sb_cli_core::theme::Profile::TrueColor,
         );
         let coloured =
             table(&Outcome::Nodes(vec![(NODES[0], parse(RESULT))])).render(&theme, true, None);
-        for heading in [
-            "Speedtest",
-            "Node Name",
-            "Upload Speed",
-            "Download Speed",
-            "Latency",
-        ] {
+        for heading in ["Node", "Upload", "Download", "Latency"] {
             assert!(
-                coloured.contains(&format!("\x1b[1m{heading}")),
+                coloured.contains(&sb_term_ui::style::paint(
+                    &theme,
+                    Role::Muted,
+                    true,
+                    heading
+                )),
                 "{heading}: {coloured:?}"
             );
         }
-        // The title once (the other "Speedtest" is Speedtest.net's row).
-        let titles = lines
-            .iter()
-            .filter(|line| line.trim_matches(|c| c == '│' || c == ' ') == "Speedtest")
-            .count();
-        assert_eq!(titles, 1, "{text}");
-        let text = rendered(&Outcome::Unavailable("digest mismatch".to_owned()));
-        let first = text.lines().nth(1).expect("title line");
+        // The node count in the heading, muted.
+        let nodes = Outcome::Nodes(vec![
+            (NODES[0], parse(RESULT)),
+            (NODES[1], Measured::Failed),
+        ]);
         assert_eq!(
-            first.trim_matches(|c| c == '│' || c == ' '),
-            "Speedtest",
-            "{text}"
+            heading(&nodes).render(&Theme::plain(), false, 4),
+            "Speedtest  2 nodes\n----\n"
         );
-        assert!(
-            text.contains("│ Skipped │ Speedtest unavailable: digest mismatch │"),
-            "{text}"
+        let text = rendered(&Outcome::Unavailable("digest mismatch".to_owned()));
+        assert_eq!(
+            text,
+            "Skipped              Speedtest unavailable: digest mismatch"
         );
     }
 }

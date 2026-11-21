@@ -134,6 +134,8 @@ indicatif.workspace = true
 # network fakes on loopback.
 tokio = { workspace = true, features = ["macros", "net", "rt", "sync"] }
 axum.workspace = true
+# bench's report snapshots, as sb list's.
+insta.workspace = true
 
 [lints]
 workspace = true

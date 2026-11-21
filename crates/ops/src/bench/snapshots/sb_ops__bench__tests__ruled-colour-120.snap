@@ -1,0 +1,52 @@
+---
+source: crates/ops/src/bench/mod.rs
+expression: "example(true, truecolor(), true, width).replace('\\x1b', \"␛\")"
+---
+␛[1m␛[38;2;126;166;255mSystem␛[0m
+␛[38;2;139;149;167m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────␛[0m
+␛[38;2;139;149;167mCPU Model␛[0m            Example CPU 16-Core Processor
+␛[38;2;139;149;167mCPU Cores␛[0m            16 @ 3000.000 MHz
+␛[38;2;139;149;167mCPU Cache␛[0m            1024 KB
+␛[38;2;139;149;167mAES-NI␛[0m               ␛[38;2;111;211;154m✓ Enabled␛[0m
+␛[38;2;139;149;167mVM-x/AMD-V␛[0m           ␛[38;2;111;211;154m✓ Enabled␛[0m
+␛[38;2;139;149;167mTotal Disk␛[0m           4.0 TiB (1.5 TiB Used)
+␛[38;2;139;149;167mTotal RAM␛[0m            100.0 GiB (25.0 GiB Used)
+␛[38;2;139;149;167mTotal Swap␛[0m           4.0 GiB (1.0 GiB Used)
+␛[38;2;139;149;167mSystem Uptime␛[0m        12 days, 3 hours, 30 mins
+␛[38;2;139;149;167mLoad Average␛[0m         0.50, 0.40, 0.30
+␛[38;2;139;149;167mOS␛[0m                   Ubuntu 24.04.5 LTS
+␛[38;2;139;149;167mArch␛[0m                 x86_64 (64 Bit)
+␛[38;2;139;149;167mKernel␛[0m               6.8.0-90-generic
+␛[38;2;139;149;167mTCP Congestion Ctrl␛[0m  bbr
+␛[38;2;139;149;167mVirtualization␛[0m       Dedicated
+␛[38;2;139;149;167mIPv4/IPv6␛[0m            ␛[38;2;245;181;91m✓ Online / ✗ Offline␛[0m
+␛[38;2;139;149;167mOrganization␛[0m         AS64500 Example Hosting Ltd
+␛[38;2;139;149;167mLocation␛[0m             Lisbon / PT
+␛[38;2;139;149;167mRegion␛[0m               Lisbon
+
+␛[1m␛[38;2;126;166;255mDisk write␛[0m
+␛[38;2;139;149;167m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────␛[0m
+␛[38;2;139;149;167m1st run␛[0m                  800.0 MB/s
+␛[38;2;139;149;167m2nd run␛[0m                  820.0 MB/s
+␛[38;2;139;149;167m3rd run␛[0m                  840.0 MB/s
+␛[1mAverage␛[0m                  ␛[1m820.0 MB/s␛[0m
+
+␛[1m␛[38;2;126;166;255mSpeedtest␛[0m␛[38;2;139;149;167m  12 nodes␛[0m
+␛[38;2;139;149;167m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────␛[0m
+␛[38;2;139;149;167mNode␛[0m                         ␛[38;2;139;149;167mUpload␛[0m      ␛[38;2;139;149;167mDownload␛[0m    ␛[38;2;139;149;167mLatency␛[0m
+Speedtest.net           900.00 Mbps   950.00 Mbps    1.00 ms
+Los Angeles, US         ␛[38;2;255;110;122mTest failed␛[0m
+Dallas, US              700.00 Mbps   750.00 Mbps  120.00 ms
+Montreal, CA            600.00 Mbps   650.00 Mbps  100.00 ms
+Paris, FR               500.00 Mbps   550.00 Mbps   20.00 ms
+Amsterdam, NL           400.00 Mbps   450.00 Mbps   10.00 ms
+Suzhou, CN              ␛[38;2;255;110;122mTest failed␛[0m
+Ningbo, CN              ␛[38;2;255;110;122mTest failed␛[0m
+Hong Kong, CN           300.00 Mbps   350.00 Mbps  200.00 ms
+Singapore, SG           200.00 Mbps   250.00 Mbps  250.00 ms
+Taipei, CN              100.00 Mbps   150.00 Mbps  220.00 ms
+Tokyo, JP               600.00 Mbps   640.00 Mbps  270.00 ms
+
+␛[38;2;139;149;167m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────␛[0m
+␛[38;2;139;149;167mFinished in␛[0m          4 min 10 sec
+␛[38;2;139;149;167mTimestamp␛[0m            2026-01-15 10:00:00 UTC
