@@ -8,7 +8,7 @@ use std::fmt::Write as _;
 
 use sb_cli_core::exit::escaped;
 use sb_cli_core::theme::{Profile, Role, Theme};
-use sb_term_ui::{Runner, Table};
+use sb_term_ui::{Heading, Runner, Table};
 use term_grid::{Direction, Filling, Grid, GridOptions};
 use unicode_width::UnicodeWidthChar;
 
@@ -304,16 +304,13 @@ pub fn render_list(listing: &Listing, theme: &Theme, colour: bool, width: usize)
     if listing.sections.is_empty() {
         return out;
     }
-    // Each slot in its role from [`COLOURS`], the heading bold. With
-    // colour off or under `ascii`, no styling at all, bold included (as
-    // help's).
+    // Each slot in its role from [`COLOURS`], the heading bold (term-ui's
+    // `Heading`). With colour off or under `ascii`, no styling at all,
+    // bold included (as help's).
     let styled = colour && theme.profile() != Profile::Ascii;
     let plain = Theme::plain();
-    let theme = if styled { theme } else { &plain };
-    let heading = theme.style(COLOURS.heading);
-    let heading = if styled { heading.bold() } else { heading };
-    let (counted, ruled) = (theme.style(COLOURS.count), theme.style(COLOURS.rule));
-    let (command, hint) = (theme.style(COLOURS.command), theme.style(COLOURS.hint));
+    let painted = if styled { theme } else { &plain };
+    let (command, hint) = (painted.style(COLOURS.command), painted.style(COLOURS.hint));
     // Each tag escaped (cli-core's `escaped`: a tag is Ansible's output)
     // and measured as shown.
     let shown: Vec<Vec<String>> = listing
@@ -327,22 +324,20 @@ pub fn render_list(listing: &Listing, theme: &Theme, colour: bool, width: usize)
         .map(|tag| display_width(tag))
         .max()
         .unwrap_or(0);
-    let rule = if styled { "─" } else { "-" }.repeat(width);
     for (section, cells) in listing.sections.iter().zip(shown) {
         let (name, prefix) = named(section.repo);
         let count = section.tags.len();
         let noun = if count == 1 { "tag" } else { "tags" };
-        let _ = write!(
-            out,
-            "\n{heading}{name}{heading:#}{counted}  {count} {noun}{counted:#}"
-        );
+        let mut heading = Heading::new(name, COLOURS.heading)
+            .hint(format!("  {count} {noun}"), COLOURS.count)
+            .rule(COLOURS.rule);
         if !prefix.is_empty() {
-            let _ = write!(
-                out,
-                "{hint}  ·  install as {hint:#}{command}{prefix}<tag>{command:#}"
-            );
+            heading = heading
+                .hint("  ·  install as ", COLOURS.hint)
+                .hint(format!("{prefix}<tag>"), COLOURS.command);
         }
-        let _ = writeln!(out, "\n{ruled}{rule}{ruled:#}");
+        out.push('\n');
+        out.push_str(&heading.render(theme, colour, width));
         out.push_str(&columns(cells, widest, width));
     }
     let _ = writeln!(

@@ -2,6 +2,7 @@
 //! path, theme adapters, and later the task runner and tables.
 
 mod child;
+mod heading;
 mod prompt;
 mod runner;
 pub mod style;
@@ -11,6 +12,7 @@ mod tree;
 mod tty;
 
 pub use child::ChildFailure;
+pub use heading::{Heading, rule};
 pub use prompt::{PromptError, can_ask, confirm, confirm_over};
 pub use runner::{
     Group, GroupAll, Labels, Line, Options, Runner, Step, Target, keeps_codes, runner_live,
