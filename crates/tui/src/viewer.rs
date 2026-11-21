@@ -474,6 +474,14 @@ enum Follow {
     Paused,
 }
 
+/// Where a frame puts the window's top: at the anchor, or at the bottom
+/// once a frame has measured the window ([`Viewer::keep_bottom`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Placing {
+    Anchor,
+    BottomWhenMeasured,
+}
+
 /// Where the window starts: an item (`-1` the start-of-log marker, then
 /// the buffer's entries, then the end marker) and the rows of it above
 /// the window.
@@ -514,6 +522,9 @@ pub struct Viewer {
     wrap: bool,
     /// The window's top when not sticking.
     anchor: Anchor,
+    /// `BottomWhenMeasured` when the follow stopped at the bottom before
+    /// a frame measured the window ([`Self::keep_bottom`]).
+    placing: Placing,
     /// The log area's size at the last draw.
     width: u16,
     height: usize,
@@ -616,6 +627,7 @@ impl Viewer {
             follow: Follow::Stuck,
             wrap: true,
             anchor: Anchor { item: 0, skip: 0 },
+            placing: Placing::Anchor,
             width: 0,
             height: 0,
             last_page: None,
@@ -703,10 +715,8 @@ impl Viewer {
                 // The follow has stopped or never started (follow-L4): the
                 // view stays where it is, paged, and `f` retries.
                 let cant_follow = matches!(notice, Notice::CantFollow(_));
+                let was_stuck = cant_follow && self.stuck();
                 if cant_follow && self.following() {
-                    if self.stuck() {
-                        self.anchor = self.bottom_anchor();
-                    }
                     self.follow = Follow::Off;
                 }
                 let of_follow = notice.of_follow();
@@ -717,6 +727,11 @@ impl Viewer {
                     self.shift_current(1);
                 } else {
                     self.entries.push_back(entry);
+                }
+                if was_stuck {
+                    // At the bottom it stays, the notice and the end
+                    // marker in sight.
+                    self.keep_bottom();
                 }
             }
         }
@@ -773,6 +788,7 @@ impl Viewer {
                 }
                 if !self.stuck() {
                     self.anchor = Anchor { item: 0, skip: 0 };
+                    self.placing = Placing::Anchor;
                 }
                 if kind == PageKind::Tail {
                     if self.whole.as_ref().is_some_and(Whole::read_newer) {
@@ -1244,7 +1260,20 @@ impl Viewer {
     fn move_to(&mut self, at: Anchor) {
         if at != self.top() {
             self.anchor = at;
+            self.placing = Placing::Anchor;
             self.unstick();
+        }
+    }
+
+    /// The window's top to the bottom, the follow already off: now, and
+    /// again at the first frame that lays the log out when none has yet.
+    /// Before it the window's height is unknown (0): the bottom measured
+    /// then is past every row, which keeps the buffer's limits dropping
+    /// from the front, but drawn it would show only the end marker.
+    fn keep_bottom(&mut self) {
+        self.anchor = self.bottom_anchor();
+        if self.height == 0 {
+            self.placing = Placing::BottomWhenMeasured;
         }
     }
 
@@ -1884,14 +1913,24 @@ impl Viewer {
 
     /// The log area: each item from the window's top down, log lines
     /// from the last frame's texts where it kept them ([`Drawn`]).
-    fn draw_log(&mut self, frame: &mut Frame<'_>, log: Rect) {
+    /// The log area's size from this frame's layout, before anything is
+    /// drawn (the header's start state reads the window's top): a bottom
+    /// waiting for it is placed, a new size clamps the anchor and pages.
+    fn measure(&mut self, log: Rect) {
         let resized = log.width != self.width || usize::from(log.height) != self.height;
         self.width = log.width;
         self.height = usize::from(log.height);
+        if self.placing == Placing::BottomWhenMeasured && self.height > 0 {
+            self.placing = Placing::Anchor;
+            self.anchor = self.bottom_anchor();
+        }
         if resized {
             self.clamp_anchor();
             self.prefetch();
         }
+    }
+
+    fn draw_log(&mut self, frame: &mut Frame<'_>, log: Rect) {
         let mut last = std::mem::take(&mut self.drawn);
         let mut ahead = std::mem::take(&mut self.ahead);
         let built_for = (self.format.clone(), self.query.clone());
@@ -2238,6 +2277,7 @@ impl App for Viewer {
             Constraint::Length(1),
         ])
         .areas(area);
+        self.measure(log);
         frame.render_widget(Paragraph::new(self.header(header.width)), header);
         if self.searching.is_none() {
             frame.render_widget(Paragraph::new(self.footer(footer.width)), footer);

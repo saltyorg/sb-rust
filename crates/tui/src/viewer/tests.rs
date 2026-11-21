@@ -560,6 +560,182 @@ fn cant_follow_turns_the_follow_off_and_f_retries() {
     assert_eq!(h.requests(), [Request::Follow(true)]);
 }
 
+/// The follow can't start before the first frame (the tail and the
+/// notice come in one wake, as when the system's inotify limit is
+/// reached): the first frame shows the tail and the notice, not an empty
+/// log under its end marker.
+#[test]
+fn cant_follow_before_the_first_frame_shows_the_tail_and_the_notice() {
+    let mut h = open(60, 6, Limits::default());
+    h.requests();
+    assert!(h.fake.send(tail(0..2, false)));
+    assert!(
+        h.fake
+            .send(Event::Notice(Notice::CantFollow("no watches left".into())))
+    );
+    assert_eq!(h.viewer.wake(), Flow::Redraw);
+    h.draw();
+    assert_eq!(
+        h.log(),
+        [
+            "--- start of log ---",
+            "m0",
+            "m1",
+            "can't follow: no watches left; f retries",
+            "--- end of log ---",
+        ]
+    );
+    // The header of the same frame: the log's start is in view.
+    assert!(h.screen()[0].contains("at the start"), "{:?}", h.screen());
+}
+
+/// The same under a tail taller than the window: the first frame shows
+/// the tail's newest lines, the notice and the end marker.
+#[test]
+fn cant_follow_before_the_first_frame_under_a_long_tail_shows_its_bottom() {
+    let mut h = open(60, 6, Limits::default());
+    h.requests();
+    assert!(h.fake.send(tail(0..20, true)));
+    assert!(
+        h.fake
+            .send(Event::Notice(Notice::CantFollow("no watches left".into())))
+    );
+    h.viewer.wake();
+    h.draw();
+    assert_eq!(
+        h.log(),
+        [
+            "m17",
+            "m18",
+            "m19",
+            "can't follow: no watches left; f retries",
+            "--- end of log ---",
+        ]
+    );
+}
+
+/// A first frame with no rows for the log (a terminal of two rows): the
+/// bottom waits for a frame that has rows.
+#[test]
+fn cant_follow_before_a_frame_with_log_rows_waits_for_one() {
+    let mut h = open(60, 1, Limits::default());
+    h.requests();
+    assert!(h.fake.send(tail(0..20, true)));
+    assert!(
+        h.fake
+            .send(Event::Notice(Notice::CantFollow("no watches left".into())))
+    );
+    h.viewer.wake();
+    h.draw();
+    h.terminal.backend_mut().resize(60, 7);
+    h.terminal.autoresize().expect("resized");
+    h.draw();
+    assert_eq!(
+        h.log().last().map(String::as_str),
+        Some("--- end of log ---"),
+        "{:?}",
+        h.log()
+    );
+}
+
+/// The buffer at its cap before the first frame: the notice pushes out
+/// the oldest entry, as at the bottom, not itself.
+#[test]
+fn cant_follow_before_the_first_frame_at_the_cap_drops_the_oldest() {
+    let limits = Limits {
+        entries: 3,
+        bytes: usize::MAX,
+    };
+    let mut h = open(60, 6, limits);
+    h.requests();
+    assert!(h.fake.send(tail(0..3, false)));
+    assert!(
+        h.fake
+            .send(Event::Notice(Notice::CantFollow("no watches left".into())))
+    );
+    h.viewer.wake();
+    h.draw();
+    assert_eq!(
+        h.log(),
+        [
+            "m1",
+            "m2",
+            "can't follow: no watches left; f retries",
+            "--- end of log ---",
+        ]
+    );
+}
+
+/// The follow paused above the bottom, then stopped: the view stays
+/// where it is (follow-L4).
+#[test]
+fn cant_follow_while_paused_leaves_the_view_where_it_is() {
+    let mut h = open(60, 6, Limits::default());
+    h.requests();
+    h.send(tail(0..20, true));
+    h.key(KeyCode::Up);
+    assert_eq!(h.log(), ["m15", "m16", "m17", "m18", "m19"]);
+    h.send(Event::Notice(Notice::CantFollow("no watches left".into())));
+    assert_eq!(h.log(), ["m15", "m16", "m17", "m18", "m19"]);
+}
+
+/// Home before the first frame, after the follow couldn't start: the
+/// first frame shows the log's start, the bottom given up.
+#[test]
+fn home_before_the_first_frame_wins_over_the_stopped_follows_bottom() {
+    let mut h = open(60, 6, Limits::default());
+    h.requests();
+    assert!(h.fake.send(tail(0..20, false)));
+    assert!(
+        h.fake
+            .send(Event::Notice(Notice::CantFollow("no watches left".into())))
+    );
+    h.viewer.wake();
+    h.viewer
+        .input(Input::Key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE)));
+    h.draw();
+    assert_eq!(h.log()[..2], ["--- start of log ---", "m0"]);
+}
+
+/// The log's first page, asked for by Home before the first frame after
+/// the follow couldn't start: the first frame shows it from its top.
+#[test]
+fn a_head_page_before_the_first_frame_wins_over_the_stopped_follows_bottom() {
+    let mut h = open(60, 6, Limits::default());
+    h.requests();
+    assert!(h.fake.send(tail(10..30, true)));
+    assert!(
+        h.fake
+            .send(Event::Notice(Notice::CantFollow("no watches left".into())))
+    );
+    h.viewer.wake();
+    h.viewer
+        .input(Input::Key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE)));
+    assert_eq!(h.requests(), [Request::Head]);
+    h.send(head_page(0..20, true));
+    assert_eq!(h.log()[..2], ["--- start of log ---", "m0"]);
+}
+
+/// The follow stops under a tail taller than the window: the window
+/// stays at the bottom, the notice and the end marker in sight.
+#[test]
+fn cant_follow_under_a_long_tail_keeps_the_notice_in_sight() {
+    let mut h = open(60, 6, Limits::default());
+    h.requests();
+    h.send(tail(0..20, true));
+    h.send(Event::Notice(Notice::CantFollow("no watches left".into())));
+    assert_eq!(
+        h.log(),
+        [
+            "m17",
+            "m18",
+            "m19",
+            "can't follow: no watches left; f retries",
+            "--- end of log ---",
+        ]
+    );
+}
+
 /// After reading back (an older page) and following again, a notice is
 /// the follow's: at the bottom, in sight.
 #[test]
