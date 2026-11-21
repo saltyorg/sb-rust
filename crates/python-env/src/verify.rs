@@ -28,6 +28,7 @@
 //! `spawn::blocking`.
 
 use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::fs::File;
 use std::io;
 use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
@@ -144,22 +145,31 @@ fn open_root(dir: &Path) -> io::Result<OwnedFd> {
 /// size are one; rows that disagree (two wheels shipping one file, the
 /// later one's bytes on disk) go to [`Findings::conflicting`], which a
 /// rebuild couldn't change, and aren't checked.
+///
+/// Keyed by the path's bytes, compared as one slice, where `PathBuf`'s
+/// order walks both paths' components: ordering 31,000 rows that way
+/// took twice the instructions of hashing the venv's files (performance
+/// research, round 5). The paths are [`within`]'s, built from normal
+/// components only, so two are the same path exactly when their bytes
+/// are; the files are checked in byte order, and every list reported is
+/// sorted as before ([`Findings::sort`]; `conflicting` keeps `PathBuf`'s
+/// order).
 fn distinct(expected: Vec<Expected>, findings: &mut Findings) -> Vec<Expected> {
-    let mut by_path: BTreeMap<PathBuf, Expected> = BTreeMap::new();
+    let mut by_path: BTreeMap<OsString, Expected> = BTreeMap::new();
     let mut conflicting = std::collections::BTreeSet::new();
     for file in expected {
-        match by_path.get(&file.path) {
+        match by_path.get(file.path.as_os_str()) {
             Some(seen) if seen.sha256 != file.sha256 || seen.size != file.size => {
                 conflicting.insert(file.path);
             }
             Some(_) => {}
             None => {
-                by_path.insert(file.path.clone(), file);
+                by_path.insert(file.path.clone().into_os_string(), file);
             }
         }
     }
     for path in &conflicting {
-        by_path.remove(path);
+        by_path.remove(path.as_os_str());
     }
     findings.conflicting.extend(conflicting);
     by_path.into_values().collect()
@@ -963,6 +973,40 @@ mod tests {
         assert_eq!(found.conflicting, [site.join("pkg/__init__.py")]);
         assert_eq!(found.checked, 2);
         assert!(!found.damaged());
+    }
+
+    /// Every list reported is in `PathBuf`'s order, whose `pkg/z.py`
+    /// comes before `pkg.d/a.py` (components), where their bytes are the
+    /// other way round: the same lists as when the rows were ordered by
+    /// `PathBuf`.
+    #[test]
+    fn the_lists_keep_paths_order_not_bytes() {
+        let (_dir, venv, site) = venv();
+        let names = ["pkg.d/a.py", "pkg/z.py", "pkg.d/b.py", "pkg/y.py"];
+        let rows = |bytes: &[u8]| -> String {
+            let hash = digest(bytes);
+            let rows = names.map(|name| format!("{name},sha256={hash},1\n"));
+            rows.concat()
+        };
+        let (first, second) = (rows(b"1"), rows(b"2"));
+        // Missing: listed once each, in the first RECORD.
+        let record = site.join("pkg-1.0.dist-info/RECORD");
+        let mut text = std::fs::read_to_string(&record).expect("record");
+        text.push_str(&first);
+        std::fs::write(&record, &text).expect("record");
+        let found = packages(&venv, &token()).expect("checked");
+        let expected: Vec<PathBuf> = ["pkg/y.py", "pkg/z.py", "pkg.d/a.py", "pkg.d/b.py"]
+            .iter()
+            .map(|name| site.join(name))
+            .collect();
+        assert_eq!(found.missing, expected);
+        // Conflicting: a second RECORD disagreeing on each.
+        std::fs::create_dir(site.join("other-2.0.dist-info")).expect("dist-info");
+        std::fs::write(site.join("other-2.0.dist-info/RECORD"), second).expect("record");
+        let found = packages(&venv, &token()).expect("checked");
+        assert_eq!(found.conflicting, expected);
+        assert_eq!(found.missing, [] as [PathBuf; 0]);
+        assert_eq!(found.checked, 3);
     }
 
     /// A venv whose `lib` is a link isn't listed through it: its
