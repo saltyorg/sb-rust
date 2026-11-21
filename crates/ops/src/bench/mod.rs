@@ -1066,6 +1066,37 @@ mod tests {
         assert_eq!(wide.replace(&"-".repeat(120), &"-".repeat(80)), narrow);
     }
 
+    /// Over 1 Gbps and over 1000 MB/s (common on Saltbox servers), Disk
+    /// write's rates and Speedtest's Upload column still end in the same
+    /// column (decision 43, amended: 14 wide).
+    #[test]
+    fn four_digit_rates_keep_the_columns_flush() {
+        let disk = disk::table(&disk::Outcome::Runs(vec![Some(1234.5); 3])).render(
+            &Theme::plain(),
+            false,
+            Some(80),
+        );
+        let nodes = speedtest::table(&speedtest::Outcome::Nodes(vec![(
+            speedtest::NODES[0],
+            speedtest::Measured::Speeds {
+                upload: "1234.56 Mbps".to_owned(),
+                download: "9876.54 Mbps".to_owned(),
+                latency: "0.46 ms".to_owned(),
+            },
+        )]))
+        .render(&Theme::plain(), false, Some(80));
+        let end = |text: &str, needle: &str| {
+            let line = text
+                .lines()
+                .find(|line| line.contains(needle))
+                .unwrap_or_else(|| panic!("{needle}\n{text}"));
+            line.find(needle).map(|at| at + needle.len())
+        };
+        assert_eq!(end(&disk, "1234.5 MB/s"), Some(LABEL + RATE), "{disk}");
+        assert_eq!(end(&nodes, "1234.56 Mbps"), Some(LABEL + RATE), "{nodes}");
+        assert_eq!(end(&nodes, "Upload"), Some(LABEL + RATE), "{nodes}");
+    }
+
     /// The roles of the failure and skip cells: a failed node, a failed
     /// disk run and a run that couldn't parse in Problem; every
     /// `Skipped` reason in Warn; `Average` bold.
