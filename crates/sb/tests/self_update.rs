@@ -347,7 +347,8 @@ fn on_a_terminal(setup: &Setup, prefix: &str, keys: &str) -> String {
     on_a_terminal_typing(setup, prefix, "", keys)
 }
 
-/// [`on_a_terminal`], `early` typed at once, before the question.
+/// [`on_a_terminal`], `early` typed at once, sb started once the terminal
+/// has it (so it is typed before the question).
 fn on_a_terminal_typing(setup: &Setup, prefix: &str, early: &str, keys: &str) -> String {
     on_a_terminal_asking(
         setup,
@@ -370,13 +371,32 @@ fn on_a_terminal_asking(
     keys: &str,
 ) -> String {
     use std::io::Write;
+    // With `early`, sb starts only once those keys are in the terminal's
+    // input queue: `script` forwards what it is sent when it gets to it,
+    // which on a busy machine can be after sb has flushed the queue, and
+    // the keys would then answer. The shell waits on a FIFO the test
+    // writes once the terminal has echoed the keys (the line discipline
+    // echoes what it has queued). Why not portable-pty (tests/raw_pty),
+    // which could type into the master before spawning sb: this helper
+    // runs every self-update terminal test (Ctrl-C, the background job,
+    // the answers) under util-linux `script`, as term-ui's signals tests;
+    // one test on another harness would split it for a gate of two lines.
+    let go = setup.dir.path().join("go");
+    let gate = if early.is_empty() {
+        ""
+    } else {
+        rustix::fs::mkfifoat(rustix::fs::CWD, &go, rustix::fs::Mode::from_raw_mode(0o600))
+            .expect("mkfifo");
+        "read -r _ < \"$GO\"; "
+    };
     let shell = format!(
-        "{prefix}\"$SB\" self-update --force-update {extra} --color=never & wait $!; echo EXIT=$?"
+        "{gate}{prefix}\"$SB\" self-update --force-update {extra} --color=never & wait $!; echo EXIT=$?"
     );
     let mut script = setup.command("timeout");
     script
         .args(["30", "script", "-qec", &shell, "/dev/null"])
         .env("SB", &setup.sb)
+        .env("GO", &go)
         .env("TERM", "xterm-256color")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped());
@@ -401,6 +421,24 @@ fn on_a_terminal_asking(
             }
         })
     };
+    // Opened read and write, which on Linux never blocks (fifo(7)), and
+    // kept open until the run ends: the shell may open its end later, and
+    // a FIFO open at neither end drops what was written.
+    let _go = (!early.is_empty()).then(|| {
+        let echo = early.replace('\r', "\r\n");
+        let start = std::time::Instant::now();
+        while !shown.lock().expect("shown").contains(&echo) {
+            assert!(start.elapsed() < Duration::from_secs(20), "no echo");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let mut go = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&go)
+            .expect("open the FIFO");
+        go.write_all(b"\n").expect("start sb");
+        go
+    });
     if !keys.is_empty() {
         let start = std::time::Instant::now();
         while !shown.lock().expect("shown").contains(question) {
