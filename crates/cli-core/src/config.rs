@@ -73,17 +73,21 @@ fn read_opened(
         Err(rustix::io::Errno::NOENT) => return Ok(None),
         Err(errno) => return Err(ConfigError::Read(errno.into())),
     };
-    if !file
-        .metadata()
-        .map_err(ConfigError::Read)?
-        .file_type()
-        .is_file()
-    {
+    let metadata = file.metadata().map_err(ConfigError::Read)?;
+    if !metadata.file_type().is_file() {
         return Err(ConfigError::NotAFile);
     }
     let mut bytes = Vec::new();
     match cap {
         Some(cap) => {
+            // Room for the file as its metadata sizes it (at most the cap)
+            // and one byte more, so `read_to_end` fills it in one read and
+            // sees the end in the next: `Take` gives no size hint, and an
+            // empty buffer grew from 32 bytes by doubling (5 to 11 reads a
+            // file). A file that grew meanwhile is still read to its end
+            // or the cap.
+            let sized = usize::try_from(metadata.len()).unwrap_or(usize::MAX);
+            bytes.reserve_exact(sized.min(cap).saturating_add(1));
             file.take(cap as u64 + 1)
                 .read_to_end(&mut bytes)
                 .map_err(ConfigError::Read)?;
