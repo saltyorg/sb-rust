@@ -4,7 +4,9 @@
 update` run: one tree per command, paused while something else needs
 the terminal, printed once, when its run ends, in one column; questions
 asked during a run open on the alternate screen (decision 14 and
-"Prompts"; decisions 3 and 11 amended).*
+"Prompts"; decisions 3 and 11 amended). Amended 2026-11-21 by the
+maintainer's choice of a layout for `sb bench`: the ruled table look
+and the section heading shared with `sb list` ("Tables").*
 
 Module of the approved capability map (`term-ui`: inline UI only; depends
 on `cli-core`). The first vertical slice is `sb version` (done) →
@@ -383,6 +385,29 @@ sequence.
   headings are, through the same `Span` (bench's Speedtest table). The
   title wraps across the whole table when fitted. Every other table
   draws as before. *Amended 2026-11-17 (maintainer).*
+- **The ruled look** (`Table::ruled(headings)`, `sb bench`'s: ops spec,
+  decision 43; *amended 2026-11-21, the maintainer*): tabled's
+  `Style::empty()`, so no border and no rule between rows; no padding
+  but a two-space gap, after each left-aligned column but the last,
+  before each right-aligned column but the first, and before a
+  left-aligned column after a right-aligned one; headings in Muted,
+  aligned as their columns, none
+  drawn when the list is empty; a column's minimum width where the
+  caller asks (tabled's `Width::increase`, `MinWidth`), which counts
+  the gap; a cell bold where the caller asks (`Cell::bold`), with its
+  role's colour or alone; an empty cell drawn without codes. Fitted and wrapped as every table, the
+  narrowest a character a cell plus the gaps; each line's trailing
+  spaces dropped. Escape handling as every table's. The boxed look is
+  unchanged.
+- **Section headings** (`Heading`; *amended 2026-11-21, the maintainer,
+  for `sb bench`*): `sb list`'s heading, moved here so `sb list` and
+  `sb bench` share it: a name, bold, in the role its caller names; any
+  hints after it, each in its own role (list's `  31 tags` and `  ·
+  install as sandbox-<tag>`, bench's `  12 nodes`); then a rule across
+  the width in its role, Muted unless the caller names another. With
+  colour off or under `ascii`, no codes at all, bold included, and the
+  rule in `-` instead of `─`. Its text is sb's own words, never
+  untrusted input. `sb list`'s output is byte for byte what it was.
 
 ### Prompts (specified now, built with their first user: decision 1)
 

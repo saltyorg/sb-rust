@@ -18,7 +18,10 @@ Amended 2026-11-18 by the maintainer's decisions: `update` ends with
 what moved and a closing hint (step 13, "What moved, and the closing
 hint"; decisions 36 to 38, differences 62 and 63); and it draws one
 tree for the whole run, its questions on the alternate screen (decision
-39, difference 64; term-ui decision 14).*
+39, difference 64; term-ui decision 14).
+Amended 2026-11-21 by the maintainer's choice: bench takes the ruled
+layout (section "`sb bench`", "Layout"; decision 43, differences 67 to
+69).*
 
 Module of the approved capability map (`ops`): the workflow commands
 that tie the other modules together. The build order puts `ops` last
@@ -483,15 +486,45 @@ and run as code except the digest-pinned Ookla Speedtest.
 (`Reading system information`, `Disk write test (n/3)`, `Preparing
 Speedtest`, `Speedtest: <node>`), each shown only while it runs (term-ui's
 transient steps), so a run that succeeds leaves only the results; a
-section without steps starts no runner. **Results:** three term-ui tables on stdout, each printed when
+section without steps starts no runner. **Results:** three sections on stdout, each printed when
 its section ends, then the total time and a timestamp. No `clear`. On a
-terminal the tables fit its width; when stdout isn't a terminal they
+terminal the sections fit its width; when stdout isn't a terminal they
 lay out as at 80 columns, their cells wrapped as on a terminal that
 wide, so a long cell (a Speedtest that couldn't be prepared, its
-reason) doesn't draw the table wider (the maintainer, 2026-11-18).
+reason) doesn't draw the output wider (the maintainer, 2026-11-18).
 `COLUMNS` doesn't change it, as sb-go's piped wrap. This is bench's own
 choice; term-ui's piped tables otherwise keep their natural width
 (term-ui spec, "Piped").
+
+**Layout, "ruled"** (the maintainer, 2026-11-21; decision 43,
+differences 67 to 69), as the design example the maintainer chose
+shows it:
+- no boxes, no blank line at the top, no rule between rows;
+- each section opens with term-ui's section heading, `sb list`'s:
+  `System`, `Disk write` and `Speedtest` bold in the Service role,
+  Speedtest's followed by a muted `  <n> nodes` when its nodes ran,
+  then a Muted rule across the width (`-` when plain), and a blank
+  line before every heading but the first;
+- every section and the footer are term-ui ruled tables
+  (term-ui spec, "Tables", the ruled look) on one label column 21
+  wide (`TCP Congestion Ctrl` and two spaces), the labels Muted, a
+  value starting in column 22 and wrapping at words within the rest of
+  the width;
+- Disk write's rates right-aligned in a column 13 wide, which ends
+  where Speedtest's Upload column ends; `Average`, label and value,
+  bold; a run's `Test failed` right-aligned there too, in Problem;
+- Speedtest's `Upload`, `Download` and `Latency` right-aligned in
+  columns 13, 13 and 11 wide (two spaces before the widest value at
+  the least), under muted headings aligned as their columns (`Node`
+  over the node names), the node names in the terminal's colour; a
+  failed node's `Test failed` or `Failed to parse results`
+  right-aligned in the Upload column, in Problem, its other cells
+  empty;
+- a `Skipped` row (Disk write: no space, free space unknown, no write
+  permission; Speedtest unavailable) keeps its text, in Warn;
+- the footer: a blank line, a Muted rule, then `Finished in` and
+  `Timestamp` as two more rows of the same label column;
+- no line ends in a space; every value is the text it was before.
 
 **1. System** (a two-column table; each row found as sb-go's
 bench.sh finds it, `cmd/bench_script.sh`'s `get_system_info`,
@@ -565,10 +598,9 @@ in either answer are never printed or logged.
   61933, Amsterdam, NL 41423, Suzhou, CN 5396, Ningbo, CN 59387, Hong
   Kong, CN 32155, Singapore, SG 13623, Taipei, CN 65092, Tokyo, JP
   48463;
-- a `Speedtest` title row across the table, as System's and Disk
-  write's, over bench.sh's columns as headings (term-ui's
-  `Table::titled`; the maintainer and 2026-11-17),
-  `Node Name | Upload Speed | Download Speed | Latency`: the JSON's
+- columns `Node`, `Upload`, `Download` and `Latency` (the ruled layout
+  above; until 2026-11-21 a `Speedtest` title row over bench.sh's
+  `Node Name | Upload Speed | Download Speed | Latency`): the JSON's
   `upload.bandwidth` and `download.bandwidth` (bytes per second) as
   `<n> Mbps` (× 8 / 10^6, two decimals) and
   `ping.latency` as `<n> ms` (two decimals), the values the CLI's text
@@ -1384,6 +1416,29 @@ Local changes (the maintainer, 2026-11-19; decisions 40 to 42):
     runs the rest, the tags caches always rebuilt; sb-go had no way to
     update without resetting the checkouts.
 
+`bench`, the ruled layout (the maintainer, 2026-11-21; decision 43):
+67. bench's output is sb list's look: bold section headings over a
+    rule across the terminal, label and value rows with no separator,
+    and a footer under a rule. bench.sh drew `Label : value` lines
+    under a banner (`A Bench.sh Script By Teddysun`, its version and
+    usage), each section between 70-column `-` rules, and cleared the
+    screen first; sb has no banner and no `clear` (difference 15).
+68. The labels are bench's own words in one 21-column label column for
+    every section (`1st run` to `Average`, `Finished in`, `Timestamp`;
+    no colon); bench.sh's were `I/O Speed(1st run)` and so on, each
+    followed by ` : `. Speedtest's headings are `Node`, `Upload`,
+    `Download` and `Latency` (bench.sh: `Node Name`, `Upload Speed`,
+    `Download Speed`, `Latency`), and its numbers and Disk write's are
+    right-aligned so their decimals line up; bench.sh left-aligned
+    them in fixed-width fields.
+69. Colour carries meaning only: Muted labels, rules and headings, a
+    failed Speedtest node or disk run in Problem, a `Skipped` reason in
+    Warn, and the Ok, Warn and Problem cells bench already had.
+    bench.sh coloured every value (System's cyan or yellow, the disk
+    rates yellow; a node's name, upload, download and latency yellow,
+    green, red and cyan; a failure red) and always wrote colour, piped
+    too; sb follows its colour choice and writes none piped.
+
 ## Scope
 
 **In:**
@@ -1626,7 +1681,11 @@ the real services.
   a missing entry); a digest mismatch from a fake download refusing to
   run anything; icanhazip and ipinfo from the fake server; the whole
   command through the binary in a namespace with a tmpfs working
-  directory and the network fakes.
+  directory and the network fakes; the ruled layout as snapshots of the
+  whole report from the design example's values (plain, which is the
+  example's text byte for byte, and coloured, at 80 and 120 columns,
+  with the network and without), and the roles of the failure and
+  `Skipped` cells (2026-11-21).
 - **gha matrix (by hand, capped):** `sb gha` in `ubuntu:22.04`, `24.04`
   and `26.04` containers with a synthetic Saltbox checkout symlinked at
   `/srv/git/saltbox`, run as a `runner` user with a stand-in sudo
@@ -2117,6 +2176,22 @@ the real services.
     recorded choice: its answer is the user's own, as a declined
     self-update's warning); a declined `setup` skips the fetch and reset
     and goes on, as update does.
+43. **bench takes the "ruled" layout** (the maintainer, 2026-11-21,
+    choosing it from three design examples, ruled, grid and panels,
+    after "a design pass on bench, to make it a better presentation vs
+    the very separate feeling tables currently used"): `sb list`'s
+    section headings and one shared label column instead of three boxed
+    tables of three widths (section "`sb bench`", "Layout"; differences
+    67 to 69). The heading is term-ui's, shared with `sb list`, whose
+    output stays byte for byte as it was. Decided, where the
+    example shows no case: a failed disk run's `Test failed` takes
+    Problem and stays right-aligned in its column, as a failed node's
+    does; a failure text longer than the Upload column (`Failed to
+    parse results`) widens the column, every figure staying aligned
+    under it; the heading's bold and colour are written as `sb list`
+    writes them (two SGR sequences, where the example joined them in
+    one), and a padded cell's spaces sit outside its colour, as tabled
+    pads; what shows on the terminal is the same.
 
 ## Known limits
 
