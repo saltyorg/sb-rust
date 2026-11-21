@@ -117,7 +117,7 @@ fn spawn_with(
     outbox: Outbox,
 ) -> SourceHandle {
     SourceHandle::spawn(outbox, move |requests, outbox| {
-        let events = Some(open_events(&daemon));
+        let events = Some(open_starts_and_dies(&daemon, &container.name));
         Adapter {
             daemon,
             container,
@@ -139,8 +139,15 @@ fn spawn_with(
 type Lines = Pin<Box<dyn Stream<Item = Vec<anyhow::Result<LogLine>>> + Send>>;
 type Events = Pin<Box<dyn Stream<Item = anyhow::Result<ContainerEvent>> + Send>>;
 
+/// The picker's events: the actions that can change a row.
 fn open_events(daemon: &Daemon) -> Events {
     Box::pin(events::container_events(daemon))
+}
+
+/// A viewer's events: its container's starts and dies, all it acts on
+/// (`Adapter::event`).
+fn open_starts_and_dies(daemon: &Daemon, name: &str) -> Events {
+    Box::pin(events::starts_and_dies(daemon, name))
 }
 
 /// The follow: off, reading the log from a position on, or waiting for
@@ -243,7 +250,7 @@ impl Adapter {
                 }
                 Step::Retry => {
                     self.retry = None;
-                    self.events = Some(open_events(&self.daemon));
+                    self.events = Some(open_starts_and_dies(&self.daemon, &self.container.name));
                     self.resolve().await
                 }
             };

@@ -3,7 +3,10 @@
 //! an event marks the picker's container list stale, and a `start` lets a
 //! stopped follow resume. Read through bollard's `Docker::events`
 //! (<https://docs.rs/bollard/0.21.1/bollard/struct.Docker.html#method.events>)
-//! with the `type=container` filter its example shows; the shapes are in
+//! with the `type=container` filter its example shows, and the actions
+//! (`event`) and container (`container`) each reader needs, so the
+//! daemon keeps the rest, a health check's three exec events every few
+//! seconds above all (perf round 5, item 6); the shapes are in
 //! docs/platform-notes/docker-logs.md, "Container events".
 
 use std::collections::HashMap;
@@ -74,27 +77,79 @@ impl ContainerEvent {
     }
 }
 
+/// The actions that can change a picker row: its state, status, health,
+/// restart count, times or name. Not a health check's `exec_create`,
+/// `exec_start` and `exec_die` (its result comes as `health_status`), nor
+/// `attach`, `commit`, `copy`, `detach`, `export`, `resize` or `top`.
+/// With `health_status` among them, dockerd matches each as a prefix of
+/// the event's action (`matchEvent` in
+/// <https://github.com/moby/moby/blob/docker-v29.0.0/daemon/events/filter.go>, and `FuzzyMatch` in
+/// <https://github.com/moby/moby/blob/docker-v29.0.0/daemon/internal/filters/parse.go>), so
+/// `health_status` takes `health_status: healthy` and its other states.
+const ROW_ACTIONS: [&str; 13] = [
+    "create",
+    "start",
+    "die",
+    "destroy",
+    "rename",
+    "health_status",
+    "stop",
+    "kill",
+    "pause",
+    "unpause",
+    "restart",
+    "oom",
+    "update",
+];
+
 /// The daemon's container messages, as bollard reads them with the
-/// `type=container` filter, boxed (`StreamExt::boxed`,
+/// `type=container` filter and `filters`, boxed (`StreamExt::boxed`,
 /// <https://docs.rs/futures-util/0.3.34/futures_util/stream/trait.StreamExt.html#method.boxed>),
 /// so sb-docker alone compiles bollard's and hyper's client under it, not
 /// sb-tui, which polls the events (ADR-026's amendment). Not inlined, so
 /// no caller's crate gets the wrapper, and with it the stream's code,
 /// back.
 #[inline(never)]
-fn messages(daemon: &Daemon) -> BoxStream<'static, Result<EventMessage, bollard::errors::Error>> {
-    let filters = HashMap::from([("type", vec!["container"])]);
-    let options = EventsOptionsBuilder::default().filters(&filters).build();
+fn messages<'a>(
+    daemon: &Daemon,
+    filters: impl IntoIterator<Item = (&'a str, Vec<&'a str>)>,
+) -> BoxStream<'static, Result<EventMessage, bollard::errors::Error>> {
+    let mut all = HashMap::from([("type", vec!["container"])]);
+    all.extend(filters);
+    let options = EventsOptionsBuilder::default().filters(&all).build();
     daemon.docker.events(Some(options)).boxed()
 }
 
-/// The daemon's container events from now on. The stream ends when the
-/// daemon ends it, or after its first error, which is its last item and
-/// carries the daemon's message.
+/// The daemon's container events from now on that can change a picker
+/// row ([`ROW_ACTIONS`]). The stream ends when the daemon ends it, or
+/// after its first error, which is its last item and carries the
+/// daemon's message.
 pub fn container_events(
     daemon: &Daemon,
 ) -> impl Stream<Item = anyhow::Result<ContainerEvent>> + Send + 'static {
-    let events = messages(daemon);
+    events(messages(daemon, [("event", ROW_ACTIONS.to_vec())]))
+}
+
+/// The `start` and `die` events from now on of the container named
+/// `name`, for its log viewer, as [`container_events`] ends. dockerd
+/// matches `name` as a prefix of a container's name or of its ID
+/// (`fuzzyMatchName` in
+/// <https://github.com/moby/moby/blob/docker-v29.0.0/daemon/events/filter.go>), so a reader
+/// still compares the name.
+pub fn starts_and_dies(
+    daemon: &Daemon,
+    name: &str,
+) -> impl Stream<Item = anyhow::Result<ContainerEvent>> + Send + 'static {
+    events(messages(
+        daemon,
+        [("container", vec![name]), ("event", vec!["start", "die"])],
+    ))
+}
+
+/// The messages as events, `None` after an error.
+fn events(
+    events: BoxStream<'static, Result<EventMessage, bollard::errors::Error>>,
+) -> impl Stream<Item = anyhow::Result<ContainerEvent>> + Send + 'static {
     // futures-util's documented way to turn a state machine into a stream
     // (<https://docs.rs/futures-util/0.3.34/futures_util/stream/fn.unfold.html>):
     // `None` once an error has been sent. Why not a plain `map`: bollard's
@@ -212,6 +267,16 @@ mod tests {
         engine.event(container_event("start", "c0ffee", "app"));
         // Not a container's: the type filter leaves it out.
         engine.event(json!({ "Type": "network", "Action": "connect", "Actor": { "ID": "n1" } }));
+        // A health check's exec events, and an attach: no row changes, so
+        // the daemon keeps them.
+        for action in [
+            "exec_create: true",
+            "exec_start: true",
+            "exec_die",
+            "attach",
+        ] {
+            engine.event(container_event(action, "c0ffee", "app"));
+        }
         engine.event(container_event("health_status: healthy", "c0ffee", "app"));
         let mut events = std::pin::pin!(container_events(&daemon));
         let first = next(&mut events).await.expect("an event").expect("read");
@@ -237,7 +302,67 @@ mod tests {
         let filters: HashMap<String, String> = form_urlencoded::parse(query.as_bytes())
             .into_owned()
             .collect();
-        assert_eq!(filters["filters"], r#"{"type":["container"]}"#);
+        let filters: HashMap<String, Vec<String>> =
+            serde_json::from_str(&filters["filters"]).expect("a JSON object");
+        assert_eq!(filters["type"], ["container"]);
+        // Every action the viewer names, and the health states through
+        // `health_status`'s prefix; no exec event.
+        let asked = &filters["event"];
+        for named in [
+            "create",
+            "start",
+            "die",
+            "destroy",
+            "rename",
+            "health_status",
+        ] {
+            assert!(asked.iter().any(|a| a == named), "{named}: {asked:?}");
+        }
+        assert!(!asked.iter().any(|a| a.starts_with("exec")), "{asked:?}");
+        assert_eq!(filters.len(), 2, "{filters:?}");
+    }
+
+    /// One container's starts and dies, for its viewer: the daemon keeps
+    /// every other action and every other container's, but for names it
+    /// takes the name as a prefix of.
+    #[tokio::test]
+    async fn a_viewer_gets_its_containers_starts_and_dies() {
+        let engine = FakeEngine::start(Options::default()).expect("fake Engine API");
+        let daemon = connect(&engine.host()).await.expect("connect");
+        engine.event(container_event("start", "beef", "other"));
+        engine.event(container_event("health_status: healthy", "c0ffee", "app"));
+        engine.event(container_event("exec_start: true", "c0ffee", "app"));
+        engine.event(container_event("stop", "c0ffee", "app"));
+        engine.event(container_event("start", "c0ffee", "app"));
+        engine.event(container_event("die", "d00d", "app2"));
+        engine.event(container_event("die", "c0ffee", "app"));
+        engine.end_events();
+        let events: Vec<ContainerEvent> = starts_and_dies(&daemon, "app")
+            .map(|e| e.expect("read"))
+            .collect()
+            .await;
+        let seen: Vec<(Action, &str)> = events
+            .iter()
+            .map(|e| (e.action.clone(), e.name.as_str()))
+            .collect();
+        assert_eq!(
+            seen,
+            [
+                (Action::Start, "app"),
+                (Action::Die, "app2"),
+                (Action::Die, "app")
+            ]
+        );
+        let path = engine.paths().pop().expect("a request");
+        let query = path.split_once('?').map_or("", |(_, q)| q);
+        let filters: HashMap<String, String> = form_urlencoded::parse(query.as_bytes())
+            .into_owned()
+            .collect();
+        let filters: HashMap<String, Vec<String>> =
+            serde_json::from_str(&filters["filters"]).expect("a JSON object");
+        assert_eq!(filters["type"], ["container"]);
+        assert_eq!(filters["container"], ["app"]);
+        assert_eq!(filters["event"], ["start", "die"]);
     }
 
     #[tokio::test]

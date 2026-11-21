@@ -1,5 +1,9 @@
 //! The fake's `/events`, as dockerd serves it without `since`: one JSON
-//! object a line, kept open, with the `type` filter applied
+//! object a line, kept open, with the `type`, `event` and `container`
+//! filters applied as dockerd applies them (`Filter::Include` in
+//! <https://github.com/moby/moby/blob/docker-v29.0.0/daemon/events/filter.go>,
+//! `FuzzyMatch` in
+//! <https://github.com/moby/moby/blob/docker-v29.0.0/daemon/internal/filters/parse.go>)
 //! (docs/platform-notes/docker-logs.md, "Container events"). Unlike
 //! dockerd, which sends only what happens after the request, each stream
 //! starts with every event the fake has been given (with
@@ -33,9 +37,9 @@ pub fn container_event(action: &str, id: &str, name: &str) -> Value {
     })
 }
 
-/// The `type` values of the request's `filters` (a JSON object of lists,
-/// as bollard sends it); `None` without one.
-fn types(uri: &Uri) -> Option<Vec<String>> {
+/// The request's `filters` (a JSON object of lists, as bollard sends
+/// it); empty without one.
+fn filters(uri: &Uri) -> HashMap<String, Vec<String>> {
     // Parsed as the controller fake does
     // (<https://docs.rs/form_urlencoded/1.2.2/form_urlencoded/fn.parse.html>);
     // why not axum's `Query`: the workspace builds axum without its `query`
@@ -43,19 +47,52 @@ fn types(uri: &Uri) -> Option<Vec<String>> {
     let query: HashMap<String, String> = uri
         .query()
         .map_or_default(|q| form_urlencoded::parse(q.as_bytes()).into_owned().collect());
-    let filters: HashMap<String, Vec<String>> = serde_json::from_str(query.get("filters")?).ok()?;
-    filters.get("type").cloned()
+    query
+        .get("filters")
+        .and_then(|f| serde_json::from_str(f).ok())
+        .unwrap_or_default()
+}
+
+/// Whether `event` passes `filters`, as dockerd's `Filter::Include`
+/// decides for these three: `type` exactly; `event` exactly, or as a
+/// prefix once `health_status`, `exec_create` or `exec_start` is among
+/// the values (`matchEvent`); `container` as a prefix of the ID or the
+/// name (`fuzzyMatchName`). A filter not given passes everything.
+fn kept(filters: &HashMap<String, Vec<String>>, event: &Value) -> bool {
+    let exact = |key: &str, value: &str| {
+        filters
+            .get(key)
+            .is_none_or(|values| values.iter().any(|v| v == value))
+    };
+    let prefix = |key: &str, value: &str| {
+        filters
+            .get(key)
+            .is_none_or(|values| values.iter().any(|v| value.starts_with(v.as_str())))
+    };
+    let action = event["Action"].as_str().unwrap_or_default();
+    let fuzzy = filters.get("event").is_some_and(|values| {
+        values
+            .iter()
+            .any(|v| matches!(v.as_str(), "health_status" | "exec_create" | "exec_start"))
+    });
+    let actor = &event["Actor"];
+    let id = actor["ID"].as_str().unwrap_or_default();
+    let name = actor["Attributes"]["name"].as_str().unwrap_or_default();
+    exact("type", event["Type"].as_str().unwrap_or_default())
+        && if fuzzy {
+            prefix("event", action)
+        } else {
+            exact("event", action)
+        }
+        && (prefix("container", id) || prefix("container", name))
 }
 
 /// Each kept event, one a line.
-fn encode(types: Option<&[String]>, events: &[Value]) -> Vec<u8> {
+fn encode(filters: &HashMap<String, Vec<String>>, events: &[Value]) -> Vec<u8> {
     let mut out = Vec::new();
-    for event in events {
-        let kind = event["Type"].as_str().unwrap_or_default();
-        if types.is_none_or(|types| types.iter().any(|t| t == kind)) {
-            out.extend_from_slice(event.to_string().as_bytes());
-            out.push(b'\n');
-        }
+    for event in events.iter().filter(|e| kept(filters, e)) {
+        out.extend_from_slice(event.to_string().as_bytes());
+        out.push(b'\n');
     }
     out
 }
@@ -78,18 +115,18 @@ fn events_answer(shared: Arc<Shared>, uri: &Uri, version: Option<&str>) -> Respo
         ("Content-Type", "application/jsonl".to_string()),
         ("Api-Version", shared.max_version()),
     ];
-    let types = types(uri);
+    let filters = filters(uri);
     let changes = shared.changes.subscribe();
-    let state = (shared, types, 0_usize, changes);
+    let state = (shared, filters, 0_usize, changes);
     // As the log follow: futures-util's `unfold` into axum's
     // `Body::from_stream` (<https://docs.rs/axum/0.8.9/axum/body/struct.Body.html#method.from_stream>).
     let body = futures_util::stream::unfold(state, |mut state| async move {
-        let (shared, types, sent, changes) = &mut state;
+        let (shared, filters, sent, changes) = &mut state;
         loop {
             {
                 let events = lock(&shared.events);
                 if events.len() > *sent {
-                    let bytes = encode(types.as_deref(), &events[*sent..]);
+                    let bytes = encode(filters, &events[*sent..]);
                     *sent = events.len();
                     drop(events);
                     if bytes.is_empty() {

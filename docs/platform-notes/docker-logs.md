@@ -99,6 +99,20 @@ one JSON object a line.
   application/jsonl`, chunked) and then nothing until an event, so a
   client's timeout on the response head doesn't fire on a quiet daemon.
 
+- **Filters** (verified 2026-11-21 on Docker Engine 29.10.0, API 1.57,
+  in docker-in-docker: two throwaway containers, one with a health
+  check every 2 s, run, one restarted, their events read with curl over
+  `since`/`until` under three `filters`): `event` takes a list of
+  actions, and with `health_status` among them every value matches as a
+  prefix, so `health_status` takes `health_status: healthy`, while the
+  exec events stay out unless named; without one of `health_status`,
+  `exec_create`, `exec_start` the match is exact. `container` matches a
+  prefix of the name or the ID: `container=hc` also took the container
+  `hc2`'s events. This is moby's `matchEvent` and `fuzzyMatchName`
+  (https://github.com/moby/moby/blob/docker-v29.0.0/daemon/events/filter.go)
+  over `FuzzyMatch`
+  (https://github.com/moby/moby/blob/docker-v29.0.0/daemon/internal/filters/parse.go).
+
 sb-docker's `events.rs` maps `create`, `start`, `die`, `destroy`,
 `rename` and `health_status: <state>`, and passes every other action
 through as written.
