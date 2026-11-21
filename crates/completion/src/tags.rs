@@ -95,8 +95,12 @@ fn split_off_value(words: &[OsString]) -> bool {
 /// cobra parse doesn't. Each word is unquoted first, as the shell will
 /// pass it to sb: bash's and zsh's stubs pass the words as typed
 /// (`"plex"`), fish's already unquoted (tests/shells.sh). Nothing when
-/// the words aren't `install`'s.
+/// the words aren't `install`'s, and no tree built when they are at most
+/// sb and its command (`sb install <Tab>`), which leaves no word for a tag.
 fn earlier_tags(command: fn() -> clap::Command, words: &[OsString]) -> Vec<String> {
+    if words.len() <= 2 {
+        return Vec::new();
+    }
     let words = rejoined(words);
     let words = words.iter().map(|word| unquoted(word));
     let Ok(matches) = command().ignore_errors(true).try_get_matches_from(words) else {
@@ -161,7 +165,7 @@ pub(crate) fn cached(root: &Path, appdata: &Path) -> Vec<String> {
     let sandbox = sandbox
         .iter()
         .filter_map(|tag| completion_tag(tag))
-        .map(|tag| format!("{SANDBOX}{tag}"));
+        .map(|tag| [SANDBOX, tag].concat());
     saltbox.chain(sandbox).collect()
 }
 
@@ -177,7 +181,9 @@ fn completion_tag(raw: &str) -> Option<&str> {
 /// The candidates for `current` (sb-go's `completeInstallTags`): the part
 /// after its last comma is completed, the part before it kept, with the
 /// whitespace that starts the completed part; tags given in `earlier`
-/// words or earlier in `current` are left out; sorted, each once. A word
+/// words or earlier in `current` are left out; sorted, each once (a tag
+/// the cache lists twice is dropped after the sort, where a set of every
+/// tag offered cost an insert a tag). A word
 /// with a control character, or starting with a quote (fish passes an
 /// unparsed opening one), gets none.
 #[must_use]
@@ -207,11 +213,12 @@ pub(crate) fn candidates(tags: &[String], earlier: &[String], current: &str) -> 
     let kept = &suffix[..suffix.len() - typed.len()];
     let mut out = Vec::new();
     for tag in tags.iter().filter_map(|tag| completion_tag(tag)) {
-        if tag.starts_with(typed) && selected.insert(tag) {
-            out.push(format!("{prefix}{kept}{tag}"));
+        if tag.starts_with(typed) && !selected.contains(tag) {
+            out.push([prefix, kept, tag].concat());
         }
     }
     out.sort();
+    out.dedup();
     out
 }
 
@@ -552,6 +559,31 @@ mod tests {
             Vec::<String>::new()
         );
         assert_eq!(earlier_tags(tree, &[]), Vec::<String>::new());
+    }
+
+    /// A tree whose build fails the test: what [`earlier_tags`] is given
+    /// where it must not build one.
+    fn no_tree() -> clap::Command {
+        panic!("no tree is built for this line")
+    }
+
+    /// `sb install <Tab>` and shorter lines hold no word that could be a
+    /// tag, so no tree is built or line parsed for them; a third word is
+    /// parsed.
+    #[test]
+    fn a_line_of_at_most_two_words_builds_no_tree() {
+        let words = |items: &[&str]| items.iter().map(OsString::from).collect::<Vec<_>>();
+        for line in [&["sb", "install"][..], &["sb"], &[]] {
+            assert_eq!(
+                earlier_tags(no_tree, &words(line)),
+                Vec::<String>::new(),
+                "{line:?}"
+            );
+        }
+        assert_eq!(
+            earlier_tags(tree, &words(&["sb", "install", "plex"])),
+            strings(&["plex"])
+        );
     }
 
     /// bash's and zsh's stubs pass the words as typed, quotes and all
