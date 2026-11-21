@@ -68,6 +68,10 @@ pub struct Page {
 /// copier buffer; the platform note).
 const PART: usize = 16 * 1024;
 
+/// The entries [`tail`] reads before the page, to tell whether its first
+/// one starts a line no entry cut off shares a time with.
+const TAIL_EXTRA: usize = 4;
+
 /// The first window of [`older`].
 const FIRST_WINDOW: Duration = Duration::from_mins(1);
 
@@ -252,28 +256,53 @@ async fn read(
 ///
 /// A tail can begin in the middle of entries sharing one time, and would
 /// count their ordinals from the wrong one; every other read counts them
-/// from the first. So when `n` came back (the log may go further back),
-/// that time's second is read again and the tail's first entries are
-/// numbered after the ones it cut off (the daemon's order is stable
-/// across reads, the platform note).
+/// from the first. So [`TAIL_EXTRA`] entries more are read: when fewer
+/// come back, the read is the whole log, counted from its start. Else,
+/// when the last of them on the first's stream ends a line and none shares
+/// the first's time, nothing cut off shares it either (the daemon sends a
+/// log in time order, but for an entry or two stored out of it, the
+/// platform note). Otherwise that time's second is read again and the
+/// tail's first entries are numbered after the ones it cut off (the
+/// daemon's order is stable across reads, the platform note). The second
+/// read is a `since` window, which the daemon answers by passing over the
+/// whole log: 0.56 s of its CPU on a log at Saltbox's cap, before the
+/// first page shows (perf round 5, item 4).
 ///
 /// # Errors
 ///
 /// The daemon's error (its message kept), or a broken stream.
 pub async fn tail(daemon: &Daemon, id: &str, n: usize) -> anyhow::Result<Vec<LogLine>> {
-    let mut found = Vec::new();
-    let last = options().tail(&n.to_string()).build();
+    // What the read gave, then only the entries before the page.
+    let mut extra = Vec::new();
+    let asked = n.saturating_add(TAIL_EXTRA);
+    let last = options().tail(&asked.to_string()).build();
     read(daemon, id, last, |line| {
-        found.push(line);
+        extra.push(line);
         ControlFlow::Continue(())
     })
     .await?;
-    let Some(first) = found.first().map(|line| line.position.time_ns) else {
-        return Ok(found);
-    };
-    if found.len() < n {
+    let whole = extra.len() < asked;
+    let mut found = extra.split_off(extra.len().saturating_sub(n));
+    if whole {
+        // The whole log: its ordinals count from its first entry.
         return Ok(found);
     }
+    // Numbered as a read from the page's first entry numbers them.
+    for line in &mut found {
+        let earlier = extra
+            .iter()
+            .filter(|b| b.position.time_ns == line.position.time_ns)
+            .count();
+        let earlier = u32::try_from(earlier).unwrap_or(u32::MAX);
+        line.position.ordinal = line.position.ordinal.saturating_sub(earlier);
+    }
+    let Some(first) = found.first() else {
+        return Ok(found);
+    };
+    if starts_clean(&extra, first) {
+        return Ok(found);
+    }
+    let first = first.position.time_ns;
     let mut total: u32 = 0;
     let window = options()
         .since(api_secs(floor_secs(first)))
@@ -298,6 +327,22 @@ pub async fn tail(daemon: &Daemon, id: &str, n: usize) -> anyhow::Result<Vec<Log
         line.position.ordinal += skipped;
     }
     Ok(found)
+}
+
+/// Whether nothing cut off before `first`, the first of a tail, can share
+/// its time, judged from the entries read before it: the last of them on
+/// its stream ends a line (so `first` starts one, not a later part of a
+/// long line), and none has its time.
+fn starts_clean(before: &[LogLine], first: &LogLine) -> bool {
+    let line_start = before
+        .iter()
+        .rev()
+        .find(|line| line.stream == first.stream)
+        .is_some_and(|line| line.bytes.last() == Some(&b'\n'));
+    line_start
+        && !before
+            .iter()
+            .any(|line| line.position.time_ns == first.position.time_ns)
 }
 
 /// Up to `n` entries before `before`, the last ones before it. Windows of
@@ -894,12 +939,91 @@ mod tests {
             }
         );
         assert_eq!(lines[0].stream, LogStream::Stdout);
-        let path = engine.paths()[1].clone();
+        // Four entries more than the page: the one before the page's
+        // first ends a line, and none of them shares its time, so nothing
+        // is read again.
+        let paths = engine.paths();
+        assert_eq!(paths.len(), 2, "{paths:?}");
+        let path = paths[1].clone();
         assert!(
-            path.contains("tail=3") && path.contains("timestamps=true"),
+            path.contains("tail=7") && path.contains("timestamps=true"),
             "{path}"
         );
         assert!(!path.contains("follow=true"), "{path}");
+    }
+
+    /// A tail cut inside a long line (the entry before the page's first,
+    /// on its stream, ends no line), or with no entry of the first's
+    /// stream before it in the four read more, reads the first's second
+    /// again; the page and its ordinals are those of a plain tail.
+    #[tokio::test]
+    async fn a_tail_that_may_start_inside_a_line_reads_its_time_again() {
+        let mut entries: Vec<_> = (0..5)
+            .map(|i| FakeEntry::new(second(i), format!("line {i}\n")))
+            .collect();
+        entries.extend([
+            FakeEntry::new(second(5), "a long line's first part"),
+            FakeEntry::new(second(5), "on stderr\n").on(LogStream::Stderr),
+            FakeEntry::new(second(6), "its last part\n"),
+        ]);
+        entries.extend((7..10).map(|i| FakeEntry::new(second(i), format!("line {i}\n"))));
+        let engine = engine(FakeLog {
+            tty: false,
+            entries,
+        });
+        let daemon = connect(&engine.host()).await.expect("connect");
+        let lines = tail(&daemon, ID, 3).await.expect("tail");
+        assert_eq!(texts(&lines), ["line 7", "line 8", "line 9"]);
+        let lines = tail(&daemon, ID, 4).await.expect("tail");
+        assert_eq!(
+            texts(&lines),
+            ["its last part", "line 7", "line 8", "line 9"]
+        );
+        let ordinals: Vec<u32> = lines.iter().map(|l| l.position.ordinal).collect();
+        assert_eq!(ordinals, [0, 0, 0, 0]);
+        let paths = engine.paths();
+        // The first tail once; the second with its window.
+        assert_eq!(paths.len(), 4, "{paths:?}");
+        assert!(
+            paths[3].contains("since=") && paths[3].contains("tail=all"),
+            "{paths:?}"
+        );
+        // Only stderr before the page's first stdout entry.
+        let mut entries = vec![FakeEntry::new(second(0), "line 0\n")];
+        entries.extend(
+            (1..5).map(|i| FakeEntry::new(second(i), format!("e{i}\n")).on(LogStream::Stderr)),
+        );
+        entries.push(FakeEntry::new(second(5), "line 5\n"));
+        let engine = self::engine(FakeLog {
+            tty: false,
+            entries,
+        });
+        let daemon = connect(&engine.host()).await.expect("connect");
+        let lines = tail(&daemon, ID, 1).await.expect("tail");
+        assert_eq!(texts(&lines), ["line 5"]);
+        assert_eq!(engine.paths().len(), 3, "{:?}", engine.paths());
+    }
+
+    /// Fewer entries than the page and the four more: the whole log, read
+    /// once, its ordinals counted from its first entry, a time cut at the
+    /// page's start included.
+    #[tokio::test]
+    async fn a_tail_of_the_whole_log_counts_from_its_start() {
+        let entries = ["0.a", "0.b", "0.c"]
+            .iter()
+            .map(|t| FakeEntry::new(second(0), format!("line {t}\n")))
+            .chain((1..3).map(|i| FakeEntry::new(second(i), format!("line {i}\n"))))
+            .collect();
+        let engine = engine(FakeLog {
+            tty: false,
+            entries,
+        });
+        let daemon = connect(&engine.host()).await.expect("connect");
+        let lines = tail(&daemon, ID, 4).await.expect("tail");
+        assert_eq!(texts(&lines), ["line 0.b", "line 0.c", "line 1", "line 2"]);
+        let ordinals: Vec<u32> = lines.iter().map(|l| l.position.ordinal).collect();
+        assert_eq!(ordinals, [1, 2, 0, 0]);
+        assert_eq!(engine.paths().len(), 2, "{:?}", engine.paths());
     }
 
     /// Paging back from the tail to the start gives every entry once, in
@@ -953,11 +1077,13 @@ mod tests {
             .expect("older");
         assert_eq!(texts(&page.lines), ["line 3.b", "line 3.c", "line 4"]);
         assert!(page.more);
-        // 60 s, 120 s, ... : each window starts twice as far back.
+        // 60 s, 120 s, ... : each window starts twice as far back (after
+        // the version and the tail, read once: its first entry starts a
+        // line).
         let sinces: Vec<i64> = engine
             .paths()
             .iter()
-            .skip(3)
+            .skip(2)
             .filter_map(|p| p.split("since=").nth(1)?.split('&').next()?.parse().ok())
             .collect();
         let start = second(3_600).as_second();
