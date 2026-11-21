@@ -345,16 +345,20 @@ pub fn rows(daemon: &Daemon) -> futures_util::future::BoxFuture<'_, anyhow::Resu
 async fn listing(daemon: &Daemon, detail: Detail) -> anyhow::Result<Listing> {
     let started = std::time::Instant::now();
     let docker = &daemon.docker;
-    let options = ListContainersOptionsBuilder::default().all(true).build();
-    let summaries = docker
-        .list_containers(Some(options))
-        .await
-        .with_context(|| {
-            format!(
-                "couldn't list the containers of Docker at {}",
-                daemon.address
-            )
-        })?;
+    // Read slim on the daemon's socket (`slim`'s "why not bollard's
+    // model"); through bollard's model on `tcp://` and `http://`.
+    let summaries = if let Some(socket) = daemon.address.strip_prefix("unix://") {
+        crate::slim::entries(socket, &daemon.request_version, docker.timeout()).await
+    } else {
+        let options = ListContainersOptionsBuilder::default().all(true).build();
+        docker.list_containers(Some(options)).await
+    }
+    .with_context(|| {
+        format!(
+            "couldn't list the containers of Docker at {}",
+            daemon.address
+        )
+    })?;
     let listed = summaries.len();
     let mut rows = Vec::new();
     let summaries = if detail == Detail::Shown && daemon.request_version >= LIST_HEALTH {

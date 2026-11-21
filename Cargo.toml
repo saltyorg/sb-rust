@@ -206,7 +206,13 @@ cbc = "0.2.1"
 pbkdf2 = { version = "0.13.0", default-features = false, features = ["hmac"] }
 sha1 = "0.11.0"
 # sb restore's body cap (`Limited`); already in the tree through reqwest.
+# sb-docker's slim container list collects its body with it too.
 http-body-util = "0.1.5"
+# sb-docker's slim container list (docker spec, "Rows"): the client and
+# Unix-socket connector bollard itself uses, already in the tree through
+# bollard with these features.
+hyper-util = { version = "0.1.21", default-features = false, features = ["client-legacy", "http1", "tokio"] }
+hyperlocal = { version = "0.9.1", default-features = false, features = ["client"] }
 # sb-docker's request paths, versioned through bollard's request modifier
 # (docker spec, "API version"): the `http` crate bollard's requests are
 # made of, already in the tree through it and hyper.

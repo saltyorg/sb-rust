@@ -10,5 +10,6 @@ pub mod events;
 pub mod json;
 pub mod logs;
 pub mod ps;
+mod slim;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;

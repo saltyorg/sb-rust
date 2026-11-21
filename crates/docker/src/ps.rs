@@ -68,7 +68,7 @@ pub fn traefik_ports<S: std::hash::BuildHasher>(
     let mut ports: Vec<&String> = labels
         .iter()
         .filter(|(key, value)| {
-            key.contains("traefik.http.services")
+            crate::slim::service_port(key)
                 && key.contains(".loadbalancer.server.port")
                 && !key.contains("-http")
                 // sb-go's `len(parts) > 3`, kept for parity: the two

@@ -123,7 +123,12 @@ logging levels end to end.
   and the JSON are the same either way; a host of running containers
   costs one request instead of one each. The log picker, which shows
   restart counts and times only the inspect has, inspects every
-  container.
+  container. *Amended 2026-11-21 (decision 14):* on a Unix socket
+  the list's answer is read into only the fields a row uses (ID, names,
+  state, health, ports, and of the labels those a Traefik port can come
+  from), by one request beside bollard's model, for `ps`, motd and the
+  log picker alike; on `tcp://` and `http://` through bollard's model as
+  before.
 - **Columns** (headings centred and bold, port columns right-aligned):
 
   | Column | Content |
@@ -341,6 +346,10 @@ Docker controller's HTTP API after a `systemctl` check" — depends on
 ## Tech Stack
 
 - bollard 0.21.1 (latest on crates.io, 2026-11), default features.
+- hyper-util's legacy client on hyperlocal's `UnixConnector`, the client
+  and connector bollard itself uses for a Unix socket, and
+  http-body-util, all already in the tree through bollard: the slim
+  container list (decision 14).
 - tokio (current-thread runtime, as term-ui's demo); futures-util
   (`buffer_unordered`, already a bollard dependency).
 - tracing-log, to forward `log` records into the run log.
@@ -853,6 +862,24 @@ overrides.
 13. **A wish list for the controller's Rust rewrite (sdc),** drawn from
     what sb works around today: the section below. It is a list of
     wishes, not a spec of sdc.
+
+## Decisions (maintainer, 2026-11-21: performance round 5)
+
+14. **The container list read slim** (motd finding 3): bollard's
+    `list_containers` reads every field of every entry into its model,
+    each of a Saltbox container's labels, mounts and networks into
+    strings and hashed maps, about 0.16 M instructions an entry, 8.5% of
+    a login at 60 containers and a third of `sb docker ps` at 200. On a
+    Unix socket sb sends the same request itself
+    (`/v<version>/containers/json?all=true&size=false`) and reads the
+    answer into the fields a row uses, mapped into bollard's model so
+    the rows are built as before, with bollard's request timeout and
+    bollard's own error for each failure (`crates/docker/src/slim.rs`,
+    "why not bollard's model"). bollard has no request that hands back
+    the body. The `/version` call stays as it is (the maintainer
+    declined `_ping`). Outputs are byte-identical on Docker 29 and 28.
+    A field no row reads is no longer parsed, so an entry bollard's
+    model would refuse for one of those fields is listed.
 
 ## Wishes for the controller's Rust rewrite (sdc)
 

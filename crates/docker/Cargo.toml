@@ -20,6 +20,12 @@ bollard.workspace = true
 # The versioned request paths, rebuilt from bollard's `http::Uri` parts
 # (docker spec, "API version").
 http.workspace = true
+# The container list read into only the fields a row uses, on the client
+# and connector bollard uses for a Unix socket (docker spec, "Rows"; why
+# not bollard's model: `slim`'s module docs).
+hyper-util.workspace = true
+hyperlocal.workspace = true
+http-body-util.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true
