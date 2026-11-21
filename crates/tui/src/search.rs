@@ -33,9 +33,27 @@ pub(crate) fn matches(plain: &str, query: &str) -> Vec<Range<usize>> {
     }
 }
 
+/// `query` in `plain` ignoring case. ASCII text, most log lines, lowers
+/// byte for byte (std's `str::to_ascii_lowercase`, which is what
+/// `char::to_lowercase` gives an ASCII character), so a match in its
+/// lowered copy is the same range of `plain` and no map is built: the
+/// map cost a whole-log search a third of its matching (perf round 3).
+/// Other text takes [`mapped_matches`].
+fn caseless_matches(plain: &str, query: &str) -> Vec<Range<usize>> {
+    if !plain.is_ascii() {
+        return mapped_matches(plain, query);
+    }
+    let query = query.to_lowercase();
+    plain
+        .to_ascii_lowercase()
+        .match_indices(&query)
+        .map(|(at, m)| at..at + m.len())
+        .collect()
+}
+
 /// `query` in `plain` ignoring case: `plain` lowered with, for each
 /// lowered byte, where the character it came from starts in `plain`.
-fn caseless_matches(plain: &str, query: &str) -> Vec<Range<usize>> {
+fn mapped_matches(plain: &str, query: &str) -> Vec<Range<usize>> {
     let mut lowered = String::with_capacity(plain.len());
     let mut from: Vec<usize> = Vec::with_capacity(plain.len());
     for (at, c) in plain.char_indices() {
@@ -141,6 +159,45 @@ mod tests {
         // A query that starts inside a lowered character's expansion
         // takes the whole character.
         assert_eq!(found("İ", "\u{307}"), ["İ"]);
+    }
+
+    /// ASCII text matches as the mapped path matches it, whatever the
+    /// query: one that lowers to ASCII (the Kelvin sign to `k`) finds the
+    /// same ranges, one that doesn't finds none.
+    #[test]
+    fn ascii_text_matches_as_the_mapped_path_does() {
+        let texts = [
+            "",
+            "plain lower case",
+            "Error: error ERROR eRRor",
+            "GET /api/v1/Items?Page=2 HTTP/1.1 200 \t KM km Km",
+            "aaaa",
+        ];
+        let queries = [
+            "e",
+            "error",
+            "rr",
+            "km",
+            "\u{212A}m",
+            "i\u{307}",
+            "aa",
+            "/api",
+            "x",
+            "é",
+        ];
+        for plain in texts {
+            for query in queries {
+                assert_eq!(
+                    caseless_matches(plain, query),
+                    mapped_matches(plain, query),
+                    "{plain:?} {query:?}"
+                );
+            }
+        }
+        // The Kelvin sign is upper case, so `matches` takes it exactly;
+        // ignoring case it lowers to `k`.
+        assert_eq!(caseless_matches("KM km", "\u{212A}m"), [0..2, 3..5]);
+        assert_eq!(found("Café CAFÉ", "café"), ["Café", "CAFÉ"]);
     }
 
     fn hit() -> Style {

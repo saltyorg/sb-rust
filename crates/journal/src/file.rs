@@ -20,12 +20,13 @@
 //! Re-exported by `testing` (the feature), for the tools (journal spec,
 //! Project Structure); the library's own API is the crate root's.
 
-use crate::open::{Handle, Opener};
+use crate::open::{Blocks, Handle, Opener};
 use crate::{OverLimit, ReadError, ReadErrorKind, hash};
 use std::borrow::Cow;
 use std::cell::Cell;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, PoisonError};
 
 type Result<T, E = ReadError> = std::result::Result<T, E>;
 
@@ -215,6 +216,9 @@ pub struct JournalFile {
     limit: Cell<u64>,
     /// The output limit an entry must fit to be read (`bound_entries`).
     output: Cell<usize>,
+    /// The scan's shared blocks and this file's number among its files,
+    /// when its object reads go through them (`read_in_blocks`).
+    blocks: Option<(Arc<Mutex<Blocks>>, usize)>,
 }
 
 impl JournalFile {
@@ -249,6 +253,7 @@ impl JournalFile {
             header: empty_header(),
             limit: Cell::new(0),
             output: Cell::new(usize::MAX),
+            blocks: None,
         };
         jf.refresh()?;
         Ok(jf)
@@ -432,10 +437,33 @@ impl JournalFile {
             format!("offset {offset:#x}+{len} outside the arena")
         })?;
         let mut buf = vec![0u8; self.to_usize(len)?];
-        self.file
-            .read_exact_at(&mut buf, offset)
-            .map_err(|e| self.io(&format!("read at {offset:#x}"), e))?;
+        match &self.blocks {
+            Some((blocks, id)) => blocks
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .read_exact_at(&self.file, *id, &mut buf, offset),
+            None => self.file.read_exact_at(&mut buf, offset),
+        }
+        .map_err(|e| self.io(&format!("read at {offset:#x}"), e))?;
         Ok(buf)
+    }
+
+    /// The object reads of a sealed file through `blocks`, a scan's
+    /// blocks shared by its files, as its file number `id`
+    /// (`Journal::scan`); other files keep a pread per object. The header
+    /// reads (`refresh`, `count_now`, the arena's growth in `within`)
+    /// always go to the file.
+    ///
+    /// Why sealed only: journald updates objects in place as it appends
+    /// (a DATA object's count and list, an entry array's items and next
+    /// link). A block read early would hand a later read an older state
+    /// than the reads around it, such as a count read since with a list
+    /// read before, which looks like a chain cut short. A sealed file is
+    /// never written again.
+    pub(crate) fn read_in_blocks(&mut self, blocks: &Arc<Mutex<Blocks>>, id: usize) {
+        if self.sealed() {
+            self.blocks = Some((Arc::clone(blocks), id));
+        }
     }
 
     /// The start of an object: its flags, its full size and its first

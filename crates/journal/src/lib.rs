@@ -899,13 +899,23 @@ impl Journal {
         each: &mut dyn FnMut(Vec<Record>, ReadErrors) -> ControlFlow<()>,
     ) -> ControlFlow<()> {
         let mut errors = ReadErrors::default();
-        let files = walk::open_listed(|| self.list(), &self.opener, limits.output(), &mut errors);
+        let mut files =
+            walk::open_listed(|| self.list(), &self.opener, limits.output(), &mut errors);
         let bounds = walk::Bounds {
             payload: limits.output(),
             held: limits.output(),
         };
         let lasts = walk::lasts(&files, &mut errors);
         let boots = boot_order(self.release.boot_rule(), &files, &lasts);
+        // The walk reads most of each file: a sealed one's objects come
+        // from blocks of 64 KiB, a pread each (`open::Blocks`). The tails
+        // and the boot table above read a few objects a file, a pread each,
+        // as a page does: a search that ends in the newest file reads no
+        // block of the older ones.
+        let blocks = Arc::default();
+        for (id, file) in files.iter_mut().enumerate() {
+            file.read_in_blocks(&blocks, id);
+        }
         if !errors.is_empty() {
             each(Vec::new(), errors)?;
         }
@@ -3564,6 +3574,72 @@ mod tests {
         assert!(
             scan <= one_page + one_page / 4,
             "{scan} preads, one page {one_page}"
+        );
+    }
+
+    /// The preads of a whole scan of `j` in steps of 100, and what it
+    /// gave: each step's messages.
+    fn scan_cost(j: &Journal, q: &Query) -> (u64, Vec<Vec<String>>) {
+        let start = crate::testing::counts(j).preads;
+        let steps = scanned(j, q, &Position::Tail, 100);
+        (crate::testing::counts(j).preads - start, steps)
+    }
+
+    /// A sealed file's scan reads blocks, not objects: the same steps
+    /// for a tenth of the preads or less, where the same file unsealed
+    /// costs what it did. Pages read an object at a time, sealed or not.
+    #[test]
+    fn a_sealed_files_scan_reads_blocks_and_its_pages_dont() {
+        let (mut c, _l) = crafted::journal(2_000);
+        let active = c.file();
+        c.b[16] = 2; // STATE_ARCHIVED
+        let archived = c.file();
+        let q = Query::field(&name("U"), b"x");
+        let (active, archived) = (files(&[active.path()]), files(&[archived.path()]));
+        let (object_preads, by_object) = scan_cost(&active, &q);
+        let (block_preads, by_block) = scan_cost(&archived, &q);
+        assert_eq!(by_block, by_object);
+        assert_eq!(by_block.iter().map(Vec::len).sum::<usize>(), 2_000);
+        assert!(
+            block_preads * 10 <= object_preads,
+            "{block_preads} preads in blocks, {object_preads} an object at a time"
+        );
+        let page_cost = |j: &Journal| {
+            let start = crate::testing::counts(j).preads;
+            let page = tail(j, &q, 500);
+            (crate::testing::counts(j).preads - start, page.records.len())
+        };
+        // An object at a time either way; the sealed file skips the
+        // filtered page's second header read (decision 13).
+        assert_eq!(page_cost(&active), (1_533, 500));
+        assert_eq!(page_cost(&archived), (1_512, 500));
+    }
+
+    /// A journal of several sealed files scans to what it gives unsealed,
+    /// its files' blocks under one budget.
+    #[test]
+    fn sealed_files_scan_together_as_they_do_unsealed() {
+        let (mut a, _) = crafted::journal(300);
+        let (mut b, l) = crafted::journal(300);
+        b.b[72..88].copy_from_slice(&[2; 16]); // its own seqnum id
+        for (i, &e) in l.entries.iter().enumerate() {
+            b.set(e + 24, 9_000_000 + i as u64); // realtime, after a's
+            b.set(e + 32, 5_000 + i as u64); // monotonic, after a's
+        }
+        let (a_active, b_active) = (a.file(), b.file());
+        a.b[16] = 2;
+        b.b[16] = 2;
+        let (a_sealed, b_sealed) = (a.file(), b.file());
+        let q = Query::field(&name("U"), b"x");
+        let active = files(&[a_active.path(), b_active.path()]);
+        let sealed = files(&[a_sealed.path(), b_sealed.path()]);
+        let (object_preads, by_object) = scan_cost(&active, &q);
+        let (block_preads, by_block) = scan_cost(&sealed, &q);
+        assert_eq!(by_block, by_object);
+        assert_eq!(by_block.iter().map(Vec::len).sum::<usize>(), 600);
+        assert!(
+            block_preads < object_preads,
+            "{block_preads} against {object_preads}"
         );
     }
 

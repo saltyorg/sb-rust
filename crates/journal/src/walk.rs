@@ -18,6 +18,7 @@ use crate::rules::Group;
 use crate::{
     Cursor, Field, FileEnd, PageEnd, Position, ReadError, ReadErrorKind, ReadErrors, Record,
 };
+use foldhash::fast::RandomState;
 use itertools::{Either, Itertools};
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet, hash_map};
@@ -1120,11 +1121,17 @@ fn lists(f: &JournalFile, d: &DataRef, entry: u64, errors: &mut ReadErrors) -> b
 /// that went over the whole limit (`whole`) on their own, which can never
 /// fit: an entry listing one is refused without decoding it again, so a
 /// page skipping several such entries decodes the object once.
+///
+/// The keys hash with foldhash's `RandomState`, hashbrown's default
+/// (<https://docs.rs/foldhash/0.2.0/foldhash/fast/struct.RandomState.html>):
+/// std's `SipHash` was a tenth of a whole-log search's user time (perf round
+/// 3). It is seeded per map, as std's is: the offsets come from the
+/// file, so a crafted file can't aim its keys at one bucket.
 #[derive(Default)]
 pub(crate) struct Payloads {
-    fields: HashMap<(usize, u64), Option<Field>>,
-    failed: HashSet<(usize, u64)>,
-    too_large: HashSet<(usize, u64)>,
+    fields: HashMap<(usize, u64), Option<Field>, RandomState>,
+    failed: HashSet<(usize, u64), RandomState>,
+    too_large: HashSet<(usize, u64), RandomState>,
     whole: usize,
 }
 

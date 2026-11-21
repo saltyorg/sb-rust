@@ -22,6 +22,8 @@ testing = ["dep:tempfile", "dep:serde_json", "dep:fastrand", "rustix/event"]
 
 [dependencies]
 siphasher.workspace = true
+# The payload cache's seeded fast hasher (walk.rs `Payloads`).
+foldhash.workspace = true
 lz4_flex.workspace = true
 ruzstd.workspace = true
 lzma-rust2.workspace = true

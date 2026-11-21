@@ -129,6 +129,10 @@ icu_properties = { version = "2.4.0", default-features = false, features = ["com
 # proto-journal). siphash24 keyed by the file id, for keyed-hash files
 # (JOURNAL_FILE_FORMAT, Data Objects).
 siphasher = "1.0.4"
+# The hasher of sb-journal's payload cache: hashbrown's default, randomly
+# seeded per map (already in the tree through hashbrown).
+# https://docs.rs/foldhash/0.2.0/foldhash/fast/struct.RandomState.html
+foldhash = "0.2.0"
 # Data payload decompression: one crate per algorithm, all pure Rust.
 lz4_flex = { version = "0.14.0", default-features = false, features = ["std", "safe-decode"] }
 # 0.9.1 fixes RUSTSEC-2026-0344 (decompression bomb).
