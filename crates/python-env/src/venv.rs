@@ -96,7 +96,8 @@ fn turns(env: &Env<'_>) -> Semaphore {
 /// don't run, as the check stopped at its first failure when the probes
 /// ran in turn: they all come after it, so its failure is the one named
 /// (a hung Python costs one timeout, not one for each probe). Ctrl-C
-/// fails the running probes, so the waiting ones don't start either. The
+/// fails the running probes, so the waiting ones don't start either, and
+/// a probe whose turn comes after it doesn't start its child. The
 /// placeholder text of a probe that didn't run is never shown: the
 /// failure before it is named, or the caller reports the interruption.
 async fn run_probe(
@@ -110,6 +111,13 @@ async fn run_probe(
     let Ok(_turn) = turns.acquire().await else {
         return Ok(Err("not run: an earlier probe failed".to_string()));
     };
+    // Ctrl-C before this probe's turn: it doesn't start. exec's `capture`
+    // starts its child before it looks at the token, and a child stopped
+    // at once may still have begun its work.
+    if token.is_cancelled() {
+        turns.close();
+        return Ok(Err("not run: interrupted".to_string()));
+    }
     let ran = env
         .isolated(kind, program.as_ref())
         .map(|isolated| isolated.map(|cmd| args(cmd).timeout(HEALTH_TIMEOUT)));

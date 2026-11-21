@@ -12,9 +12,10 @@ use std::sync::{Mutex, OnceLock};
 
 use sb_cli_core::cancel::Shutdown;
 use sb_cli_core::log::RunLog;
-use sb_python_env::testing::Tree;
-use sb_python_env::{Force, reconcile_venv};
+use sb_python_env::testing::{PYTHON, Tree};
+use sb_python_env::{Force, reconcile_venv, venv};
 use sb_term_ui::{Labels, Options, Runner, Target};
+use tokio_util::sync::CancellationToken;
 
 /// Tests that write stand-in programs and run them hold this from writing
 /// them until their run is over (ETXTBSY otherwise).
@@ -137,4 +138,44 @@ fn the_childrens_records_show_the_paths_sb_computes() {
         assert!(sync.contains(&shown), "{shown:?} not in {sync}");
     }
     assert!(!text.contains("[ARG]"), "{text}");
+}
+
+/// The probes' child-start records of an environment check on a new
+/// tree, run in the run's span on a current-thread runtime with `token`.
+fn checked_starts(token: &CancellationToken) -> Vec<String> {
+    let (log, dir) = run_log();
+    let _spawns = SPAWNS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let tree = Tree::new();
+    let venv = tree.root.path().join("gen/venv");
+    tree.venv(&venv);
+    let _run = log.enter();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    let _ = runtime.block_on(venv::check_environment(&tree.env(), &venv, PYTHON, token));
+    // This tree's records: the log holds the other tests' too.
+    let root = tree.root.path().display().to_string();
+    log_text(dir.path())
+        .lines()
+        .filter(|line| line.contains("child started") && line.contains(&root))
+        .map(str::to_string)
+        .collect()
+}
+
+/// Ctrl-C before the environment check starts no probe's child, not even
+/// one stopped at once: exec's `capture` starts its child before it looks
+/// at the token, so a stand-in probe could note its call before it was
+/// ended (the probes test's flake under load). Run log records, not the
+/// stand-ins' own notes, so it holds whatever the timing. The same check
+/// uncancelled starts the seven.
+#[test]
+fn no_probe_child_starts_after_ctrl_c() {
+    assert_eq!(checked_starts(&CancellationToken::new()).len(), 7);
+    let cancelled = CancellationToken::new();
+    cancelled.cancel();
+    let started = checked_starts(&cancelled);
+    assert!(started.is_empty(), "{}", started.join("\n"));
 }
