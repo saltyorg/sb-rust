@@ -148,10 +148,11 @@ impl Containers {
     async fn client(&self) -> &Result<reqwest::Client, String> {
         self.client
             .get_or_init(|| async {
-                let roots =
-                    needs_roots(&self.settings.traefik_base, &self.settings.proxy, |name| {
-                        std::env::var_os(name)
-                    });
+                let roots = needs_roots(
+                    [self.settings.traefik_base.as_str()],
+                    &self.settings.proxy,
+                    |name| std::env::var_os(name),
+                );
                 traefik_client(&self.settings.proxy, roots)
             })
             .await
@@ -435,21 +436,30 @@ async fn fetch(containers: &Containers, url: &str) -> Result<(u16, Vec<u8>), Str
 /// towards loading them, which is always safe.
 const HTTP_PROXY_VARS: [&str; 4] = ["HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"];
 
-/// Whether Traefik's client may verify a certificate: an https base, or a
-/// proxy (which may be an https one). Saltbox's `http://traefik:8080`
-/// with no proxy verifies none, so its client is built without the
-/// platform's roots (about 15 M instructions and 5 ms on the runtime's
-/// thread, the step before Traefik's requests). `var` reads the
-/// environment.
-fn needs_roots<V>(base: &str, proxy: &Proxy, var: impl Fn(&str) -> Option<V>) -> bool {
-    // As reqwest reads the request's URL (its `Url`, the url crate's).
-    let http = reqwest::Url::parse(base).is_ok_and(|url| url.scheme() == "http");
-    let proxied = match proxy {
-        Proxy::Off => false,
-        Proxy::Via(_) => true,
-        Proxy::System => HTTP_PROXY_VARS.iter().any(|name| var(name).is_some()),
-    };
-    !http || proxied
+/// Whether a client asking `bases` may verify a certificate: a base that
+/// isn't plain http, or a proxy (which may be an https one). Saltbox's
+/// `http://traefik:8080` with no proxy verifies none, so Traefik's client
+/// is built without the platform's roots (about 15 M instructions and
+/// 5 ms on the runtime's thread, the step before Traefik's requests), and
+/// so is the providers' for a motd.yml whose instances are all plain
+/// http. `var` reads the environment.
+pub(crate) fn needs_roots<'a, V>(
+    bases: impl IntoIterator<Item = &'a str>,
+    proxy: &Proxy,
+    var: impl Fn(&str) -> Option<V>,
+) -> bool {
+    // As reqwest reads the request's URL (its `Url`, the url crate's);
+    // Saltbox's https URLs answer at the first, before the environment
+    // is read.
+    let verified = bases
+        .into_iter()
+        .any(|base| !reqwest::Url::parse(base).is_ok_and(|url| url.scheme() == "http"));
+    verified
+        || match proxy {
+            Proxy::Off => false,
+            Proxy::Via(_) => true,
+            Proxy::System => HTTP_PROXY_VARS.iter().any(|name| var(name).is_some()),
+        }
 }
 
 /// Traefik's client: sb-go's `curl --connect-timeout 3` inside the 5 s,
@@ -1591,30 +1601,40 @@ mod tests {
         let none = |_: &str| None::<String>;
         let set =
             |name: &str| (name == "http_proxy").then(|| "http://198.51.100.7:3128".to_string());
-        assert!(!needs_roots("http://traefik:8080", &Proxy::System, none));
-        assert!(!needs_roots("HTTP://traefik:8080", &Proxy::Off, set));
-        assert!(!needs_roots("http:traefik:8080", &Proxy::Off, none));
-        assert!(needs_roots("http://traefik:8080", &Proxy::System, set));
+        assert!(!needs_roots(["http://traefik:8080"], &Proxy::System, none));
+        assert!(!needs_roots(["HTTP://traefik:8080"], &Proxy::Off, set));
+        assert!(!needs_roots(["http:traefik:8080"], &Proxy::Off, none));
+        assert!(needs_roots(["http://traefik:8080"], &Proxy::System, set));
         assert!(needs_roots(
-            "http://traefik:8080",
+            ["http://traefik:8080"],
             &Proxy::Via("http://p:1".into()),
             none
         ));
         assert!(needs_roots(
-            "https://traefik.example.com",
+            ["https://traefik.example.com"],
             &Proxy::Off,
             none
         ));
-        assert!(needs_roots("traefik:8080", &Proxy::Off, none));
+        assert!(needs_roots(["traefik:8080"], &Proxy::Off, none));
+        // The providers' instances: roots when any one isn't plain http.
+        assert!(!needs_roots(
+            ["http://a:1", "http://b:2/x"],
+            &Proxy::Off,
+            none
+        ));
+        assert!(needs_roots(["http://a:1", "https://b"], &Proxy::Off, none));
+        assert!(needs_roots(["https://b", "http://a:1"], &Proxy::Off, none));
+        assert!(!needs_roots([], &Proxy::Off, none));
+        assert!(needs_roots([], &Proxy::Via("http://p:1".into()), none));
         for name in HTTP_PROXY_VARS {
             assert!(needs_roots(
-                "http://traefik:8080",
+                ["http://traefik:8080"],
                 &Proxy::System,
                 |var: &str| { (var == name).then_some("http://p:1") }
             ));
         }
         assert!(!needs_roots(
-            "http://traefik:8080",
+            ["http://traefik:8080"],
             &Proxy::System,
             |var: &str| { (var == "HTTPS_PROXY").then_some("http://p:1") }
         ));

@@ -268,7 +268,15 @@ mount points.
   `timeoutFromContext`, `motd/queue.go:551-571`).
 - An error shows as `Error: <first line, redacted>` in the error colour.
 - Every HTTP client is one `sb_config::http::Http` (reqwest with rustls,
-  1 MiB body cap) built once per run. qBittorrent's main data and
+  1 MiB body cap) built once per run. It loads the platform's root
+  certificates unless every instance the chosen sections may ask (on, in
+  an app section that is on, with a URL) is plain `http` and no proxy
+  applies (no `Via` proxy, and under `System` no `HTTP_PROXY`,
+  `http_proxy`, `ALL_PROXY` or `all_proxy`), Traefik's rule: such a run
+  verifies no certificate, and an https request through it would fail
+  its handshake. *Amended 2026-11-21 (performance research, round 5):
+  about 15 M instructions and 800 syscalls less on such a file; Saltbox
+  writes https URLs, which load them as before.* qBittorrent's main data and
   rTorrent's multicall, which list every torrent, are read whole up to
   64 and 16 MiB, and a larger answer is an error line (verification
   notes, M45).

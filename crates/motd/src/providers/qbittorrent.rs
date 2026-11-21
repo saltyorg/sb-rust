@@ -419,7 +419,8 @@ mod tests {
         data.script("/api/v2/auth/login", Reply::new(200, "Ok."));
         data.script("/api/v2/sync/maindata", Reply::json(200, "{}").held());
         slow.url = data.url().to_string();
-        let near = Shared::new(
+        // The fake is plain http: a client without the roots asks it.
+        let near = Shared::without_roots(
             sb_config::http::Proxy::Off,
             tokio::time::Instant::now() + Duration::from_millis(400),
             crate::redact::Secrets::default(),

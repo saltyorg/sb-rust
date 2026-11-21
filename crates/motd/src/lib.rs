@@ -558,16 +558,26 @@ async fn gather(
             sources.docker.docker_host.as_deref(),
         )
     });
-    let providers = providers::Shared::new(
+    let (systemd_settings, apps) = match loaded.motd {
+        Some(motd) => (motd.systemd.map(Arc::new), motd.apps),
+        None => (None, std::collections::BTreeMap::new()),
+    };
+    // Plain http instances with no proxy verify no certificate: their
+    // client loads no root certificates, as Traefik's.
+    let roots = docker::needs_roots(asked_urls(&chosen, &apps), &sources.docker.proxy, |name| {
+        std::env::var_os(name)
+    });
+    let shared = if roots {
+        providers::Shared::new
+    } else {
+        providers::Shared::without_roots
+    };
+    let providers = shared(
         sources.docker.proxy.clone(),
         tokio::time::Instant::now() + run::CAP,
         secrets.clone(),
     );
     let containers = docker::Containers::new(sources.docker);
-    let (systemd_settings, apps) = match loaded.motd {
-        Some(motd) => (motd.systemd.map(Arc::new), motd.apps),
-        None => (None, std::collections::BTreeMap::new()),
-    };
     if asks_a_provider(&chosen, &apps) {
         providers.start();
     }
@@ -741,23 +751,33 @@ fn mask_strings(value: &mut serde_json::Value, share: &redact::Share, traefik: b
 }
 
 /// Whether a chosen section asks a provider: an app it reads is on in
-/// motd.yml with an instance on and a URL. Each provider also skips an
-/// instance without its credentials; this doesn't, so such a file builds
-/// a client that goes unused, as every run did before the client was
-/// built at its first request.
+/// motd.yml with an instance on and a URL ([`asked_urls`]). Each provider
+/// also skips an instance without its credentials; this doesn't, so such
+/// a file builds a client that goes unused, as every run did before the
+/// client was built at its first request.
 fn asks_a_provider(
     chosen: &[Section],
     apps: &std::collections::BTreeMap<config::App, config::AppSection>,
 ) -> bool {
-    chosen.iter().flat_map(|section| section.apps()).any(|app| {
-        apps.get(app).is_some_and(|section| {
-            section.enabled
-                && section
-                    .instances
-                    .iter()
-                    .any(|instance| instance.enabled && !instance.url.is_empty())
-        })
-    })
+    asked_urls(chosen, apps).next().is_some()
+}
+
+/// The URLs of the instances a chosen section may ask: each instance on,
+/// with a URL, of an app on in motd.yml that the section reads. Every
+/// request a provider makes is one of these with a path after it, and
+/// none follows a redirect.
+fn asked_urls<'a>(
+    chosen: &'a [Section],
+    apps: &'a std::collections::BTreeMap<config::App, config::AppSection>,
+) -> impl Iterator<Item = &'a str> {
+    chosen
+        .iter()
+        .flat_map(|section| section.apps())
+        .filter_map(|app| apps.get(app))
+        .filter(|section| section.enabled)
+        .flat_map(|section| &section.instances)
+        .filter(|instance| instance.enabled && !instance.url.is_empty())
+        .map(|instance| instance.url.as_str())
 }
 
 /// What the sections' jobs share: the paint, the one container listing,
@@ -1671,6 +1691,54 @@ esac"#,
                 "{section:?}"
             );
         }
+    }
+
+    /// The URLs a run may ask: the chosen sections' apps, on, their
+    /// instances on with a URL; what decides the client's roots.
+    #[test]
+    fn the_asked_urls_are_the_chosen_instances_on() {
+        use providers::tests::{instance, section};
+        let mut quiet = instance("q", "https://quiet");
+        quiet.enabled = false;
+        let apps: std::collections::BTreeMap<_, _> = [
+            (
+                config::App::Plex,
+                section(vec![
+                    instance("a", "http://a"),
+                    quiet,
+                    instance("e", ""),
+                    instance("b", "http://b"),
+                ]),
+            ),
+            (
+                config::App::Sonarr,
+                section(vec![instance("s", "https://s")]),
+            ),
+            (
+                config::App::Emby,
+                config::AppSection {
+                    enabled: false,
+                    ..section(vec![instance("o", "https://off")])
+                },
+            ),
+        ]
+        .into_iter()
+        .collect();
+        let urls = |chosen: &'static [Section]| asked_urls(chosen, &apps).collect::<Vec<_>>();
+        assert_eq!(urls(&[Section::Plex]), ["http://a", "http://b"]);
+        assert_eq!(
+            urls(&[Section::Queues, Section::Emby, Section::Plex]),
+            ["https://s", "http://a", "http://b"]
+        );
+        assert_eq!(urls(&[Section::Emby, Section::Services]), [] as [&str; 0]);
+        let none = |_: &str| None::<String>;
+        let off = sb_config::http::Proxy::Off;
+        assert!(!docker::needs_roots(urls(&[Section::Plex]), &off, none));
+        assert!(docker::needs_roots(
+            urls(&[Section::Plex, Section::Queues]),
+            &off,
+            none
+        ));
     }
 
     #[tokio::test]

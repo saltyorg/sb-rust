@@ -66,6 +66,15 @@ fn build(proxy: &Proxy) -> Result<Http, String> {
     Ok(http)
 }
 
+/// [`build`] without the platform's root certificates
+/// (`Http::without_roots`), for a run whose instances are all plain http
+/// with no proxy (motd's `needs_roots`): about 15 M instructions less.
+fn build_without_roots(proxy: &Proxy) -> Result<Http, String> {
+    let http = Http::without_roots(proxy, DEFAULT_TIMEOUT)?;
+    http.client()?;
+    Ok(http)
+}
+
 /// sb-go's limit for one request when the instance sets none.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(1);
 
@@ -97,6 +106,14 @@ impl Shared {
     #[must_use]
     pub fn new(proxy: Proxy, deadline: Instant, secrets: Secrets) -> Arc<Self> {
         Self::with_build(proxy, deadline, secrets, build)
+    }
+
+    /// [`Shared::new`] whose client loads none of the platform's root
+    /// certificates, for a run whose instances are all plain http with
+    /// no proxy ([`build_without_roots`]).
+    #[must_use]
+    pub fn without_roots(proxy: Proxy, deadline: Instant, secrets: Secrets) -> Arc<Self> {
+        Self::with_build(proxy, deadline, secrets, build_without_roots)
     }
 
     /// [`Shared::new`] with its client built by `build`.

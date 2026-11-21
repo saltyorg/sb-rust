@@ -46,6 +46,8 @@ pub struct Http {
 /// couldn't be).
 struct Lazy {
     proxy: Mode,
+    /// Whether the client loads the platform's root certificates.
+    roots: bool,
     timeout: Duration,
     client: OnceLock<Result<reqwest::Client, String>>,
 }
@@ -83,6 +85,24 @@ impl Http {
     ///
     /// The text shown when the proxy URL is invalid.
     pub fn new(proxy: &Proxy, timeout: Duration) -> Result<Self, String> {
+        Self::with_roots(proxy, timeout, true)
+    }
+
+    /// [`Http::new`] whose client loads none of the platform's root
+    /// certificates (reqwest's `tls_certs_only` with none,
+    /// <https://docs.rs/reqwest/0.13.5/reqwest/struct.ClientBuilder.html#method.tls_certs_only>),
+    /// for a caller whose every request is plain http with no proxy: it
+    /// verifies no certificate, and loading them costs about 15 M
+    /// instructions. An https request through it fails its handshake.
+    ///
+    /// # Errors
+    ///
+    /// As [`Http::new`].
+    pub fn without_roots(proxy: &Proxy, timeout: Duration) -> Result<Self, String> {
+        Self::with_roots(proxy, timeout, false)
+    }
+
+    fn with_roots(proxy: &Proxy, timeout: Duration, roots: bool) -> Result<Self, String> {
         let proxy = match proxy {
             Proxy::System => Mode::System,
             Proxy::Off => Mode::Off,
@@ -93,6 +113,7 @@ impl Http {
         Ok(Http {
             lazy: Arc::new(Lazy {
                 proxy,
+                roots,
                 timeout,
                 client: OnceLock::new(),
             }),
@@ -126,6 +147,11 @@ impl Lazy {
         let builder = reqwest::Client::builder()
             .timeout(self.timeout)
             .redirect(reqwest::redirect::Policy::none());
+        let builder = if self.roots {
+            builder
+        } else {
+            builder.tls_certs_only(std::iter::empty::<reqwest::Certificate>())
+        };
         let builder = match &self.proxy {
             Mode::System => builder,
             Mode::Off => builder.no_proxy(),
@@ -477,6 +503,25 @@ mod tests {
         assert!(copy.client().is_ok());
         assert!(http.built());
         assert!(http.client().is_ok());
+    }
+
+    /// The client without the platform's roots still makes plain http
+    /// requests, built at its first one as the other.
+    #[tokio::test]
+    async fn a_client_without_roots_asks_over_http() {
+        let fake = Fake::start().expect("fake");
+        fake.script("/x", Answer::json(200, "hello"));
+        let http = Http::without_roots(&Proxy::Off, TIMEOUT).expect("http");
+        assert!(!http.built());
+        let response = http
+            .client()
+            .expect("client")
+            .get(format!("{}/x", fake.url()))
+            .send()
+            .await
+            .expect("send");
+        assert_eq!(body(response).await.expect("body"), b"hello");
+        assert!(Http::without_roots(&Proxy::Via("not a url".into()), TIMEOUT).is_err());
     }
 
     /// The debug form shows no proxy URL, which can carry credentials.
