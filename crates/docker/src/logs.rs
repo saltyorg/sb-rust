@@ -90,8 +90,19 @@ const LAST_WINDOW: Duration = Duration::from_hours(24 * 30);
 #[derive(Debug, Default)]
 struct Lines {
     /// Entries seen so far per time, for the next ordinal; at most
-    /// [`COUNTED_TIMES`], then only the last [`COUNTED_SPAN`].
+    /// [`COUNTED_TIMES`], then pruned to the last [`COUNTED_SPAN`] each
+    /// time it reaches `prune_at`.
     counts: HashMap<i128, u32>,
+    /// The map's size at which it is pruned next: twice its size after
+    /// the last prune, [`COUNTED_TIMES`] at least. A log of more than
+    /// [`COUNTED_TIMES`] entries in [`COUNTED_SPAN`] (410 lines a second)
+    /// would otherwise walk the whole map at every entry, the prune
+    /// removing nothing (perf round 5: 61% of a busy follow's
+    /// instructions). Why not std's `BTreeMap::split_off`, which would
+    /// prune to the span exactly: every entry looks its time up, and a
+    /// tree's lookup costs more than a hash's on every line, where the
+    /// prune comes once the map has doubled.
+    prune_at: usize,
     /// The last parsed time, for an entry without one.
     previous: i128,
     /// The newest parsed time.
@@ -129,9 +140,10 @@ impl Lines {
         };
         self.previous = time_ns;
         self.newest = self.newest.max(time_ns);
-        if self.counts.len() >= COUNTED_TIMES {
+        if self.counts.len() >= self.prune_at.max(COUNTED_TIMES) {
             let keep = self.newest - COUNTED_SPAN;
             self.counts.retain(|time, _| *time >= keep);
+            self.prune_at = self.counts.len().saturating_mul(2);
         }
         let count = self.counts.entry(time_ns).or_default();
         let ordinal = *count;
@@ -692,6 +704,37 @@ mod tests {
         let oldest = Timestamp::from_nanosecond(base).expect("time");
         let forgotten = lines.push(stdout(&format!("{oldest} late\n")));
         assert_eq!(forgotten[0].position.ordinal, 0);
+    }
+
+    /// A follow busier than `COUNTED_TIMES` in `COUNTED_SPAN` (1,000 lines a
+    /// second): the map is pruned again only once it has doubled since
+    /// the last prune, not at every line, so it holds up to twice the
+    /// last ten seconds' times; recent equal times still count, older
+    /// ones are forgotten.
+    #[test]
+    fn a_busy_follow_prunes_once_the_map_has_doubled() {
+        let mut lines = Lines::default();
+        let base = ns(T1);
+        let at = |i: i128| Timestamp::from_nanosecond(base + i * NANOS / 1_000).expect("time");
+        let mut sizes = Vec::new();
+        for i in 0..30_000_i128 {
+            lines.push(stdout(&format!("{} line\n", at(i))));
+            sizes.push(lines.counts.len());
+        }
+        // Ten seconds hold 10,001 times: today's prune would keep the map
+        // at that size from the first prune on.
+        let largest = sizes.iter().copied().max().unwrap_or_default();
+        assert!(largest <= 2 * 10_001, "{largest}");
+        assert!(lines.counts.len() > 12_000, "{}", lines.counts.len());
+        // The map shrank twice: at 16,384 times down to the last ten
+        // seconds (at 4,096 and 8,192 nothing was older), and at twice
+        // that.
+        let prunes = sizes.windows(2).filter(|w| w[1] < w[0]).count();
+        assert_eq!(prunes, 2, "{prunes}");
+        let again = lines.push(stdout(&format!("{} again\n", at(29_999))));
+        assert_eq!(again[0].position.ordinal, 1);
+        let late = lines.push(stdout(&format!("{} late\n", at(0))));
+        assert_eq!(late[0].position.ordinal, 0);
     }
 
     /// `<time> <16 KiB><time> <rest>\r\n` (the platform note): two parts.
