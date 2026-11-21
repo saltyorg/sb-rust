@@ -145,6 +145,7 @@ fn spawn_query(
             follow_from: None,
             sent: Sent::new(settings.remembered),
             follow: None,
+            tick_wanted: false,
             search: None,
         }
         .run(requests)
@@ -239,6 +240,9 @@ struct Adapter {
     follow_from: Option<PageEnd>,
     sent: Sent,
     follow: Option<Following>,
+    /// The follow's last drain left a read to be made again
+    /// (`Batch::waiting`): the tick drains again.
+    tick_wanted: bool,
     /// The search in progress: its token, cancelled when the guard drops
     /// (a new search, its stop, or the source's drop; tokio-util's
     /// `DropGuard`,
@@ -254,11 +258,14 @@ impl Adapter {
     /// waits for the drains to catch up (each is awaited to its end, as
     /// sb-host's `drain` asks).
     ///
-    /// While following, a tick drains too (follow-L1): a read the follow
-    /// waited on (an entry journald was still writing) is read again then,
-    /// not only at the journal's next write, which may be a long time
-    /// coming for a quiet service. With nothing new, a drain is a header
-    /// read per open file (sb-journal's `Follower::drain`). tokio's
+    /// While following, a tick drains too (follow-L1) when the last drain
+    /// left a read waiting (`Batch::waiting`): a read the follow waited on
+    /// (an entry journald was still writing) is read again then, not only
+    /// at the journal's next write, which may be a long time coming for a
+    /// quiet service. With nothing waiting there is no tick: a drain with
+    /// no wake would be a header read per open file and nothing new
+    /// (sb-journal's `Follower::drain`), four times a second, 16 context
+    /// switches a second on an idle viewer (perf round 5, item 7). tokio's
     /// `Interval` with `MissedTickBehavior::Delay`
     /// (<https://docs.rs/tokio/1.54.1/tokio/time/struct.Interval.html>),
     /// `reset` after every request and wake, so a read waited on at a
@@ -275,7 +282,7 @@ impl Adapter {
                     biased;
                     request = requests.recv() => Step::Request(request),
                     wake = following.waiter.wait() => Step::Woken(wake),
-                    _ = retry.tick() => Step::Retry,
+                    _ = retry.tick(), if self.tick_wanted => Step::Retry,
                 },
                 None => Step::Request(requests.recv().await),
             };
@@ -588,6 +595,7 @@ impl Adapter {
     /// A follow's batch to the viewer: its lines, when there are any, and
     /// its errors.
     fn followed(&mut self, batch: &Batch) -> bool {
+        self.tick_wanted = batch.waiting;
         if !batch.records.is_empty() {
             for r in &batch.records {
                 self.sent.remember(r.cursor());

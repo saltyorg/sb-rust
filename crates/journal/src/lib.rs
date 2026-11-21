@@ -1361,6 +1361,12 @@ pub struct Batch {
     /// there come with the next drain, none lost. Drain again before
     /// waiting on the wake descriptor, which may show nothing new.
     pub more: bool,
+    /// A read was left to be made again at the next drain (an entry,
+    /// slot, list or header journald may still have been writing): drain
+    /// again in a while even without a wake, as journald's next write may
+    /// be a long time coming. Without it, a drain with no wake reads
+    /// nothing new.
+    pub waiting: bool,
     /// What couldn't be read.
     pub errors: ReadErrors,
 }

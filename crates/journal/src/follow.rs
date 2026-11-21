@@ -514,6 +514,9 @@ impl Follow {
         for e in self.pending.drain(..) {
             errors.add_open(e);
         }
+        // The reads marked to wait (`waited`) before this poll: one marked
+        // since is read again at the next poll.
+        let marked: Vec<[Option<u64>; 4]> = self.files.iter().map(|f| f.failed).collect();
         // Every header first, so the boot table is the files' as of now;
         // and every entry read within the limit, as a page bounds them.
         let fresh: Vec<bool> = self
@@ -590,10 +593,19 @@ impl Follow {
         } else if let Some(l) = self.last.as_mut() {
             l.burst = burst;
         }
+        // A read waits for the next poll: worth making without a wake. (A
+        // listed file that didn't open is opened again by a rescan only,
+        // at an event, never by a poll.)
+        let waiting = self
+            .files
+            .iter()
+            .zip(&marked)
+            .any(|(f, before)| f.failed != *before && f.failed.iter().any(Option::is_some));
         self.files.retain(Followed::keep);
         Batch {
             records: out,
             more: reached,
+            waiting,
             errors,
         }
     }
@@ -1408,6 +1420,8 @@ mod tests {
         limit: usize,
         errors: Vec<String>,
         more: bool,
+        /// The last poll's `Batch::waiting`.
+        waiting: bool,
     }
 
     impl T {
@@ -1440,6 +1454,7 @@ mod tests {
                 limit: crate::OUTPUT_DEFAULT,
                 errors: Vec::new(),
                 more: false,
+                waiting: false,
             }
         }
 
@@ -1456,6 +1471,7 @@ mod tests {
                 self.errors.push(format!("{} more errors", errors.omitted));
             }
             self.more = batch.more;
+            self.waiting = batch.waiting;
             batch.records
         }
 
@@ -1524,10 +1540,14 @@ mod tests {
         let (t, mut f) = followed(&mut c, 2);
         grow(&c, &t);
         assert_eq!(messages(&f.poll(&u_is_x())), ["m2", "m3"]);
-        // Waiting, not yet reported.
+        // Waiting, not yet reported, and the batch says so.
         assert!(f.errors.is_empty(), "{:?}", f.errors);
+        assert!(f.waiting);
         assert_eq!(messages(&f.poll(&u_is_x())), ["m5"]);
         assert_eq!(f.errors.len(), 1, "{:?}", f.errors);
+        assert!(!f.waiting);
+        assert!(f.poll(&u_is_x()).is_empty());
+        assert!(!f.waiting, "nothing left to read again");
     }
 
     /// Following within the output limit: a poll stops at the entry that
@@ -2078,8 +2098,10 @@ mod tests {
         std::fs::write(&a, &bytes).expect("write");
         set_n(&a, 4);
         assert!(f.poll(&[]).is_empty());
+        assert!(f.waiting, "the slot is read again at the next poll");
         assert_eq!(seqnums(&f.poll(&[])), vec![3, 4]);
         assert!(f.errors.is_empty(), "{:?}", f.errors);
+        assert!(!f.waiting);
     }
 
     /// A crafted journal: `crafted::journal(n)`'s entries, then one entry
@@ -2828,8 +2850,12 @@ mod tests {
         std::fs::write(&a, &bytes).expect("write");
         assert!(f.poll(&[]).is_empty());
         assert!(f.errors.is_empty(), "waits first: {:?}", f.errors);
+        assert!(f.waiting);
         assert!(f.poll(&[]).is_empty());
+        // Reported, its mark left in place: not waited for again, no tick.
+        assert!(!f.waiting);
         assert!(f.poll(&[]).is_empty());
+        assert!(!f.waiting);
         assert_eq!(f.errors.len(), 1, "{:?}", f.errors);
         assert!(f.errors[0].contains("not a journal file"), "{:?}", f.errors);
     }
@@ -3039,11 +3065,16 @@ mod tests {
         let batch = woken(&mut f);
         assert!(batch.records.is_empty(), "{:?}", batch.records);
         assert!(f.follow.is_unopened(&x));
+        assert!(
+            !batch.waiting,
+            "a poll doesn't open it: its next write does"
+        );
         // Written in place: write events only, no creation.
         journal(&x, 1, &FOUR, 4);
         let batch = woken(&mut f);
         assert_eq!(seqnums(&batch.records), [1, 2, 3, 4]);
         assert!(f.follow.has(&x));
+        assert!(!batch.waiting);
     }
 
     /// The follower matches its query: only the entries it names come.

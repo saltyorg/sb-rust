@@ -470,6 +470,32 @@ async fn a_waited_read_is_retried_on_the_tick() {
     assert_eq!(v.followed(1).await, ["m2"]);
 }
 
+/// With no read waited on, the follow drains only at the journal's
+/// wakes: no tick. An entry written whole through a hard link in another
+/// directory, which the watch doesn't see, waits for the next write the
+/// watch sees, however many ticks' time later.
+#[tokio::test]
+async fn a_quiet_follow_drains_only_at_a_wake() {
+    let file = Growing::new();
+    file.grow(2);
+    let settings = Settings {
+        retry: Duration::from_millis(20),
+        ..small(10)
+    };
+    let mut v = Viewer::on(file.journal(), every_entry(), settings);
+    assert_eq!(v.page(Request::Tail).await.messages, ["m0", "m1"]);
+    v.handle.send(Request::Follow(true));
+    v.quiet().await;
+    let elsewhere = tempfile::tempdir().expect("a directory");
+    let link = elsewhere.path().join("system.journal");
+    std::fs::hard_link(&file.path, &link).expect("linked");
+    Growing::write(&link, 3, 3);
+    // Fifteen ticks' time: nothing.
+    v.quiet().await;
+    file.grow(4);
+    assert_eq!(v.followed(2).await, ["m2", "m3"]);
+}
+
 /// Another kind of source's position names none of the journal's
 /// entries: nothing is read, and the source goes on.
 #[tokio::test]

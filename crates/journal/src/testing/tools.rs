@@ -1899,6 +1899,7 @@ mod tests {
         let more = Batch {
             records: Vec::new(),
             more: true,
+            waiting: false,
             errors: ReadErrors::default(),
         };
         let ms = Some(Duration::from_millis(20));
