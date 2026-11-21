@@ -40,40 +40,66 @@ pub struct File {
 }
 
 impl File {
-    /// A required, capped file checked against `schema`, with no default.
-    const fn schema_backed(path: &'static str, schema: &'static str) -> Self {
+    /// A required, capped file checked against `schema`, with Saltbox's
+    /// default, `default`, copied in when it is missing.
+    const fn saltbox(path: &'static str, schema: &'static str, default: &'static str) -> Self {
         Self {
             path,
             schema: Some(schema),
             schema_optional: false,
             required: true,
             capped: true,
-            default: None,
+            default: Some(default),
         }
     }
 }
 
 /// The files, in sb-go's order, with `providers.yml` after
 /// `hetzner_vlan.yml` (config spec, decision 10: sb-go doesn't check it).
-/// Those two get Saltbox's default when missing; `providers.yml`'s
-/// schema, sb's draft, isn't in Saltbox yet, so it may be missing.
+/// The six Saltbox ships a default for get it when missing (decision
+/// 11); `providers.yml`'s schema, sb's draft, isn't in Saltbox yet, so
+/// it may be missing.
 pub const FILES: [File; 8] = [
-    File::schema_backed("accounts.yml", "accounts.schema.yml"),
-    File::schema_backed("adv_settings.yml", "adv_settings.schema.yml"),
-    File::schema_backed("backup_config.yml", "backup_config.schema.yml"),
-    File {
-        default: Some("defaults/hetzner_vlan.yml.default"),
-        ..File::schema_backed("hetzner_vlan.yml", "hetzner_vlan.schema.yml")
-    },
+    File::saltbox(
+        "accounts.yml",
+        "accounts.schema.yml",
+        "defaults/accounts.yml.default",
+    ),
+    File::saltbox(
+        "adv_settings.yml",
+        "adv_settings.schema.yml",
+        "defaults/adv_settings.yml.default",
+    ),
+    File::saltbox(
+        "backup_config.yml",
+        "backup_config.schema.yml",
+        "defaults/backup_config.yml.default",
+    ),
+    File::saltbox(
+        "hetzner_vlan.yml",
+        "hetzner_vlan.schema.yml",
+        "defaults/hetzner_vlan.yml.default",
+    ),
     File {
         schema_optional: true,
-        default: Some("defaults/providers.yml.default"),
-        ..File::schema_backed("providers.yml", "providers.schema.yml")
+        ..File::saltbox(
+            "providers.yml",
+            "providers.schema.yml",
+            "defaults/providers.yml.default",
+        )
     },
-    File::schema_backed("settings.yml", "settings.schema.yml"),
+    File::saltbox(
+        "settings.yml",
+        "settings.schema.yml",
+        "defaults/settings.yml.default",
+    ),
     File {
+        path: "motd.yml",
+        schema: Some("motd.schema.yml"),
+        schema_optional: false,
         required: false,
-        ..File::schema_backed("motd.yml", "motd.schema.yml")
+        capped: true,
+        default: None,
     },
     File {
         path: "inventories/host_vars/localhost.yml",
@@ -761,7 +787,7 @@ pub enum CopyNote {
 }
 
 /// `file`'s default copied in under `step` when the file is missing
-/// (`defaults::copy_default`; config spec, decision 10): the info notice,
+/// (`defaults::copy_default`; config spec, decisions 10 and 11): the info notice,
 /// or a warning when the copy failed, shown and returned. Nothing for a
 /// file that is there, has no default entry or no default file (its
 /// missing-file issue says enough).

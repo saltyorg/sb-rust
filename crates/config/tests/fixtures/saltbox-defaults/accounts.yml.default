@@ -1,0 +1,15 @@
+---
+apprise:
+cloudflare:
+  api:
+  email:
+  scoped_token:
+dockerhub:
+  token:
+  user:
+user:
+  domain: testsaltbox.ml
+  email: your@email.com
+  name: seed
+  pass: password12345678
+  ssh_key:

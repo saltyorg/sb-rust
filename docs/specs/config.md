@@ -70,12 +70,12 @@ pass; and confirms that their Cloudflare and Docker Hub credentials work.
 
   | File | Schema | Missing |
   |---|---|---|
-  | accounts.yml | schema/accounts.schema.yml | error |
-  | adv_settings.yml | schema/adv_settings.schema.yml | error |
-  | backup_config.yml | schema/backup_config.schema.yml | error |
+  | accounts.yml | schema/accounts.schema.yml | Saltbox's default copied in, else error |
+  | adv_settings.yml | schema/adv_settings.schema.yml | Saltbox's default copied in, else error |
+  | backup_config.yml | schema/backup_config.schema.yml | Saltbox's default copied in, else error |
   | hetzner_vlan.yml | schema/hetzner_vlan.schema.yml | Saltbox's default copied in, else error |
   | providers.yml | schema/providers.schema.yml, duplicate keys only while Saltbox has none | Saltbox's default copied in, else error |
-  | settings.yml | schema/settings.schema.yml | error |
+  | settings.yml | schema/settings.schema.yml | Saltbox's default copied in, else error |
   | motd.yml | schema/motd.schema.yml | skipped, logged |
   | inventories/host_vars/localhost.yml | none: duplicate keys only | skipped, logged |
 
@@ -101,13 +101,25 @@ pass; and confirms that their Cloudflare and Docker Hub credentials work.
   for this one file (`File::schema_optional`); a missing schema of any
   other file stays its issue. A schema that is there but can't be read
   or loaded is an issue, as for every file.
-- **A missing hetzner_vlan.yml or providers.yml** (the maintainer,
-  2026-11-20; decision 10) is copied in from Saltbox's default,
-  `<root>/defaults/<file>.default`, then checked as any file. Saltbox's
-  playbook reads the default in its place (saltbox.yml's `vars_files`);
-  sb makes the file the user edits. The copy:
-  - happens only when nothing is at the path (`lstat`: a link, even a
-    broken one, is left alone and the file's check reports it);
+- **A missing file Saltbox ships a default for** (the maintainer,
+  2026-11-20; decision 10 for hetzner_vlan.yml and providers.yml,
+  decision 11 for all six: accounts.yml, adv_settings.yml,
+  backup_config.yml, hetzner_vlan.yml, providers.yml and settings.yml)
+  is copied in from Saltbox's default, `<root>/defaults/<file>.default`,
+  then checked as any file. Saltbox's playbook reads the default in its
+  place (saltbox.yml's `vars_files`); sb makes the file the user edits.
+  A copied placeholder fails as one typed in would: Saltbox's
+  accounts.yml default gives `user.domain` and `user.email`'s `must not
+  equal its configured default value`, two of the placeholders to
+  replace (Saltbox's schema doesn't catch its default's password,
+  `password12345678`: its `not_equals` names `password1234`, as `sb
+  setup`'s copy has it too). The other five defaults pass as they
+  ship. The copy:
+  - is purely for a file that doesn't exist (the maintainer's rule):
+    only when nothing is at the path (`lstat`: a link, even a broken
+    one, is left alone and the file's check reports it), and never
+    over an existing file, whatever it holds (invalid, empty, not
+    YAML): that file is checked as it is;
   - is the default's bytes, read up to 1 MiB through a handle opened
     without following a link or crossing a mount point (cli-core's
     rule for what root reads in the checkout) and checked to be a
@@ -582,10 +594,12 @@ pass; and confirms that their Cloudflare and Docker Hub credentials work.
 - providers.yml is checked (decision 10): against
   `schema/providers.schema.yml`, or for duplicate keys alone while
   Saltbox has no such schema (sb-go doesn't check the file).
-- A missing hetzner_vlan.yml or providers.yml is copied in from
-  Saltbox's default, 0600, the default's owner, with a notice (decision
-  10; sb-go reports a missing hetzner_vlan.yml as an error and doesn't
-  look at providers.yml).
+- A missing config file Saltbox ships a default for (accounts.yml,
+  adv_settings.yml, backup_config.yml, hetzner_vlan.yml, providers.yml,
+  settings.yml) is copied in from Saltbox's default, 0600, the
+  default's owner, with a notice, then checked (decisions 10 and 11;
+  sb-go reports a missing required file as an error and doesn't look
+  at providers.yml).
 - No `--verbose/-v` (decision 1): `-v` is a parse error, exit 2.
   *Amended 2026-11-18 by the maintainer's decision: `-v` and `--verbose` are accepted, hidden from help, and change nothing; the run prints one notice on stderr before its steps, naming this run in the run log (`-v isn't needed: sb logs full detail to <file> (run <id>)`), once however often the flag is given (crates/sb/src/verbose.rs).*
 - No `validate_rclone_remote` (decision 6): a schema naming it fails
@@ -772,7 +786,8 @@ docs/specs/config.md      this spec
 9. **`--json`** (the maintainer, 2026-11-18, the shape as proposed): for
    scripts, monitoring and CI, beside `sb version --json` and `sb docker
    ps --json`, in the shape under Behaviour.
-10. **providers.yml checked, two defaults copied** (the maintainer,
+10. **providers.yml checked, two defaults copied** (widened to all six
+    by decision 11) (the maintainer,
     2026-11-20): providers.yml gets a schema (sb's draft, for Saltbox's
     `schema/`) and is checked by validate-config; providers.yml and
     hetzner_vlan.yml are required, and a missing one is copied from
@@ -780,3 +795,9 @@ docs/specs/config.md      this spec
     rules: a missing providers schema is a notice, not an issue (the
     general rule would fail every host until Saltbox ships it); the
     copy takes no run lock (Behaviour, the copy's rules).
+11. **Every default copied** (the maintainer, 2026-11-20, after decision
+    10): the copy covers every file Saltbox ships a
+    `defaults/<file>.default` for, all six required files. "The copy is
+    purely a file doesn't exist thing": an existing file is never
+    replaced, even when it is empty, doesn't parse or fails
+    validation.

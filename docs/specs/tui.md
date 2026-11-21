@@ -1116,14 +1116,15 @@ command can corrupt a file Saltbox owns or race Saltbox while it writes.
   doesn't exist, and `sb edit motd` then fails with the target check's
   `configuration file does not yet exist: <path>`, exit 1, creating
   nothing. The six keep their behaviour, but for the default copy below.
-  - **A missing hetzner_vlan.yml or providers.yml** (the maintainer,
-    2026-11-20; config spec, decision 10) is copied in from Saltbox's
+  - **A missing file Saltbox ships a default for** (the maintainer,
+    2026-11-20; config spec, decisions 10 and 11: sb-go's six but
+    localhost.yml, and providers.yml; not motd.yml) is copied in from Saltbox's
     default before the target check, as validate-config copies it
     (sb-config's `run::copy_missing`): a runner titled `sb edit` shows
     one step, `Copying <file>.default`, with the config spec's notice,
     then the editor opens on the copy. With no default to copy (or a
     copy that fails, its warning shown), the target check fails as
-    before. Both are listed in the picker always.
+    before. providers.yml is listed in the picker always.
   - **motd.yml** is validated as validate-config validates it, its
     schema included. A file still in its older format is migrated first,
     exactly as validate-config migrates it (sb-config's
@@ -1135,8 +1136,8 @@ command can corrupt a file Saltbox owns or race Saltbox while it writes.
     file was there when the editor started (the target check), so `sb
     edit` checks motd.yml as required; validate-config skips a missing
     one, and localhost.yml stays skipped in both. A removed
-    hetzner_vlan.yml or providers.yml gets Saltbox's default again, with
-    its notice, as validate-config would give it (*amended 2026-11-20*).
+    file Saltbox ships a default for gets the default again, with its
+    notice, as validate-config would give it (*amended 2026-11-20*).
   - **providers.yml** holds Saltbox's DNS providers' credentials. It is a
     `vars_files` entry of saltbox.yml, read from the Saltbox root, with
     `defaults/providers.yml.default` when it's missing (Saltbox,

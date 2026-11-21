@@ -1,8 +1,8 @@
-//! providers.yml's check and the default copies (config spec, decision
-//! 10; success criteria 13 and 14): sb's draft schema
+//! providers.yml's check and the default copies (config spec, decisions
+//! 10 and 11; success criteria 13 and 14): sb's draft schema
 //! (`fixtures/saltbox-schemas/providers.schema.yml`), the notice while
-//! Saltbox has no schema, the copies of a missing `hetzner_vlan.yml` or
-//! `providers.yml` from Saltbox's defaults, and the credentials kept out of
+//! Saltbox has no schema, the copies of a missing file from Saltbox's
+//! defaults (never over an existing one), and the credentials kept out of
 //! the screen and `--json`. Without the `testing` feature (an integration
 //! test doesn't get it), so the root is built here; accounts.yml has no
 //! credentials, so no check makes a request.
@@ -141,16 +141,21 @@ fn providers_is_checked_after_hetzner_vlan() {
     assert_eq!(providers.schema, Some("providers.schema.yml"));
     assert!(providers.required && providers.schema_optional && providers.capped);
     assert_eq!(providers.default, Some("defaults/providers.yml.default"));
-    let vlan = entry("hetzner_vlan.yml");
-    assert_eq!(vlan.default, Some("defaults/hetzner_vlan.yml.default"));
-    assert!(!vlan.schema_optional);
-    // Only these two have a default copied in, and only providers.yml's
-    // schema may be missing.
+    // Each of the six Saltbox ships a default for has it copied in
+    // (decision 11); motd.yml and the inventory have none. Only
+    // providers.yml's schema may be missing.
     for file in FILES {
-        if !matches!(file.path, "providers.yml" | "hetzner_vlan.yml") {
-            assert_eq!(file.default, None, "{}", file.path);
-            assert!(!file.schema_optional, "{}", file.path);
-        }
+        let expected = match file.path {
+            "motd.yml" | "inventories/host_vars/localhost.yml" => None,
+            path => Some(format!("defaults/{path}.default")),
+        };
+        assert_eq!(file.default.map(str::to_string), expected, "{}", file.path);
+        assert_eq!(
+            file.schema_optional,
+            file.path == "providers.yml",
+            "{}",
+            file.path
+        );
     }
 }
 
@@ -519,5 +524,108 @@ async fn providers_credentials_never_show() {
             "{shown}"
         );
         assert!(!shown.contains(TOKEN), "{shown}");
+    }
+}
+
+/// Saltbox's pinned default for `file`.
+fn saltbox_default(file: &str) -> String {
+    std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/saltbox-defaults")
+            .join(format!("{file}.default")),
+    )
+    .expect("pinned default")
+}
+
+/// The six files Saltbox ships a default for.
+const WITH_DEFAULTS: [&str; 6] = [
+    "accounts.yml",
+    "adv_settings.yml",
+    "backup_config.yml",
+    "hetzner_vlan.yml",
+    "providers.yml",
+    "settings.yml",
+];
+
+/// Every file Saltbox ships a default for is copied when missing
+/// (decision 11), Saltbox's own defaults here: each with its notice,
+/// 0600; then checked as any file, so accounts.yml's placeholders fail
+/// as they would typed in by hand, naming the keys to fill in.
+#[tokio::test]
+async fn every_missing_file_with_a_default_is_copied() {
+    let root = saltbox_root();
+    for file in WITH_DEFAULTS {
+        std::fs::remove_file(root.path().join(file)).expect("remove");
+        write_default(root.path(), file, &saltbox_default(file));
+    }
+    let (passed, screen, results) = run_on(root.path()).await;
+    assert!(!passed, "{screen}");
+    for file in WITH_DEFAULTS {
+        let notice = format!("{file} was missing; copied Saltbox's default");
+        assert!(screen.contains(&format!("› {notice}")), "{screen}");
+        let path = root.path().join(file);
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("copied"),
+            saltbox_default(file)
+        );
+        let meta = std::fs::metadata(&path).expect("meta");
+        assert_eq!(meta.mode() & 0o7777, 0o600, "{file}");
+        let result = results
+            .files
+            .iter()
+            .find(|result| result.file == file)
+            .expect("checked");
+        assert_eq!(result.notices, std::slice::from_ref(&notice));
+        // Checked as any file: only accounts.yml's placeholders fail.
+        let outcome = if file == "accounts.yml" {
+            Outcome::Failed
+        } else {
+            Outcome::Validated
+        };
+        assert_eq!(result.outcome, outcome, "{file}");
+    }
+    // The placeholders are the file's issues, worded as any other.
+    for expected in [
+        "accounts.yml:11:11: user.domain: must not equal its configured default value",
+        "accounts.yml:12:10: user.email: must not equal its configured default value",
+    ] {
+        assert!(screen.contains(expected), "{expected}\n{screen}");
+    }
+}
+
+/// The copy is purely for a file that doesn't exist (decision 11): an
+/// existing file is never replaced, whatever it holds: invalid, empty,
+/// or not even YAML. Each is left byte for byte and checked as it is.
+#[tokio::test]
+async fn an_existing_file_is_never_replaced() {
+    for (text, issue) in [
+        (
+            "user:\n  name: ''\n",
+            "accounts.yml:1:1: user.email: is required",
+        ),
+        ("", "accounts.yml:1:1: user: is required"),
+        ("user: [unclosed\n", "accounts.yml:"),
+    ] {
+        let root = saltbox_root();
+        let path = root.path().join("accounts.yml");
+        std::fs::write(&path, text).expect("write");
+        let mode = std::fs::metadata(&path).expect("meta").mode();
+        write_default(
+            root.path(),
+            "accounts.yml",
+            &saltbox_default("accounts.yml"),
+        );
+        let (passed, screen, results) = run_on(root.path()).await;
+        assert!(!passed, "{screen}");
+        assert!(screen.contains(issue), "{issue}\n{screen}");
+        assert!(!screen.contains("copied Saltbox's default"), "{screen}");
+        assert_eq!(std::fs::read(&path).expect("kept"), text.as_bytes());
+        assert_eq!(std::fs::metadata(&path).expect("meta").mode(), mode);
+        let accounts = results
+            .files
+            .iter()
+            .find(|result| result.file == "accounts.yml")
+            .expect("checked");
+        assert_eq!(accounts.notices, Vec::<String>::new());
     }
 }

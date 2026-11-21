@@ -4,8 +4,8 @@
 //! issues, "Edit <file> again?". Bare `sb edit` shows sb-tui's picker
 //! first (M53), then takes the same path with the file chosen. motd.yml
 //! and providers.yml are sb's own two (tui spec, Difference 38), motd.yml
-//! listed only when it exists; a missing `hetzner_vlan.yml` or
-//! providers.yml gets Saltbox's default first (config spec, decision 10).
+//! listed only when it exists; a missing file Saltbox ships a default
+//! for gets it first (config spec, decisions 10 and 11).
 
 use std::ffi::OsStr;
 use std::fmt::Write as _;
@@ -437,9 +437,9 @@ async fn validate(
     }
 }
 
-/// A missing `hetzner_vlan.yml` or providers.yml at `path` given Saltbox's
+/// A missing file Saltbox ships a default for, at `path`, given Saltbox's
 /// default before the target check (tui spec, editors' files; config
-/// spec, decision 10): a runner titled `sb edit` with one step, `Copying
+/// spec, decisions 10 and 11): a runner titled `sb edit` with one step, `Copying
 /// <file>.default`, holding sb-config's notice or warning
 /// (`run::copy_missing`). Nothing is drawn for a file that is there (a
 /// link included), has no default entry or no default at its path; a

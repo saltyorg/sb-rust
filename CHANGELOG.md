@@ -35,10 +35,15 @@ you could trip over.
   Saltbox ships it, and for duplicate keys until then. Its keys,
   tokens and passwords never show. `sb update` and `sb edit providers`
   check it the same way.
-- **A missing hetzner_vlan.yml or providers.yml is created** from
-  Saltbox's default (`defaults/<file>.default`, mode 0600, owned as the
-  default is), with a notice, by validate-config, `sb update` and `sb
-  edit`; sb-go reported a missing hetzner_vlan.yml as an error.
+- **A missing config file is created from Saltbox's default:**
+  accounts.yml, settings.yml, adv_settings.yml, backup_config.yml,
+  hetzner_vlan.yml and providers.yml, from `defaults/<file>.default`
+  (mode 0600, owned as the default is), with a notice, by
+  validate-config, `sb update` and `sb edit`. Only a file that doesn't
+  exist is created: an existing one is never replaced, even if it is
+  empty or broken. A copied placeholder (accounts.yml's domain and
+  email) then fails validation until you fill it in. sb-go reported a
+  missing file as an error.
 - **A Certificates line in `sb motd`** (with `--traefik`), from Traefik's
   API.
 - **A theme file,** `<appdata>/sb/config.toml`: the built-in theme, with

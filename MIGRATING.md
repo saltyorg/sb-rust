@@ -73,8 +73,10 @@ completion files call a command sb doesn't have.
 - **validate-config also checks providers.yml,** against
   `schema/providers.schema.yml` once Saltbox ships it (an unknown
   provider or key is then an issue), and for duplicate keys until then.
-  A missing hetzner_vlan.yml or providers.yml is created from Saltbox's
-  default instead of failing.
+- **A missing config file is created from Saltbox's default** instead
+  of failing: accounts.yml, settings.yml, adv_settings.yml,
+  backup_config.yml, hetzner_vlan.yml and providers.yml. An existing
+  file, even an empty or broken one, is never replaced.
 - **Redirects aren't followed** by motd's providers, the credential checks,
   the Docker controller or restore. A motd.yml URL that redirects from HTTP
   to HTTPS shows a `status code 3xx` line; use the HTTPS address.

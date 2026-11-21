@@ -1,0 +1,25 @@
+---
+dns:
+  ipv4: yes
+  ipv6: no
+  proxied: no
+docker:
+  json_driver: no
+gpu:
+  intel: yes
+mounts:
+  ipv4_only: no
+system:
+  timezone: auto
+traefik:
+  cert:
+    additional_domains: []
+    http_validation: no
+    zerossl: no
+  error_pages: no
+  hsts: no
+  metrics: no
+  provider: cloudflare
+  subdomains:
+    dash: dash
+    metrics: metrics

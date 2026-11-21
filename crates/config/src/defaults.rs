@@ -1,8 +1,9 @@
-//! A missing `hetzner_vlan.yml` or `providers.yml` copied in from
-//! Saltbox's default (config spec, Behaviour, "A missing
-//! `hetzner_vlan.yml` or `providers.yml`"; decision 10): Saltbox's playbook reads
-//! `defaults/<file>.default` in the file's place (saltbox.yml's
-//! `vars_files`), and sb makes the file the user edits.
+//! A missing config file copied in from Saltbox's default (config spec,
+//! Behaviour, "A missing file Saltbox ships a default for"; decisions 10
+//! and 11): Saltbox's playbook reads `defaults/<file>.default` in the
+//! file's place (saltbox.yml's `vars_files`), and sb makes the file the
+//! user edits. Only a file that doesn't exist: an existing one, whatever
+//! it holds, is never replaced.
 //!
 //! Library-backed: every file step goes through rustix on handles opened
 //! without following links, as motd.yml's migration does (`openat2`,
@@ -271,12 +272,12 @@ mod tests {
     #[test]
     fn a_file_without_a_default_entry_is_left_alone() {
         let root = with_default("default\n");
-        let settings = *FILES
+        let motd = *FILES
             .iter()
-            .find(|file| file.path == "settings.yml")
-            .expect("settings.yml");
-        assert_eq!(copy_default(root.path(), settings), CopyOutcome::NotNeeded);
-        assert!(!root.path().join("settings.yml").exists());
+            .find(|file| file.path == "motd.yml")
+            .expect("motd.yml");
+        assert_eq!(copy_default(root.path(), motd), CopyOutcome::NotNeeded);
+        assert!(!root.path().join("motd.yml").exists());
     }
 
     /// A Saltbox root that isn't there needs no copy: the file's check
