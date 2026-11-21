@@ -124,6 +124,7 @@ fn spawn_with(
             settings,
             outbox,
             follow_from: None,
+            pace: None,
             follow: Follow::Off,
             restarted: None,
             tail_failed: false,
@@ -176,6 +177,9 @@ struct Adapter {
     /// The end of the last page that held the newest entry, until a
     /// follow starts from it.
     follow_from: Option<logs::Position>,
+    /// The first line of the last tail or older page, and the first
+    /// window for the older page just before it (`logs::window_before`).
+    pace: Option<(logs::Position, Duration)>,
     follow: Follow,
     /// A `start` of the container seen while following, with no `die`
     /// after it: the ID to follow on as soon as the log stream ends.
@@ -291,6 +295,7 @@ impl Adapter {
         let started = Instant::now();
         self.follow_from = None;
         let lines = logs::tail(&self.daemon, &self.container.id, self.settings.page).await?;
+        self.note_pace(&lines);
         let more_older = lines.len() >= self.settings.page;
         self.follow_from = Some(lines.last().map_or(START, |l| l.position));
         Ok(self
@@ -300,14 +305,21 @@ impl Adapter {
 
     async fn older(&mut self, before: logs::Position) -> bool {
         let started = Instant::now();
+        let first = self
+            .pace
+            .and_then(|(at, window)| (at == before).then_some(window));
         let read = logs::older(
             &self.daemon,
             &self.container.id,
             before,
             self.settings.page,
             self.container.created,
+            first,
         )
         .await;
+        if let Ok(found) = &read {
+            self.note_pace(&found.lines);
+        }
         match read {
             Ok(found) => self.outbox.send(page(
                 PageKind::Older,
@@ -318,6 +330,13 @@ impl Adapter {
             )),
             Err(err) => self.failed(PageKind::Older, &err),
         }
+    }
+
+    /// The pace of a page whose older side is read next.
+    fn note_pace(&mut self, lines: &[LogLine]) {
+        self.pace = lines.first().and_then(|first| {
+            logs::window_before(lines, self.settings.page).map(|window| (first.position, window))
+        });
     }
 
     async fn newer(&mut self, after: logs::Position) -> bool {
@@ -349,7 +368,8 @@ impl Adapter {
         let started = Instant::now();
         let id = &self.container.id;
         let before_n = self.settings.page / 2;
-        let before = logs::older(&self.daemon, id, at, before_n, self.container.created).await;
+        let before =
+            logs::older(&self.daemon, id, at, before_n, self.container.created, None).await;
         // Just before `at`, so the page after it starts with `at`.
         let previous = match at.ordinal.checked_sub(1) {
             Some(ordinal) => logs::Position { ordinal, ..at },

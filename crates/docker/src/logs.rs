@@ -345,11 +345,55 @@ fn starts_clean(before: &[LogLine], first: &LogLine) -> bool {
             .any(|line| line.position.time_ns == first.position.time_ns)
 }
 
+/// The first window for [`older`] just before a page of `lines` (in log
+/// order), to find `n` entries: the time the lines span, scaled to `n`
+/// of them and by half again, in whole seconds, one at least; `None` for
+/// fewer than two lines. Every window costs the daemon a pass over the
+/// whole log (`since` reads it from its start, the platform note), so a
+/// window that holds the page at once saves the passes a fixed first
+/// window doubles through on a slow log, and the lines it reads on a
+/// busy one (perf round 5, item 3).
+#[must_use]
+pub fn window_before(lines: &[LogLine], n: usize) -> Option<Duration> {
+    let [first, .., last] = lines else {
+        return None;
+    };
+    let span = (last.position.time_ns - first.position.time_ns).unsigned_abs();
+    let count = u128::try_from(lines.len()).unwrap_or(u128::MAX);
+    let wanted = u128::try_from(n).unwrap_or(u128::MAX);
+    let nanos = span.saturating_mul(wanted).saturating_mul(3) / count.saturating_mul(2);
+    let secs = nanos.div_ceil(NANOS.unsigned_abs()).max(1);
+    Some(Duration::from_secs(u64::try_from(secs).unwrap_or(u64::MAX)))
+}
+
+/// The next window's width after one of `width` seconds found `found` of
+/// the `n` entries wanted: twice as wide, or as wide as the entries found
+/// say holds `n` and half again, whichever is wider, and never under the
+/// usual first window. A first window sized from the page before that
+/// falls short (the log was slower before it) so reaches what holds the
+/// page in a read or two, not by doubling from a second (perf round 5,
+/// item 3: a log slow, then busy, read one window more at the change
+/// widening to `usual` and doubling).
+fn wider(width: i128, found: usize, n: usize, usual: i128) -> i128 {
+    let doubled = width.saturating_mul(2);
+    let paced = match (i128::try_from(found), i128::try_from(n)) {
+        (Ok(found), Ok(n)) if found > 0 => {
+            width.saturating_mul(n.saturating_mul(3)) / found.saturating_mul(2)
+        }
+        _ => 0,
+    };
+    doubled.max(paced).max(usual)
+}
+
 /// Up to `n` entries before `before`, the last ones before it. Windows of
-/// whole seconds end at the second after `before`; the first starts 60 s
-/// before it, and each next one twice as far, until `n` entries are found
+/// whole seconds end at the second after `before`; the first starts
+/// `first` before it ([`window_before`] the page before; 60 s without
+/// one), and each next one twice as far (with `first`, as far as the
+/// entries found say holds `n` when that is farther, 60 s at least:
+/// [`wider`]), until `n` entries are found
 /// or the window starts at `created` (the container's creation, when
-/// known). Only then is `more` false, unless more than `n` were found.
+/// known). Only then is `more` false, unless more than `n` were
+/// found.
 ///
 /// # Errors
 ///
@@ -360,12 +404,15 @@ pub async fn older(
     before: Position,
     n: usize,
     created: Option<Timestamp>,
+    first: Option<Duration>,
 ) -> anyhow::Result<Page> {
     let until = ceil_secs(before.time_ns);
     let start = created.map_or(1, |created| floor_secs(created.as_nanosecond()).max(1));
-    let mut width = i128::from(FIRST_WINDOW.as_secs());
+    let usual = i128::from(FIRST_WINDOW.as_secs());
+    let mut width = first.map_or(usual, |first| i128::from(first.as_secs()).max(1));
     loop {
-        let mut since = floor_secs(before.time_ns - width * NANOS).max(start);
+        let mut since =
+            floor_secs(before.time_ns.saturating_sub(width.saturating_mul(NANOS))).max(start);
         if width > i128::from(LAST_WINDOW.as_secs()) {
             since = start;
         }
@@ -393,7 +440,11 @@ pub async fn older(
             let lines = found.split_off(found.len().saturating_sub(n));
             return Ok(Page { lines, more });
         }
-        width = width.saturating_mul(2);
+        width = if first.is_some() {
+            wider(width, found.len(), n, usual)
+        } else {
+            width.saturating_mul(2)
+        };
     }
 }
 
@@ -900,7 +951,7 @@ mod tests {
         assert_eq!(texts(&lines), ["line 3.b", "line 3.c", "line 4"]);
         let ordinals: Vec<u32> = lines.iter().map(|l| l.position.ordinal).collect();
         assert_eq!(ordinals, [1, 2, 0]);
-        let page = older(&daemon, ID, lines[0].position, 2, Some(second(0)))
+        let page = older(&daemon, ID, lines[0].position, 2, Some(second(0)), None)
             .await
             .expect("older");
         assert_eq!(texts(&page.lines), ["line 2", "line 3.a"]);
@@ -1036,7 +1087,7 @@ mod tests {
         let mut seen = tail(&daemon, ID, 50).await.expect("tail");
         let created = Some(second(0));
         loop {
-            let page = older(&daemon, ID, seen[0].position, 50, created)
+            let page = older(&daemon, ID, seen[0].position, 50, created, None)
                 .await
                 .expect("older");
             assert!(page.lines.len() <= 50);
@@ -1072,7 +1123,7 @@ mod tests {
         let engine = engine(log);
         let daemon = connect(&engine.host()).await.expect("connect");
         let last = tail(&daemon, ID, 1).await.expect("tail");
-        let page = older(&daemon, ID, last[0].position, 3, Some(second(0)))
+        let page = older(&daemon, ID, last[0].position, 3, Some(second(0)), None)
             .await
             .expect("older");
         assert_eq!(texts(&page.lines), ["line 3.b", "line 3.c", "line 4"]);
@@ -1092,6 +1143,140 @@ mod tests {
         assert!(sinces.windows(2).all(|w| w[0] > w[1]), "{sinces:?}");
     }
 
+    /// Lines `secs` seconds from the log's start.
+    fn at_seconds(secs: &[i64]) -> Vec<LogLine> {
+        secs.iter()
+            .map(|&i| LogLine {
+                position: Position {
+                    time_ns: second(i).as_nanosecond(),
+                    ordinal: 0,
+                },
+                stream: LogStream::Stdout,
+                bytes: b"x\n".to_vec(),
+            })
+            .collect()
+    }
+
+    /// The window before a page: its lines' span scaled to `n` lines and
+    /// by half again, whole seconds, one at least; none without a span.
+    #[test]
+    fn the_window_before_a_page_follows_its_pace() {
+        let ten: Vec<i64> = (0..10).collect();
+        // 9 s for 10 lines, 20 asked: 27 s.
+        assert_eq!(
+            window_before(&at_seconds(&ten), 20),
+            Some(Duration::from_secs(27))
+        );
+        assert_eq!(
+            window_before(&at_seconds(&ten), 10),
+            Some(Duration::from_secs(14))
+        );
+        // All in one second: one second.
+        assert_eq!(
+            window_before(&at_seconds(&[5, 5, 5]), 500),
+            Some(Duration::from_secs(1))
+        );
+        assert_eq!(window_before(&at_seconds(&[5]), 500), None);
+        assert_eq!(window_before(&[], 500), None);
+    }
+
+    /// Given a first window, `older` starts with it: one read where it
+    /// holds the page.
+    #[tokio::test]
+    async fn older_starts_with_the_window_given() {
+        let engine = engine(long_log(400));
+        let daemon = connect(&engine.host()).await.expect("connect");
+        let last = tail(&daemon, ID, 1).await.expect("tail");
+        let page = older(
+            &daemon,
+            ID,
+            last[0].position,
+            3,
+            Some(second(0)),
+            Some(Duration::from_secs(5)),
+        )
+        .await
+        .expect("older");
+        assert_eq!(texts(&page.lines), ["line 396", "line 397", "line 398"]);
+        assert!(page.more);
+        let paths = engine.paths();
+        assert_eq!(paths.len(), 3, "{paths:?}");
+        let since = second(399).as_second() - 5;
+        assert!(paths[2].contains(&format!("since={since}&")), "{paths:?}");
+    }
+
+    /// A first window shorter than [`FIRST_WINDOW`] that falls short
+    /// widens to it at once, then doubles: never more reads than without
+    /// it, but the first.
+    #[tokio::test]
+    async fn a_short_first_window_widens_to_the_usual_one() {
+        let mut log = long_log(5);
+        log.entries
+            .push(FakeEntry::new(second(3_600), "after the gap\n"));
+        let engine = engine(log);
+        let daemon = connect(&engine.host()).await.expect("connect");
+        let last = tail(&daemon, ID, 1).await.expect("tail");
+        let page = older(
+            &daemon,
+            ID,
+            last[0].position,
+            3,
+            Some(second(0)),
+            Some(Duration::from_secs(2)),
+        )
+        .await
+        .expect("older");
+        assert_eq!(texts(&page.lines), ["line 3.b", "line 3.c", "line 4"]);
+        let sinces: Vec<i64> = engine
+            .paths()
+            .iter()
+            .skip(2)
+            .filter_map(|p| p.split("since=").nth(1)?.split('&').next()?.parse().ok())
+            .collect();
+        let start = second(3_600).as_second();
+        assert_eq!(sinces[..3], [start - 2, start - 60, start - 120]);
+    }
+
+    /// The next window: twice as wide, or the found entries' pace to `n`
+    /// and half again, the usual first window at least.
+    #[test]
+    fn a_window_that_fell_short_widens_by_what_it_found() {
+        assert_eq!(wider(60, 0, 500, 60), 120);
+        assert_eq!(wider(1, 0, 500, 60), 60);
+        assert_eq!(wider(60, 30, 500, 60), 1_500);
+        assert_eq!(wider(600, 400, 500, 60), 1_200);
+        assert_eq!(wider(2, 2, 50, 60), 75);
+        assert_eq!(wider(i128::MAX, 1, 500, 60), i128::MAX);
+    }
+
+    /// A short first window with entries in it: the next one from their
+    /// pace, one read more, not a doubling from it.
+    #[tokio::test]
+    async fn a_short_first_window_widens_by_its_entries_pace() {
+        let engine = engine(long_log(400));
+        let daemon = connect(&engine.host()).await.expect("connect");
+        let last = tail(&daemon, ID, 1).await.expect("tail");
+        let page = older(
+            &daemon,
+            ID,
+            last[0].position,
+            50,
+            Some(second(0)),
+            Some(Duration::from_secs(2)),
+        )
+        .await
+        .expect("older");
+        assert_eq!(page.lines.len(), 50);
+        let sinces: Vec<i64> = engine
+            .paths()
+            .iter()
+            .skip(2)
+            .filter_map(|p| p.split("since=").nth(1)?.split('&').next()?.parse().ok())
+            .collect();
+        let start = second(399).as_second();
+        assert_eq!(sinces, [start - 2, start - 75]);
+    }
+
     /// A window reaching the creation is the last: `more` is false, also
     /// with fewer entries than asked.
     #[tokio::test]
@@ -1100,7 +1285,7 @@ mod tests {
         let engine = engine(log);
         let daemon = connect(&engine.host()).await.expect("connect");
         let last = tail(&daemon, ID, 1).await.expect("tail");
-        let page = older(&daemon, ID, last[0].position, 100, Some(second(0)))
+        let page = older(&daemon, ID, last[0].position, 100, Some(second(0)), None)
             .await
             .expect("older");
         assert_eq!(
@@ -1111,12 +1296,12 @@ mod tests {
         );
         assert!(!page.more);
         // Exactly what was asked, from the whole log: nothing more.
-        let page = older(&daemon, ID, last[0].position, 6, Some(second(0)))
+        let page = older(&daemon, ID, last[0].position, 6, Some(second(0)), None)
             .await
             .expect("older");
         assert_eq!(page.lines.len(), 6);
         assert!(!page.more);
-        let page = older(&daemon, ID, last[0].position, 5, Some(second(0)))
+        let page = older(&daemon, ID, last[0].position, 5, Some(second(0)), None)
             .await
             .expect("older");
         assert_eq!(texts(&page.lines)[0], "line 1");
@@ -1139,6 +1324,7 @@ mod tests {
             },
             1,
             Some(second(0)),
+            None,
         )
         .await
         .expect("older");
@@ -1256,6 +1442,7 @@ mod tests {
             },
             5,
             None,
+            None,
         )
         .await
         .expect_err("an error");
@@ -1347,7 +1534,7 @@ mod tests {
             time_ns: second(200).as_nanosecond(),
             ordinal: 0,
         };
-        let page = older(&daemon, ID, before, 10, Some(second(90)))
+        let page = older(&daemon, ID, before, 10, Some(second(90)), None)
             .await
             .expect("older");
         assert_eq!(
@@ -1367,7 +1554,9 @@ mod tests {
             time_ns: second(2).as_nanosecond(),
             ordinal: 0,
         };
-        let page = older(&daemon, ID, before, 10, None).await.expect("older");
+        let page = older(&daemon, ID, before, 10, None, None)
+            .await
+            .expect("older");
         assert_eq!(texts(&page.lines), ["line 0", "line 1"]);
         assert!(!page.more);
         let sinces: Vec<i64> = engine
@@ -1390,7 +1579,7 @@ mod tests {
             time_ns: second(2).as_nanosecond(),
             ordinal: 0,
         };
-        let page = older(&daemon, ID, before, 10, Some(second(500)))
+        let page = older(&daemon, ID, before, 10, Some(second(500)), None)
             .await
             .expect("older");
         assert!(!page.more);

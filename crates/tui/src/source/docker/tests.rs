@@ -195,6 +195,38 @@ async fn older_pages_reach_the_start_with_every_entry_once() {
     assert_eq!(shown, all(0..230));
 }
 
+/// An older page's first window is sized from the page before it, when
+/// it asks for what is just before that page: its lines' span scaled to a
+/// page, and by half again. Else the usual 60 s.
+#[tokio::test]
+async fn an_older_pages_window_follows_the_page_before() {
+    let engine = engine(HashMap::from([(ID.into(), log_of(400))]));
+    let mut v = Viewer::on(&engine, container(), small(50)).await;
+    let tail = v.page(Request::Tail).await;
+    let edge = tail.oldest.expect("an edge");
+    let Position(Inner::Docker(at)) = edge.clone() else {
+        panic!("a docker position");
+    };
+    let second = at.time_ns.div_euclid(1_000_000_000);
+    // The windows an older page read, by their `since`.
+    let windows = |v_paths: &[String]| -> Vec<i128> {
+        v_paths
+            .iter()
+            .filter_map(|p| p.split("since=").nth(1)?.split('&').next()?.parse().ok())
+            .collect()
+    };
+    let before = engine.paths().len();
+    let older = v.page(Request::Older(edge.clone())).await;
+    assert_eq!(older.messages, all(300..350));
+    // The tail's 50 lines span 11.25 s: 17 s, one read.
+    assert_eq!(windows(&engine.paths()[before..]), [second - 17]);
+    // Asked again from the tail's edge, after a page elsewhere: 60 s.
+    let _ = v.page(Request::Older(older.oldest.expect("an edge"))).await;
+    let before = engine.paths().len();
+    let _ = v.page(Request::Older(edge)).await;
+    assert_eq!(windows(&engine.paths()[before..]), [second - 60]);
+}
+
 /// Newer pages from the first entry to the end, every entry once; the
 /// last page's end is where a follow starts.
 #[tokio::test]
@@ -449,6 +481,7 @@ async fn a_failing_follow_says_why_after_its_lines() {
         settings: small(50),
         outbox,
         follow_from: None,
+        pace: None,
         follow: Follow::Off,
         restarted: None,
         tail_failed: false,
