@@ -12,7 +12,7 @@
 //! is drawn as is.
 
 use anstyle::{Color, Style};
-use sb_cli_core::theme::{Role, Theme};
+use sb_cli_core::theme::{Profile, Role, Theme};
 
 /// `text` in `role`'s colour, or `text` unchanged with colour off (`on`
 /// is the destination stream's choice) or under `ascii`.
@@ -45,6 +45,30 @@ pub fn paint_colour(colour: Option<Color>, on: bool, text: &str) -> String {
 pub fn table_colour(theme: &Theme, role: Role, on: bool) -> Option<tabled::settings::Color> {
     let style = theme.style(role);
     (on && theme.color(role).is_some()).then(|| {
+        tabled::settings::Color::new(style.render().to_string(), style.render_reset().to_string())
+    })
+}
+
+/// A cell's look for tabled: `role`'s colour when it has one, bold when
+/// `bold` is set, as one tabled colour; none with colour off, under
+/// `ascii` (bold included, as headings), or with neither. Why not
+/// [`table_colour`] combined with tabled's `Color::BOLD` (`Color`'s
+/// `BitOr`): that joins both prefixes and both suffixes, two resets; one
+/// anstyle style writes one, as [`crate::Heading`] does.
+#[must_use]
+pub fn table_style(
+    theme: &Theme,
+    role: Option<Role>,
+    bold: bool,
+    on: bool,
+) -> Option<tabled::settings::Color> {
+    if !bold {
+        return role.and_then(|role| table_colour(theme, role, on));
+    }
+    let style = role
+        .map_or_else(Style::new, |role| theme.style(role))
+        .bold();
+    (on && theme.profile() != Profile::Ascii).then(|| {
         tabled::settings::Color::new(style.render().to_string(), style.render_reset().to_string())
     })
 }

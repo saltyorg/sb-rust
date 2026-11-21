@@ -8,7 +8,10 @@
 //! narrow for a character a cell gets a line saying so instead. Rows
 //! across every column, bold (`sb list`'s later repositories, a lone
 //! heading over several columns, and a title above the headings, as
-//! bench's Speedtest table has), through tabled's `Span`.
+//! bench's Speedtest table had), through tabled's `Span`. And a ruled
+//! look, `sb bench`'s: no border, no rules, a two-space gap between
+//! columns, muted headings aligned as their columns, minimum column
+//! widths and bold cells (term-ui spec, "Tables", the ruled look).
 //! <https://docs.rs/tabled/0.22.0/tabled/>
 
 use std::io::Write;
@@ -23,16 +26,17 @@ use tabled::settings::peaker::Priority;
 use tabled::settings::span::ColumnSpan;
 use tabled::settings::style::BorderColor;
 use tabled::settings::themes::BorderCorrection;
-use tabled::settings::{Alignment, Color, Style, Width};
+use tabled::settings::{Alignment, Color, Padding, Style, Width};
 
 use crate::DisplayText;
-use crate::style::table_colour;
+use crate::style::{table_colour, table_style};
 
 /// One cell: its text and, optionally, the theme role it is drawn in.
 #[derive(Clone, Debug)]
 pub struct Cell {
     text: String,
     role: Option<Role>,
+    bold: bool,
 }
 
 impl Cell {
@@ -41,6 +45,7 @@ impl Cell {
         Cell {
             text: text.into(),
             role: None,
+            bold: false,
         }
     }
 
@@ -48,6 +53,14 @@ impl Cell {
     #[must_use]
     pub fn role(mut self, role: Role) -> Self {
         self.role = Some(role);
+        self
+    }
+
+    /// Draw this cell bold (when colour is on), in its role's colour if
+    /// it has one (bench's `Average`).
+    #[must_use]
+    pub fn bold(mut self) -> Self {
+        self.bold = true;
         self
     }
 }
@@ -80,6 +93,10 @@ pub struct Table {
     right: Vec<usize>,
     anywhere: Vec<usize>,
     max_column_width: Option<usize>,
+    /// The ruled look ([`Table::ruled`]) rather than the boxed one.
+    ruled: bool,
+    /// Each column's minimum width, its gap included: (column, width).
+    min_widths: Vec<(usize, usize)>,
 }
 
 impl Table {
@@ -93,6 +110,37 @@ impl Table {
             headings: headings.into_iter().map(Into::into).collect(),
             ..Table::default()
         }
+    }
+
+    /// A table in the ruled look (`sb bench`'s): no border, no rule
+    /// between rows, a two-space gap after each left-aligned column but
+    /// the last and before each right-aligned column but the first (and
+    /// before a left-aligned column after a right-aligned one), these
+    /// headings in Muted and aligned as their columns (no heading row when
+    /// there are none), and no line ending in a space. tabled's
+    /// `Style::empty()`
+    /// (<https://docs.rs/tabled/0.22.0/tabled/settings/style/struct.Style.html#method.empty>)
+    /// and `Padding`
+    /// (<https://docs.rs/tabled/0.22.0/tabled/settings/struct.Padding.html>).
+    pub fn ruled<I, S>(headings: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        Table {
+            ruled: true,
+            ..Table::new(headings)
+        }
+    }
+
+    /// Make column `index` at least `width` wide, its gap included
+    /// (bench's 21-wide label column), through tabled's `Width::increase`
+    /// (<https://docs.rs/tabled/0.22.0/tabled/settings/width/struct.Width.html#method.increase>),
+    /// which widens a cell's text, its padding aside.
+    #[must_use]
+    pub fn min_width(mut self, index: usize, width: usize) -> Self {
+        self.min_widths.push((index, width));
+        self
     }
 
     /// Align column `index` (from 0) to the right.
@@ -163,10 +211,46 @@ impl Table {
         self.rows.push(vec![Cell::new(text)]);
     }
 
-    /// How many records come before the rows: the headings, and the
-    /// title above them when there is one.
+    /// How many records come before the rows: the headings (none for a
+    /// ruled table without any), and the title above them when there is
+    /// one.
     fn heading_rows(&self) -> usize {
-        1 + usize::from(self.title.is_some())
+        usize::from(!(self.ruled && self.headings.is_empty())) + usize::from(self.title.is_some())
+    }
+
+    /// The padding of column `column` of `columns`: tabled's default, a
+    /// space on either side, in the boxed look; in the ruled look the
+    /// two-space gap where [`Table::ruled`] puts it (before a left-aligned
+    /// column after a right-aligned one too), and none otherwise.
+    fn padding(&self, column: usize, columns: usize) -> (usize, usize) {
+        if !self.ruled {
+            return (1, 1);
+        }
+        let right = |column: usize| self.right.contains(&column);
+        if right(column) {
+            (if column > 0 { GAP } else { 0 }, 0)
+        } else {
+            let left = if column > 0 && right(column - 1) {
+                GAP
+            } else {
+                0
+            };
+            (left, if column + 1 < columns { GAP } else { 0 })
+        }
+    }
+
+    /// `table` in this table's look: its style and each column's padding.
+    fn look(&self, table: &mut tabled::Table) {
+        if !self.ruled {
+            table.with(Style::modern_rounded());
+            return;
+        }
+        table.with(Style::empty());
+        let columns = table.count_columns();
+        for column in 0..columns {
+            let (left, right) = self.padding(column, columns);
+            table.modify(Columns::one(column), Padding::new(left, right, 0, 0));
+        }
     }
 
     /// The records (the first is 0) that span every column: the title of
@@ -209,15 +293,17 @@ impl Table {
         // spanning cell has every column's width and the borders between
         // them, as tabled counts them.
         let across = widths.iter().sum::<usize>() + inner;
+        let columns = widths.len();
         let fit = |text: &str, record: usize, column: usize, words: bool| {
-            let width = if spans.contains(&record) {
-                Some(across)
+            let (width, padded) = if spans.contains(&record) {
+                (Some(across), 0)
             } else {
-                widths.get(column).copied()
+                (widths.get(column).copied(), column)
             };
+            let (left, right) = self.padding(padded, columns);
             width.map_or_else(
                 || text.to_owned(),
-                |width| wrapped(text, width.saturating_sub(PADDING), words),
+                |width| wrapped(text, width.saturating_sub(left + right), words),
             )
         };
         // The title is a record of its own, spread across every column as
@@ -231,13 +317,15 @@ impl Table {
         if let Some(title) = &title {
             builder.push_record([fit(title, 0, 0, true)]);
         }
-        let heading_record = head - 1;
-        builder.push_record(
-            headings
-                .iter()
-                .enumerate()
-                .map(|(j, text)| fit(text, heading_record, j, true)),
-        );
+        if head > usize::from(title.is_some()) {
+            let heading_record = head - 1;
+            builder.push_record(
+                headings
+                    .iter()
+                    .enumerate()
+                    .map(|(j, text)| fit(text, heading_record, j, true)),
+            );
+        }
         for (i, row) in rows.iter().enumerate() {
             let words = |j| !self.anywhere.contains(&j) || self.spanning.contains(&i);
             builder.push_record(
@@ -254,23 +342,31 @@ impl Table {
         // multi-line cell as one block by default), without the spaces
         // wrapping at words leaves at line ends.
         // https://docs.rs/tabled/0.22.0/tabled/settings/formatting/enum.AlignmentStrategy.html
+        self.look(&mut table);
         table
-            .with(Style::modern_rounded())
             .modify(Segment::all(), AlignmentStrategy::PerLine)
             .modify(Segment::all(), TrimStrategy::Horizontal);
         for &index in &self.right {
             table.modify(Columns::one(index), Alignment::right());
         }
         // After the columns' alignment, so headings (and a title) stay
-        // centred, as the spanning rows are.
-        table.modify(Rows::new(..head), Alignment::center());
+        // centred, as the spanning rows are; a ruled table's headings
+        // keep their columns' alignment.
+        if !self.ruled {
+            table.modify(Rows::new(..head), Alignment::center());
+        }
         for &record in &spans {
             table.modify(Rows::one(record), Alignment::center());
         }
         // The theme's colours, and bold headings only where the theme has
         // colour at all (every role has one, except under `ascii`): `ascii`
-        // and colour off write no SGR codes.
-        if let Some(border) = table_colour(theme, Role::Border, colour) {
+        // and colour off write no SGR codes. A ruled table has no border
+        // and Muted headings.
+        if self.ruled {
+            if let Some(muted) = table_colour(theme, Role::Muted, colour) {
+                table.modify(Rows::new(..head), muted);
+            }
+        } else if let Some(border) = table_colour(theme, Role::Border, colour) {
             table.modify(Segment::all(), BorderColor::filled(border));
             table.modify(Rows::new(..head), Color::BOLD);
             for &record in &spans {
@@ -279,7 +375,12 @@ impl Table {
         }
         for (i, row) in self.rows.iter().enumerate() {
             for (j, cell) in row.iter().enumerate() {
-                if let Some(paint) = cell.role.and_then(|role| table_colour(theme, role, colour)) {
+                // An empty cell gets no codes: with none, a ruled line's
+                // padding before it is trailing and dropped.
+                if cell.text.is_empty() {
+                    continue;
+                }
+                if let Some(paint) = table_style(theme, cell.role, cell.bold, colour) {
                     table.modify((i + head, j), paint);
                 }
             }
@@ -294,7 +395,8 @@ impl Table {
         if !spans.is_empty() {
             table.with(BorderCorrection::span());
         }
-        table.to_string()
+        let text = table.to_string();
+        if self.ruled { trimmed(&text) } else { text }
     }
 
     /// The columns' widths, padding included: their natural widths, capped
@@ -316,20 +418,30 @@ impl Table {
         if let Some(title) = title {
             builder.push_record([title.to_owned()]);
         }
-        builder.push_record(headings.iter().cloned());
+        if self.heading_rows() > usize::from(title.is_some()) {
+            builder.push_record(headings.iter().cloned());
+        }
         for row in rows {
             builder.push_record(row.iter().cloned());
         }
         let mut probe = builder.build();
-        probe.with(Style::modern_rounded());
+        self.look(&mut probe);
         for &record in spans {
             probe.modify((record, 0), ColumnSpan::spread());
+        }
+        let columns = probe.count_columns();
+        for &(column, min) in &self.min_widths {
+            let (left, right) = self.padding(column, columns);
+            probe.modify(
+                Columns::one(column),
+                Width::increase(min.saturating_sub(left + right)),
+            );
         }
         if let Some(max) = self.max_column_width {
             probe.modify(Columns::new(..), Width::wrap(max));
         }
         if let Some(width) = width {
-            let needed = narrowest(probe.count_columns());
+            let needed = self.narrowest(columns);
             if width < needed {
                 return Err(format!(
                     "Too narrow for the table: it needs {needed} columns, the terminal has {width}."
@@ -349,6 +461,18 @@ impl Table {
             .filter(|&column| probe.get_config().has_vertical(column, columns))
             .count();
         Ok((widths, inner))
+    }
+
+    /// The width of the narrowest table of `columns` columns in this
+    /// look: a character a cell, measured by tabled. A wide character
+    /// (CJK, emoji) needs two; in a one-character column tabled draws it
+    /// as `�`.
+    fn narrowest(&self, columns: usize) -> usize {
+        let mut builder = Builder::default();
+        builder.push_record(vec!["x"; columns]);
+        let mut table = builder.build();
+        self.look(&mut table);
+        table.total_width()
     }
 
     /// Print the table on stdout: fitted to the terminal there (console's
@@ -372,16 +496,24 @@ impl Table {
     }
 }
 
-/// A cell's padding: tabled's default, a space on either side.
-const PADDING: usize = 2;
+/// The ruled look's gap between two columns.
+const GAP: usize = 2;
 
-/// The width of the narrowest table of `columns` columns in this style: a
-/// character a cell, measured by tabled. A wide character (CJK, emoji)
-/// needs two; in a one-character column tabled draws it as `�`.
-fn narrowest(columns: usize) -> usize {
-    let mut builder = Builder::default();
-    builder.push_record(vec!["x"; columns]);
-    builder.build().with(Style::modern_rounded()).total_width()
+/// `text` without the spaces at the end of each line: a ruled line's
+/// padding after its last cell (an empty cell's, or a short one's), the
+/// codes closed before it. Why not tabled: tabled 0.22 and papergrid 0.18
+/// always fill a cell to its column's width, and have no setting to leave
+/// a line's last cell unpadded (checked `settings::formatting`,
+/// `Padding`, `Width`; `TrimStrategy` trims a cell's own text before it is
+/// aligned, not the fill).
+fn trimmed(text: &str) -> String {
+    let mut lines = text.lines().map(|line| line.trim_end_matches(' '));
+    let mut out = lines.next().unwrap_or_default().to_owned();
+    for line in lines {
+        out.push('\n');
+        out.push_str(line);
+    }
+    out
 }
 
 /// `text` wrapped to `width` columns: each of its lines on its own,
@@ -863,6 +995,147 @@ mod tests {
             )));
             // Headings bold with colour on.
             assert!(text.contains("\x1b[1mContainer"), "{profile:?}: {text:?}");
+        }
+    }
+
+    /// A ruled table of bench's Speedtest shape: a 21-wide label column,
+    /// numbers right-aligned in 13, 13 and 11 wide columns, a failed row's
+    /// text in the second column.
+    fn nodes() -> Table {
+        let mut table = Table::ruled(["Node", "Upload", "Download", "Latency"])
+            .min_width(0, 21)
+            .right_align(1)
+            .min_width(1, 13)
+            .right_align(2)
+            .min_width(2, 13)
+            .right_align(3)
+            .min_width(3, 11);
+        table.row(["Speedtest.net", "900.00 Mbps", "950.00 Mbps", "1.00 ms"]);
+        table.row([
+            Cell::new("Los Angeles, US"),
+            Cell::new("Test failed").role(Role::Problem),
+        ]);
+        table.row(["Tokyo, JP", "600.00 Mbps", "640.00 Mbps", "270.00 ms"]);
+        table
+    }
+
+    /// The ruled look: no border, no rule between rows, headings aligned as
+    /// their columns, the minimum widths counting the two-space gap, and
+    /// no line ending in a space.
+    #[test]
+    fn a_ruled_table_has_no_border_and_fixed_columns() {
+        let expected = "\
+Node                        Upload     Download    Latency
+Speedtest.net          900.00 Mbps  950.00 Mbps    1.00 ms
+Los Angeles, US        Test failed
+Tokyo, JP              600.00 Mbps  640.00 Mbps  270.00 ms";
+        assert_eq!(nodes().render(&plain(), false, None), expected);
+        assert_eq!(nodes().render(&plain(), false, Some(80)), expected);
+        // A value past its column's minimum widens the column, the gap
+        // kept.
+        let mut wide = nodes();
+        wide.row(["Far", "10000.00 Mbps", "1.00 Mbps", "1.00 ms"]);
+        assert_eq!(
+            wide.render(&plain(), false, None),
+            "\
+Node                          Upload     Download    Latency
+Speedtest.net            900.00 Mbps  950.00 Mbps    1.00 ms
+Los Angeles, US          Test failed
+Tokyo, JP                600.00 Mbps  640.00 Mbps  270.00 ms
+Far                    10000.00 Mbps    1.00 Mbps    1.00 ms"
+        );
+    }
+
+    /// No headings, no heading row: label and value rows only, the value
+    /// starting after the label column and wrapping at words within the
+    /// rest of the width.
+    #[test]
+    fn a_ruled_table_without_headings_is_its_rows() {
+        let mut table = Table::ruled(Vec::<String>::new()).min_width(0, 21);
+        table.row(["CPU Cores", "16 @ 3000.000 MHz"]);
+        table.row([
+            "Skipped",
+            "Speedtest unavailable: download release asset \
+             \"ookla-speedtest-1.2.0-linux-x86_64.tgz\": error sending request",
+        ]);
+        assert_eq!(
+            table.render(&plain(), false, Some(70)),
+            "\
+CPU Cores            16 @ 3000.000 MHz
+Skipped              Speedtest unavailable: download release asset
+                     \"ookla-speedtest-1.2.0-linux-x86_64.tgz\": error
+                     sending request"
+        );
+        // A right-aligned first column has its gap after it.
+        let mut first = Table::ruled(Vec::<String>::new()).right_align(0);
+        first.row(["1", "x"]);
+        first.row(["10", "y"]);
+        assert_eq!(first.render(&plain(), false, None), " 1  x\n10  y");
+        // A left-aligned column after a right-aligned one keeps a gap (and
+        // a right-aligned one after a left-aligned one has both).
+        let mut mixed = Table::ruled(["Name", "Num", "Note"]).right_align(1);
+        mixed.row(["a", "10", "x"]);
+        assert_eq!(
+            mixed.render(&plain(), false, None),
+            "Name    Num  Note\na        10  x"
+        );
+        // Too narrow for a character a cell and the gap: said so.
+        let mut two = Table::ruled(["a", "b"]);
+        two.row(["x", "y"]);
+        assert_eq!(two.render(&plain(), false, Some(4)), "a  b\nx  y");
+        assert!(
+            two.render(&plain(), false, Some(3))
+                .starts_with("Too narrow for the table: it needs 4 columns"),
+        );
+    }
+
+    /// With colour: headings Muted, a cell in its role, a bold cell bold
+    /// (in its role, or alone), the padding outside the codes; colour off
+    /// or `ascii` writes none, bold included.
+    #[test]
+    fn a_ruled_table_paints_its_headings_and_cells() {
+        let theme = Theme::resolve(&Palette::default(), Profile::TrueColor);
+        let mut table = nodes();
+        table.row([Cell::new("Average").bold(), Cell::new("820.0 MB/s").bold()]);
+        table.row([Cell::new("Label").role(Role::Muted).bold(), Cell::new("x")]);
+        // An empty cell with a role: no codes, so no padding left before
+        // them.
+        table.row([Cell::new("Empty"), Cell::new("").role(Role::Problem)]);
+        let text = table.render(&theme, true, None);
+        let muted = theme.style(Role::Muted);
+        let problem = theme.style(Role::Problem);
+        assert!(
+            text.starts_with(&format!(
+                "{muted}Node{muted:#}{}{muted}Upload{muted:#}",
+                " ".repeat(24)
+            )),
+            "{text:?}"
+        );
+        assert!(
+            text.contains(&format!(
+                "Los Angeles, US        {problem}Test failed{problem:#}\n"
+            )),
+            "{text:?}"
+        );
+        assert!(
+            text.contains(&format!(
+                "\n\x1b[1mAverage\x1b[0m{}\x1b[1m820.0 MB/s\x1b[0m\n",
+                " ".repeat(17)
+            )),
+            "{text:?}"
+        );
+        let bold_muted = muted.bold();
+        assert!(
+            text.contains(&format!(
+                "\n{bold_muted}Label{bold_muted:#}{}x\n",
+                " ".repeat(28)
+            )),
+            "{text:?}"
+        );
+        assert!(text.ends_with("\nEmpty"), "{text:?}");
+        assert!(text.lines().all(|line| !line.ends_with(' ')), "{text:?}");
+        for (theme, colour) in [(theme, false), (plain(), true)] {
+            assert!(!table.render(&theme, colour, None).contains('\x1b'));
         }
     }
 }
