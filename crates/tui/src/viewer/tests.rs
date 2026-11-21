@@ -3020,6 +3020,46 @@ fn home_loads_the_logs_first_page_and_end_goes_back() {
     assert!(requests.contains(&Request::Follow(true)), "{requests:?}");
 }
 
+/// Home, End and a jump past the buffer ask for a page that replaces
+/// it: the key's frame waits for it (`App::key_frame_waits`). Any other
+/// key, and Home with the start loaded, draw at once.
+#[test]
+fn keys_that_ask_for_a_new_buffer_hold_their_frame() {
+    let mut h = open(70, 8, Limits::default());
+    h.send(tail(40..50, true));
+    h.key(KeyCode::Up);
+    assert!(!h.viewer.key_frame_waits(), "a scroll");
+    h.key(KeyCode::Home);
+    assert!(h.viewer.key_frame_waits(), "Home asked for the first page");
+    // A follow's lines aren't the page; its read's failure ends the wait.
+    h.send(Event::Followed(lines(50..51)));
+    assert!(h.viewer.key_frame_waits(), "the page hasn't come");
+    h.send(Event::Notice(Notice::ReadFailed("gone".into())));
+    assert!(!h.viewer.key_frame_waits(), "the read failed");
+    h.key(KeyCode::Home);
+    assert!(h.viewer.key_frame_waits());
+    h.key(KeyCode::Char('w'));
+    assert!(!h.viewer.key_frame_waits(), "the next key");
+    h.key(KeyCode::Home);
+    h.send(head_page(0..10, true));
+    assert!(!h.viewer.key_frame_waits(), "the page came");
+    h.key(KeyCode::Home);
+    assert!(!h.viewer.key_frame_waits(), "the start is loaded");
+    h.key(KeyCode::End);
+    assert!(h.viewer.key_frame_waits(), "End asked for the tail");
+    h.send(tail(40..50, true));
+    h.key(KeyCode::End);
+    assert!(!h.viewer.key_frame_waits(), "the tail is loaded");
+    h.search("m45");
+    let id = searches(&h.requests()).0[0].id;
+    h.send(step(id, Side::Older, Order::NearestFirst, &[20], None));
+    h.key(KeyCode::Char('N'));
+    assert!(
+        h.viewer.key_frame_waits(),
+        "N asked for a match's surroundings"
+    );
+}
+
 /// The start's header names the first line's time, as the lines show it.
 #[test]
 fn the_start_header_names_the_first_lines_time() {

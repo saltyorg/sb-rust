@@ -162,6 +162,19 @@ pub trait App {
         false
     }
 
+    /// Whether the key press just taken asked the screen's source for
+    /// what replaces the screen's content (the viewer's Home, End and a
+    /// jump to a match not loaded), and it hasn't come yet: the key's
+    /// frame then waits for it, through the source's wakes, a frame time
+    /// at most, as a first frame that waits does, so the new content
+    /// comes in that one frame. Drawn at once, the key's frame would show
+    /// only the header's word, and the content's frame would keep a frame
+    /// time from it (perf round 5). Asked after the key and after each
+    /// wake while the frame waits.
+    fn key_frame_waits(&self) -> bool {
+        false
+    }
+
     /// A source woke the screen ([`Tui::waker`]): take what it sent.
     fn wake(&mut self) -> Flow {
         Flow::Unchanged
@@ -709,7 +722,10 @@ async fn sleep_until(due: Option<Instant>) {
 /// recipe's interval's first tick drew it, or for a screen whose first
 /// frame waits for its source ([`App::first_frame_waits`]) at its first
 /// wake, a frame time on at most. A key press's change is drawn at once,
-/// or a frame time after the last frame if that came sooner: waiting for
+/// or a frame time after the last frame if that came sooner (a key that
+/// asked its source for new content, [`App::key_frame_waits`], at the
+/// source's wake that brings it, the same frame time on at most, so that
+/// frame shows the content): waiting for
 /// the grid made a key's frame 8.7 ms late on average, up to 18 ms (perf
 /// round 3). Any other change (the mouse, a paste, a source's lines) is
 /// drawn at the frames' [`Grid`]'s next time, a frame time after the
@@ -744,6 +760,8 @@ where
     let mut drawn: Option<Instant> = None;
     // A key press asked for the pending frame.
     let mut key = false;
+    // The frame waiting is a key's, for what the key asked its source for.
+    let mut held = false;
     loop {
         let now = Instant::now();
         if changed && (due.is_none() || key) {
@@ -779,15 +797,22 @@ where
                 changed = false;
                 due = None;
                 waits = false;
+                held = false;
                 continue;
             }
             Step::Tick => app.tick(),
             Step::Wake => {
                 let flow = app.wake();
-                if waits && flow == Flow::Redraw {
-                    // What the first frame waited for: now.
+                // A held key's frame waits on past other changes (a busy
+                // follow's lines) until what the key asked for has come.
+                if waits && flow == Flow::Redraw && !(held && app.key_frame_waits()) {
+                    // What the frame waited for: now, or for a key's
+                    // frame as a key's is, a frame time after the last
+                    // frame if that came sooner.
                     waits = false;
+                    held = false;
                     due = None;
+                    key = drawn.is_some();
                 }
                 flow
             }
@@ -799,7 +824,16 @@ where
                 changed |= matches!(input, Input::Resize(..));
                 let pressed = matches!(input, Input::Key(_));
                 let flow = app.input(input);
-                key |= pressed && flow == Flow::Redraw;
+                if pressed && flow == Flow::Redraw && app.key_frame_waits() {
+                    // The key's frame waits for what it asked its source
+                    // for, a frame time at most.
+                    waits = true;
+                    held = true;
+                    let limit = Instant::now() + frames.period;
+                    due = Some(due.map_or(limit, |due| due.min(limit)));
+                } else {
+                    key |= pressed && flow == Flow::Redraw;
+                }
                 flow
             }
             Step::Event(Some(Event::Failed(err))) => return Err(err),
@@ -1001,13 +1035,18 @@ mod tests {
         wakes: Vec<usize>,
         wake_flow: Option<Flow>,
         first_frame_waits: bool,
+        /// The last key was `p`: it asked its source for a page.
+        asked_page: bool,
+        /// The wake, counted from 1, that brings the page `p` asked for.
+        page_at_wake: Option<usize>,
     }
 
     impl App for Script {
         fn input(&mut self, input: Input) -> Flow {
+            self.asked_page = matches!(&input, Input::Key(key) if key.code == KeyCode::Char('p'));
             let flow = match &input {
                 Input::Key(key) if key.code == KeyCode::Char('q') => Flow::Quit,
-                Input::Key(key) if key.code == KeyCode::Char('r') => Flow::Redraw,
+                Input::Key(key) if matches!(key.code, KeyCode::Char('r' | 'p')) => Flow::Redraw,
                 Input::Paste(_) => Flow::Redraw,
                 _ => Flow::Unchanged,
             };
@@ -1023,6 +1062,10 @@ mod tests {
             self.first_frame_waits
         }
 
+        fn key_frame_waits(&self) -> bool {
+            self.asked_page
+        }
+
         fn tick(&mut self) -> Flow {
             let now = Instant::now();
             self.ticks.push(now);
@@ -1032,6 +1075,9 @@ mod tests {
 
         fn wake(&mut self) -> Flow {
             self.wakes.push(self.inputs.len());
+            if self.page_at_wake == Some(self.wakes.len()) {
+                self.asked_page = false;
+            }
             self.wake_flow.unwrap_or(Flow::Unchanged)
         }
 
@@ -1220,6 +1266,141 @@ mod tests {
             .await
             .expect("ends");
         assert_eq!((quiet.draws, first(&quiet, before)), (1, Some(ms(17))));
+    }
+
+    /// A key that asked its source for a page holds its frame for the
+    /// source's next wake that asks for a frame, a frame time at most:
+    /// the page comes in that one frame. A wake that changes nothing
+    /// keeps it waiting; another key draws as keys do.
+    #[tokio::test(start_paused = true)]
+    async fn a_key_that_asked_for_a_page_draws_at_the_sources_wake() {
+        let token = CancellationToken::new();
+        let wake = Notify::new();
+        let mut app = Script {
+            wake_flow: Some(Flow::Redraw),
+            page_at_wake: Some(1),
+            ..Script::default()
+        };
+        let woken = async {
+            tokio::time::sleep(ms(105)).await;
+            wake.notify_one();
+            std::future::pending::<()>().await;
+        };
+        let events = vec![input(100, char_key('p')), input(500, char_key('q'))];
+        tokio::select! {
+            ending = run_with(&mut app, events, &token, &wake) => {
+                assert_eq!(ending.expect("ends"), Ending::Quit);
+            }
+            () = woken => unreachable!("never ends"),
+        }
+        assert_eq!(app.drawn, [ms(0), ms(105)]);
+        // No wake: a frame time after the key.
+        let mut quiet = Script::default();
+        let events = vec![input(100, char_key('p')), input(500, char_key('q'))];
+        run(&mut quiet, events, &token).await.expect("ends");
+        assert_eq!(quiet.drawn, [ms(0), ms(117)]);
+        // A wake that changes nothing doesn't end the wait; a key after
+        // it draws at once.
+        let mut unchanged = Script::default();
+        let wake = Notify::new();
+        let woken = async {
+            tokio::time::sleep(ms(103)).await;
+            wake.notify_one();
+            std::future::pending::<()>().await;
+        };
+        let events = vec![
+            input(100, char_key('p')),
+            input(108, char_key('r')),
+            input(500, char_key('q')),
+        ];
+        tokio::select! {
+            ending = run_with(&mut unchanged, events, &token, &wake) => {
+                assert_eq!(ending.expect("ends"), Ending::Quit);
+            }
+            () = woken => unreachable!("never ends"),
+        }
+        assert_eq!(
+            (unchanged.wakes.len(), unchanged.drawn.as_slice()),
+            (1, [ms(0), ms(108)].as_slice())
+        );
+    }
+
+    /// A wake with other changes (a busy follow's lines) doesn't end the
+    /// hold while the page is still awaited: the frame comes with the page.
+    #[tokio::test(start_paused = true)]
+    async fn a_held_key_frame_waits_for_its_page_past_other_changes() {
+        let token = CancellationToken::new();
+        let wake = Notify::new();
+        let mut app = Script {
+            wake_flow: Some(Flow::Redraw),
+            page_at_wake: Some(2),
+            ..Script::default()
+        };
+        let woken = async {
+            tokio::time::sleep(ms(103)).await;
+            wake.notify_one();
+            tokio::time::sleep(ms(5)).await;
+            wake.notify_one();
+            std::future::pending::<()>().await;
+        };
+        let events = vec![input(100, char_key('p')), input(500, char_key('q'))];
+        tokio::select! {
+            ending = run_with(&mut app, events, &token, &wake) => {
+                assert_eq!(ending.expect("ends"), Ending::Quit);
+            }
+            () = woken => unreachable!("never ends"),
+        }
+        assert_eq!(
+            (app.wakes.len(), app.drawn.as_slice()),
+            (2, [ms(0), ms(108)].as_slice())
+        );
+    }
+
+    /// A held key's frame keeps a frame already due sooner on the grid.
+    #[tokio::test(start_paused = true)]
+    async fn a_held_key_keeps_a_sooner_frame() {
+        let mut app = Script::default();
+        let events = vec![
+            input(105, paste()),
+            input(106, char_key('p')),
+            input(500, char_key('q')),
+        ];
+        run(&mut app, events, &CancellationToken::new())
+            .await
+            .expect("ends");
+        // The paste's frame on the grid at 116.7 ms, not the key's limit
+        // at 122.7.
+        assert_eq!(app.drawn, [ms(0), ms(117)]);
+    }
+
+    /// The page's frame, when the wake comes within a frame time of the
+    /// last frame, keeps a frame time from it, as a key's frame does.
+    #[tokio::test(start_paused = true)]
+    async fn a_held_key_frame_keeps_a_frame_time_from_the_last() {
+        let token = CancellationToken::new();
+        let wake = Notify::new();
+        let mut app = Script {
+            wake_flow: Some(Flow::Redraw),
+            page_at_wake: Some(1),
+            ..Script::default()
+        };
+        let woken = async {
+            tokio::time::sleep(ms(106)).await;
+            wake.notify_one();
+            std::future::pending::<()>().await;
+        };
+        let events = vec![
+            input(100, char_key('r')),
+            input(102, char_key('p')),
+            input(500, char_key('q')),
+        ];
+        tokio::select! {
+            ending = run_with(&mut app, events, &token, &wake) => {
+                assert_eq!(ending.expect("ends"), Ending::Quit);
+            }
+            () = woken => unreachable!("never ends"),
+        }
+        assert_eq!(app.drawn, [ms(0), ms(100), ms(117)]);
     }
 
     /// An idle screen: one frame, no tick, the loop waiting on nothing

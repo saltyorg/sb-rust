@@ -482,6 +482,16 @@ enum Placing {
     BottomWhenMeasured,
 }
 
+/// When the last input's frame is drawn ([`App::key_frame_waits`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum KeyFrame {
+    /// As a key's frame is, at once.
+    AtOnce,
+    /// The input asked the source for a page that replaces the buffer
+    /// (Home, End, a jump): at the page, a frame time at most.
+    AfterPage,
+}
+
 /// Where the window starts: an item (`-1` the start-of-log marker, then
 /// the buffer's entries, then the end marker) and the rows of it above
 /// the window.
@@ -554,6 +564,9 @@ pub struct Viewer {
     around: Option<(Position, usize)>,
     /// Home asked the source for the log's first page (`Request::Head`).
     heading: bool,
+    /// Whether the last input's frame waits for a page it asked for, until
+    /// that page (or its read's failure) comes.
+    key_frame: KeyFrame,
     /// Log lines measured since the count was last taken: the frame-cost
     /// test's (tui spec, Testing Strategy, "Frame cost").
     #[cfg(test)]
@@ -643,6 +656,7 @@ impl Viewer {
             waiting: None,
             around: None,
             heading: false,
+            key_frame: KeyFrame::AtOnce,
             #[cfg(test)]
             measured: Cell::new(0),
             #[cfg(test)]
@@ -711,6 +725,7 @@ impl Viewer {
                 if matches!(notice, Notice::ReadFailed(_)) {
                     self.around = None;
                     self.heading = false;
+                    self.key_frame = KeyFrame::AtOnce;
                 }
                 // The follow has stopped or never started (follow-L4): the
                 // view stays where it is, paged, and `f` retries.
@@ -756,6 +771,10 @@ impl Viewer {
         };
         if given_up {
             return;
+        }
+        if kind != PageKind::Older && kind != PageKind::Newer {
+            // What a key's frame waited for.
+            self.key_frame = KeyFrame::AtOnce;
         }
         self.last_page = Some(kind);
         match kind {
@@ -1317,6 +1336,7 @@ impl Viewer {
         if self.newer.more {
             self.source.send(Request::Tail);
             self.newer.asked = false;
+            self.key_frame = KeyFrame::AfterPage;
         }
         if !self.following() {
             self.source.send(Request::Follow(true));
@@ -1671,6 +1691,7 @@ impl Viewer {
         }
         self.around = Some((position.clone(), k));
         self.source.send(Request::Around(position));
+        self.key_frame = KeyFrame::AfterPage;
     }
 
     /// Whether the row `at` is in the window.
@@ -1718,6 +1739,7 @@ impl Viewer {
         self.around = None;
         self.waiting = None;
         self.source.send(Request::Head);
+        self.key_frame = KeyFrame::AfterPage;
     }
 
     /// The header's part on the log's start: `going to the start…` while
@@ -2212,6 +2234,7 @@ impl Viewer {
 
 impl App for Viewer {
     fn input(&mut self, input: Input) -> Flow {
+        self.key_frame = KeyFrame::AtOnce;
         match input {
             Input::Key(key) => {
                 // A jump waiting for the search goes with the next key
@@ -2237,6 +2260,11 @@ impl App for Viewer {
     /// Nothing to show until the source's first page or notice.
     fn first_frame_waits(&self) -> bool {
         !self.loaded && self.entries.is_empty()
+    }
+
+    /// Home, End or a jump asked for a page that replaces the buffer.
+    fn key_frame_waits(&self) -> bool {
+        self.key_frame == KeyFrame::AfterPage
     }
 
     /// Takes every event the source has sent; those of another
