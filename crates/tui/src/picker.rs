@@ -1116,6 +1116,11 @@ impl App for Picker {
         }
     }
 
+    /// The refresh's time: [`REFRESH`] after the last one.
+    fn tick_at(&self) -> Option<Instant> {
+        Some(self.restated + REFRESH)
+    }
+
     /// Every 5 s: the statuses as at now, and a read of the services.
     fn tick(&mut self) -> Flow {
         if self.restated.elapsed() < REFRESH {

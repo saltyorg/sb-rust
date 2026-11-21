@@ -588,6 +588,12 @@ To discuss with the maintainer once every module is done, not before:
   to the PTY haven't been prototyped. Evaluate a terminal-emulator crate
   (`vt100`, or termwiz's escape parser) for the output tail instead of the
   custom line splitter.
+- **The screens' event loop:** it leaves ratatui's async recipe
+  (https://ratatui.rs/recipes/apps/terminal-and-event-handler/) in its
+  timers: no 60/s render interval and 4/s tick for every screen, a frame
+  timer armed only while a frame is pending and a tick only for a screen
+  that asks (perf round 3; the maintainer, 2026-11-21; tui spec, "The
+  event loop"). Revisit if the recipe's own timers change.
 - **Edit picker:** closed by the editors' picker slice (tui spec). It
   reuses the proto-facts and proto-logs patterns (list picker, then
   `$EDITOR`). *Amended 2026-11-13 by the tui spec.*

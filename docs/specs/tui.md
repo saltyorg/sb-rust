@@ -135,7 +135,8 @@ fallback); the viewer itself has no save or print (decision 24).
     <cause>` in the footer until a refresh succeeds.
   - Containers are kept live by bollard's `events` (type `container`).
     An event marks the list stale; the next 4/s tick reloads it with
-    `connect::list`, so a burst costs one reload. If the event stream
+    `connect::list`, so a burst costs one reload. The tick is waited for
+    only while the list is stale (*amended 2026-11-21*). If the event stream
     ends or fails, the footer says `Docker events stopped; retrying`,
     and sb reconnects every 5 s, reloading once it is back.
   - The selection stays on the same source across reloads and filtering
@@ -330,9 +331,16 @@ fallback); the viewer itself has no save or print (decision 24).
 - **The event loop** is ratatui's async recipe
   (https://ratatui.rs/recipes/apps/terminal-and-event-handler/): a task
   reads crossterm's `EventStream` in `tokio::select!` and sends events on
-  an unbounded channel; rendering runs on a 60 fps interval, only when
-  something changed; a 4/s tick runs beside it (proto-logs' "root cause of
-  the whole series of input bugs").
+  an unbounded channel (proto-logs' "root cause of the whole series of
+  input bugs"); a frame is drawn at most 60 times a second, only when
+  something changed. *Amended 2026-11-21 (the maintainer, perf round 3):*
+  the recipe's 60/s render interval and 4/s tick no longer run for every
+  screen; they woke an idle screen 75-88 times a second. The loop arms
+  its frame timer only while a frame is pending, on the same 60/s grid,
+  and ticks a screen only when it asks (the picker's 5 s refresh, on the
+  same 4/s grid). The viewer's first frame waits for its first page, a
+  frame time at most, and is drawn as it comes, as the interval's tick
+  often caught it.
 - **Leaving the screen** clears it as the last step before the
   alternate screen is left (*amended 2026-11-19,* "Keys: one map for
   every screen", decision 6: "Blank on exit"). Before that, it drains

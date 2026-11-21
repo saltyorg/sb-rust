@@ -58,7 +58,8 @@ const PAGE: usize = 500;
 const RETRY: Duration = Duration::from_secs(5);
 
 /// The Containers section's reload tick: an event marks the list stale,
-/// the next tick reloads it (tui spec, "Live updates": 4/s).
+/// the next tick reloads it (tui spec, "Live updates": 4/s). It is waited
+/// for only while the list is stale ([`watching`]).
 const TICK: Duration = Duration::from_millis(250);
 
 /// Before every entry: a follow from here sends the whole log (an empty
@@ -826,6 +827,65 @@ impl Drop for Watcher {
     }
 }
 
+/// When the watch waits for its reload tick: only while the list is
+/// stale (perf round 3: four wakes a second for nothing, the viewer's
+/// too), and on the ticks' grid, so a reload comes when it came while the
+/// ticks ran all along. A tick due during a reload came at once after it
+/// (the interval's skipped tick), if events had marked the list stale by
+/// then: `missed` keeps that tick waited for, stale or not, until it
+/// comes.
+#[derive(Debug)]
+struct TickGate {
+    start: tokio::time::Instant,
+    tick: Duration,
+    missed: bool,
+}
+
+impl TickGate {
+    fn new(start: tokio::time::Instant, tick: Duration) -> Self {
+        Self {
+            start,
+            tick,
+            missed: false,
+        }
+    }
+
+    /// Whether the tick is waited for.
+    fn waits(&self, stale: bool) -> bool {
+        stale || self.missed
+    }
+
+    /// The list went stale at `now`: the tick to wait for, the grid's
+    /// next, unless a missed one is due already.
+    fn stale_at(&self, now: tokio::time::Instant) -> Option<tokio::time::Instant> {
+        (!self.missed).then(|| next_tick(self.start, self.tick, now))
+    }
+
+    /// A tick came.
+    fn ticked(&mut self) {
+        self.missed = false;
+    }
+
+    /// The reload of the tick at `at` ended at `now`.
+    fn reloaded(&mut self, at: tokio::time::Instant, now: tokio::time::Instant) {
+        self.missed = now >= at + self.tick;
+    }
+}
+
+/// The first time at or after `now` of the ticks every `tick` from
+/// `start`.
+fn next_tick(
+    start: tokio::time::Instant,
+    tick: Duration,
+    now: tokio::time::Instant,
+) -> tokio::time::Instant {
+    let slots = now
+        .duration_since(start)
+        .as_nanos()
+        .div_ceil(tick.as_nanos());
+    start + tick * u32::try_from(slots).unwrap_or(u32::MAX)
+}
+
 async fn watching(
     daemon: Arc<Daemon>,
     tx: channel::Sender<Snapshot>,
@@ -836,13 +896,15 @@ async fn watching(
     let mut events = Some(open_events(&daemon));
     let mut again: Option<Pin<Box<Sleep>>> = None;
     let mut stale = false;
-    let mut ticks = tokio::time::interval(tick);
+    let mut gate = TickGate::new(tokio::time::Instant::now(), tick);
+    let mut ticks = tokio::time::interval_at(gate.start, tick);
     ticks.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let publish = |change: &dyn Fn(&mut Snapshot)| {
         tx.send_modify(|snapshot| change(snapshot));
         wake.notify_one();
     };
     loop {
+        let was_stale = stale;
         // Events first: a burst already read marks the list stale once
         // before the tick reloads it.
         tokio::select! {
@@ -858,11 +920,13 @@ async fn watching(
                     events = None;
                 }
             },
-            _ = ticks.tick() => {
+            at = ticks.tick(), if gate.waits(stale) => {
+                gate.ticked();
                 if stale {
                     stale = false;
                     let started = Instant::now();
                     let listed = reload(&daemon).await;
+                    gate.reloaded(at, tokio::time::Instant::now());
                     tracing::info!(
                         ok = listed.is_ok(),
                         millis = started.elapsed().as_millis(),
@@ -887,6 +951,12 @@ async fn watching(
                 events = Some(open_events(&daemon));
                 stale = true;
             },
+        }
+        if stale
+            && !was_stale
+            && let Some(next) = gate.stale_at(tokio::time::Instant::now())
+        {
+            ticks.reset_at(next);
         }
         if events.is_none() && again.is_none() {
             again = Some(Box::pin(tokio::time::sleep(retry)));

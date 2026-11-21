@@ -40,11 +40,19 @@
 //!   (`Shutdown::on_forced_exit`'s contract). The first SIGTERM or SIGHUP
 //!   only cancels the token: [`Tui::run`] returns [`Ending::Cancelled`] and
 //!   the caller leaves the screen as on any other ending.
-//! - **The event loop** is ratatui's async event handler recipe
+//! - **The event loop** follows ratatui's async event handler recipe
 //!   (<https://ratatui.rs/recipes/apps/terminal-and-event-handler/>): a task
-//!   reads crossterm's `EventStream` in `tokio::select!` beside a 4/s tick
-//!   and a 60/s render interval and sends each on an unbounded channel;
-//!   the loop draws on a render event only when something changed.
+//!   reads crossterm's `EventStream` in `tokio::select!` and sends each
+//!   event on an unbounded channel. Why not the recipe's 60/s render
+//!   interval and 4/s tick beside it: they woke every screen 75-88 times
+//!   a second with nothing to do, each wake also polling the
+//!   `EventStream`, whose lock spins and yields while its reader thread
+//!   holds it (perf round 3: 2.4-3.9 ms of CPU a second, idle; the
+//!   maintainer's go-ahead, 2026-11-21). The loop keeps the timers
+//!   itself, each armed only while wanted and on the grid its interval
+//!   ticked on ([`Grid`]): a frame's while one is pending, 60 a second,
+//!   and a tick's at the time a screen asks for one ([`App::tick_at`]),
+//!   4 a second.
 
 use std::fs::File;
 use std::io::{self, BufWriter, Stdout, Write as _};
@@ -62,20 +70,21 @@ use crossterm::terminal::{
     Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
 use crossterm::{Command as _, execute, queue};
-use futures_util::{FutureExt as _, Stream, StreamExt as _};
+use futures_util::{Stream, StreamExt as _};
 use ratatui::backend::{Backend, CrosstermBackend};
 use ratatui::{Frame, Terminal};
 use sb_cli_core::cancel::{RestoreHook, Shutdown};
 use tokio::sync::{Notify, mpsc};
 use tokio::task::JoinHandle;
-use tokio::time::MissedTickBehavior;
+use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
-/// Render events per second: frames are drawn at most this often (the
-/// recipe's default).
+/// Frames per second at most (the recipe's default render rate).
 const FRAME_RATE: f64 = 60.0;
 
-/// Ticks per second, for a screen's timed work (the recipe's default).
+/// The grid a screen's tick comes on, per second (the recipe's default
+/// tick rate): a tick asked for at a time comes at the grid's next one,
+/// as it did when the tick came 4 times a second.
 const TICK_RATE: f64 = 4.0;
 
 /// How long input is read and dropped after mouse capture is turned off,
@@ -111,9 +120,24 @@ pub trait App {
     /// [`Ending::Interrupted`].
     fn input(&mut self, input: Input) -> Flow;
 
-    /// The 4/s tick.
+    /// When the screen next wants [`App::tick`] (asked again after
+    /// every event): never, unless it says.
+    fn tick_at(&self) -> Option<Instant> {
+        None
+    }
+
+    /// The screen's timed work, at [`App::tick_at`].
     fn tick(&mut self) -> Flow {
         Flow::Unchanged
+    }
+
+    /// Whether the screen's first frame has nothing to show until its
+    /// source's first wake: it then waits for that wake, a frame time at
+    /// most, and is drawn at once with what the wake brought, so the
+    /// screen opens with its content in one frame, not an empty frame
+    /// then the content on the next frame's time.
+    fn first_frame_waits(&self) -> bool {
+        false
     }
 
     /// A source woke the screen ([`Tui::waker`]): take what it sent.
@@ -122,14 +146,14 @@ pub trait App {
     }
 
     /// Draw the screen; called at most 60 times a second, only after a
-    /// change.
+    /// change (and once at the start).
     fn draw(&mut self, frame: &mut Frame<'_>);
 }
 
 /// What [`App::input`] and [`App::tick`] ask of the loop.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Flow {
-    /// Something changed: draw at the next render event.
+    /// Something changed: draw the next frame.
     Redraw,
     /// Nothing to draw.
     Unchanged,
@@ -151,8 +175,6 @@ pub enum Ending {
 /// What the event task sends the loop.
 #[derive(Debug)]
 enum Event {
-    Tick,
-    Render,
     Input(Input),
     /// Reading the terminal failed, or its input ended; the task stops.
     Failed(io::Error),
@@ -506,19 +528,16 @@ fn mouse_off_on_panic() {
     });
 }
 
-/// The recipe's event task: `input` (crossterm's `EventStream`), the tick
-/// and the render interval, each sent on `tx`, until the loop goes or the
-/// input fails or ends. Key events are sent only when pressed, as the
-/// recipe does.
+/// The recipe's event task: `input` (crossterm's `EventStream`), each
+/// event sent on `tx`, until the loop goes or the input fails or ends.
+/// Key events are sent only when pressed, as the recipe does.
 ///
-/// Where it differs from the recipe: no cancellation token of its own
-/// (the loop going closes the channel, and [`Tui::leave`] aborts and
-/// awaits it); one `Input` variant for crossterm's events instead of one
-/// per kind; read errors and the end of input as `Failed`, which ends the
-/// loop; and missed ticks skipped rather than fired in a burst after a
-/// stall (a slow frame, a stopped process), so a screen's tick work runs
-/// once, not once per missed tick
-/// (<https://docs.rs/tokio/1.54.1/tokio/time/enum.MissedTickBehavior.html>).
+/// Where it differs from the recipe: no tick or render interval (the
+/// loop keeps its own, armed only when wanted: the module's "why not");
+/// no cancellation token of its own (the loop going closes the channel,
+/// and [`Tui::leave`] aborts and awaits it); one `Input` variant for
+/// crossterm's events instead of one per kind; and read errors and the
+/// end of input as `Failed`, which ends the loop.
 ///
 /// Known limit: crossterm 0.29.0's reader retries on end of input rather
 /// than ending its stream, so a terminal that hangs up isn't seen here;
@@ -528,24 +547,15 @@ async fn read_events<S>(mut input: S, tx: mpsc::UnboundedSender<Event>)
 where
     S: Stream<Item = io::Result<Input>> + Unpin,
 {
-    let mut tick = tokio::time::interval(Duration::from_secs_f64(1.0 / TICK_RATE));
-    tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
-    let mut render = tokio::time::interval(Duration::from_secs_f64(1.0 / FRAME_RATE));
-    render.set_missed_tick_behavior(MissedTickBehavior::Skip);
     loop {
-        let next = input.next().fuse();
-        let event = tokio::select! {
-            read = next => match read {
-                Some(Ok(Input::Key(key))) if !key.is_press() => continue,
-                Some(Ok(read)) => Event::Input(read),
-                Some(Err(err)) => Event::Failed(err),
-                None => Event::Failed(io::Error::new(
-                    io::ErrorKind::UnexpectedEof,
-                    "the terminal's input ended",
-                )),
-            },
-            _ = tick.tick() => Event::Tick,
-            _ = render.tick() => Event::Render,
+        let event = match input.next().await {
+            Some(Ok(Input::Key(key))) if !key.is_press() => continue,
+            Some(Ok(read)) => Event::Input(read),
+            Some(Err(err)) => Event::Failed(err),
+            None => Event::Failed(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "the terminal's input ended",
+            )),
         };
         let last = matches!(event, Event::Failed(_));
         if tx.send(event).is_err() || last {
@@ -554,10 +564,64 @@ where
     }
 }
 
-/// The loop: each event to `app`, a frame on a render event after a
-/// change, until an [`Ending`] or an error. A cancelled `token` wins over
-/// events already waiting, and the terminal's events over a source's
-/// `wake`, so a busy follow can't starve input.
+/// When a timer of the loop fires: on a grid of `period` from the
+/// screen's start, where the recipe's interval of that period ticked, so
+/// frames come as often and batch as many changes as they did, and a
+/// tick comes when it did.
+#[derive(Clone, Copy, Debug)]
+struct Grid {
+    start: Instant,
+    period: Duration,
+}
+
+impl Grid {
+    fn new(start: Instant, per_second: f64) -> Self {
+        Self {
+            start,
+            period: Duration::from_secs_f64(1.0 / per_second),
+        }
+    }
+
+    /// The grid's first time at or after `at` (`at` itself before the
+    /// start).
+    fn next(&self, at: Instant) -> Instant {
+        let Some(since) = at.checked_duration_since(self.start) else {
+            return at;
+        };
+        let slots = since.as_secs_f64() / self.period.as_secs_f64();
+        self.start + self.period.mul_f64(slots.ceil())
+    }
+}
+
+/// What woke the loop.
+enum Step {
+    Event(Option<Event>),
+    Draw,
+    Tick,
+    Wake,
+}
+
+/// `due`, or never.
+async fn sleep_until(due: Option<Instant>) {
+    match due {
+        Some(due) => tokio::time::sleep_until(due).await,
+        None => std::future::pending().await,
+    }
+}
+
+/// The loop: each event to `app`, a frame after a change, until an
+/// [`Ending`] or an error. The first frame is drawn at once, as the
+/// recipe's interval's first tick drew it, or for a screen whose first
+/// frame waits for its source ([`App::first_frame_waits`]) at its first
+/// wake, a frame time on at most; a later change is drawn at the
+/// frames' [`Grid`]'s next time, so changes within a frame time share one
+/// frame. Nothing pending, nothing wakes the loop but an event, a source's
+/// `wake` or the screen's tick, at the ticks' grid's first time at or
+/// after [`App::tick_at`] (once, however late: a stall runs the tick's
+/// work once, as the recipe's skipped missed ticks did). A cancelled `token` wins over events already waiting, and the
+/// terminal's events over a pending frame and a source's `wake`, so a busy
+/// follow can't starve input; a frame a whole frame time late is drawn
+/// before more events, so input can't starve the screen either.
 async fn run_loop<B, A>(
     terminal: &mut Terminal<B>,
     events: &mut mpsc::UnboundedReceiver<Event>,
@@ -570,35 +634,52 @@ where
     B::Error: Send + Sync + 'static,
     A: App,
 {
-    // The first render event draws the screen.
+    let start = Instant::now();
+    let (frames, ticks) = (Grid::new(start, FRAME_RATE), Grid::new(start, TICK_RATE));
+    let mut waits = app.first_frame_waits();
+    // The first frame, at once, or a frame time on while it waits.
+    let mut due = Some(if waits { start + frames.period } else { start });
     let mut changed = true;
+    let mut drawn = false;
     loop {
-        let event = tokio::select! {
+        let now = Instant::now();
+        if changed && due.is_none() {
+            // The first frame, drawn at once once its wait is over.
+            due = Some(if drawn { frames.next(now) } else { now });
+        }
+        let late = due.is_some_and(|due| now >= due + frames.period);
+        let tick = app.tick_at().map(|at| ticks.next(at));
+        let step = tokio::select! {
             biased;
             () = token.cancelled() => return Ok(Ending::Cancelled),
-            event = events.recv() => Some(event),
-            () = wake.notified() => None,
+            () = std::future::ready(()), if late => Step::Draw,
+            event = events.recv() => Step::Event(event),
+            () = sleep_until(due), if due.is_some() => Step::Draw,
+            () = sleep_until(tick), if tick.is_some() => Step::Tick,
+            () = wake.notified() => Step::Wake,
         };
-        let Some(event) = event else {
-            match app.wake() {
-                Flow::Redraw => changed = true,
-                Flow::Unchanged => {}
-                Flow::Quit => return Ok(Ending::Quit),
-            }
-            continue;
-        };
-        let flow = match event {
-            Some(Event::Render) => {
-                if changed {
-                    terminal
-                        .draw(|frame| app.draw(frame))
-                        .map_err(io::Error::other)?;
-                    changed = false;
-                }
+        let flow = match step {
+            Step::Draw => {
+                terminal
+                    .draw(|frame| app.draw(frame))
+                    .map_err(io::Error::other)?;
+                changed = false;
+                due = None;
+                waits = false;
+                drawn = true;
                 continue;
             }
-            Some(Event::Tick) => app.tick(),
-            Some(Event::Input(input)) => {
+            Step::Tick => app.tick(),
+            Step::Wake => {
+                let flow = app.wake();
+                if waits && flow == Flow::Redraw {
+                    // What the first frame waited for: now.
+                    waits = false;
+                    due = None;
+                }
+                flow
+            }
+            Step::Event(Some(Event::Input(input))) => {
                 if is_ctrl_c(&input) {
                     return Ok(Ending::Interrupted);
                 }
@@ -606,8 +687,8 @@ where
                 changed |= matches!(input, Input::Resize(..));
                 app.input(input)
             }
-            Some(Event::Failed(err)) => return Err(err),
-            None => {
+            Step::Event(Some(Event::Failed(err))) => return Err(err),
+            Step::Event(None) => {
                 return Err(io::Error::new(
                     io::ErrorKind::UnexpectedEof,
                     "the terminal's event task ended",
@@ -710,16 +791,26 @@ mod tests {
     use ratatui::backend::TestBackend;
     use ratatui::widgets::Paragraph;
 
-    /// Counts what the loop asks of it; answers keys from a script.
+    /// Counts what the loop asks of it, and when; answers keys from a
+    /// script: `q` quits, `r` asks for a frame, anything else doesn't.
     #[derive(Default)]
     struct Script {
         inputs: Vec<Input>,
-        ticks: usize,
+        /// When each tick came.
+        ticks: Vec<Instant>,
         draws: usize,
+        /// When each frame was drawn, from the loop's start.
+        drawn: Vec<Duration>,
+        started: Option<Instant>,
         tick_flow: Option<Flow>,
+        /// When the next tick is asked for; each tick asks for the next
+        /// one `tick_again` later, or for none.
+        tick_at: Option<Instant>,
+        tick_again: Option<Duration>,
         /// The inputs seen when each wake came.
         wakes: Vec<usize>,
         wake_flow: Option<Flow>,
+        first_frame_waits: bool,
     }
 
     impl App for Script {
@@ -733,8 +824,18 @@ mod tests {
             flow
         }
 
+        fn tick_at(&self) -> Option<Instant> {
+            self.tick_at
+        }
+
+        fn first_frame_waits(&self) -> bool {
+            self.first_frame_waits
+        }
+
         fn tick(&mut self) -> Flow {
-            self.ticks += 1;
+            let now = Instant::now();
+            self.ticks.push(now);
+            self.tick_at = self.tick_again.map(|again| now + again);
             self.tick_flow.unwrap_or(Flow::Unchanged)
         }
 
@@ -745,6 +846,8 @@ mod tests {
 
         fn draw(&mut self, frame: &mut Frame<'_>) {
             self.draws += 1;
+            let started = *self.started.get_or_insert_with(Instant::now);
+            self.drawn.push(started.elapsed());
             frame.render_widget(Paragraph::new(format!("draw {}", self.draws)), frame.area());
         }
     }
@@ -757,75 +860,170 @@ mod tests {
         key(KeyCode::Char(c), KeyModifiers::NONE)
     }
 
-    /// Run the loop over `events` (then the channel stays open, so the
-    /// loop waits) on a 20×2 test terminal.
-    async fn run(
+    fn ms(n: u64) -> Duration {
+        Duration::from_millis(n)
+    }
+
+    /// Run the loop on a 20×2 test terminal, each of `events` sent at its
+    /// time from the start (then the channel stays open, so the loop
+    /// waits), with `wake` as the sources' wake.
+    async fn run_with(
         app: &mut Script,
-        events: Vec<Event>,
+        events: Vec<(Duration, Event)>,
         token: &CancellationToken,
+        wake: &Notify,
     ) -> io::Result<Ending> {
         let mut terminal = Terminal::new(TestBackend::new(20, 2)).expect("test terminal");
         let (tx, mut rx) = mpsc::unbounded_channel();
-        for event in events {
-            tx.send(event).expect("send");
+        let start = Instant::now();
+        let feed = async {
+            for (at, event) in events {
+                tokio::time::sleep_until(start + at).await;
+                tx.send(event).expect("send");
+            }
+            std::future::pending::<()>().await;
+        };
+        tokio::select! {
+            ending = run_loop(&mut terminal, &mut rx, app, token, wake) => ending,
+            () = feed => unreachable!("the feed never ends"),
         }
-        let ending = run_loop(&mut terminal, &mut rx, app, token, &Notify::new()).await;
-        drop(tx);
-        ending
     }
 
-    #[tokio::test]
-    async fn draws_on_a_render_event_only_after_a_change() {
+    async fn run(
+        app: &mut Script,
+        events: Vec<(Duration, Event)>,
+        token: &CancellationToken,
+    ) -> io::Result<Ending> {
+        run_with(app, events, token, &Notify::new()).await
+    }
+
+    fn input(at: u64, input: Input) -> (Duration, Event) {
+        (ms(at), Event::Input(input))
+    }
+
+    /// The first frame at once; a change on the next frame of the 60/s
+    /// grid, several in one frame time together; none without a change.
+    #[tokio::test(start_paused = true)]
+    async fn the_first_frame_comes_at_once_and_a_change_on_the_grid() {
         let mut app = Script::default();
         let events = vec![
-            Event::Render,
-            Event::Render,
-            Event::Input(char_key('x')),
-            Event::Render,
-            Event::Input(char_key('r')),
-            Event::Input(char_key('r')),
-            Event::Render,
-            Event::Render,
-            Event::Input(char_key('q')),
+            input(5, char_key('x')),
+            input(20, char_key('r')),
+            input(25, char_key('r')),
+            input(40, char_key('x')),
+            input(205, char_key('r')),
+            input(500, char_key('q')),
         ];
         let ending = run(&mut app, events, &CancellationToken::new()).await;
         assert_eq!(ending.expect("ends"), Ending::Quit);
-        // The first frame, then one for the two redraws together.
-        assert_eq!(app.draws, 2);
+        // 33.3 and 216.7 ms, tokio's timer rounding each up to a
+        // millisecond.
+        assert_eq!(app.drawn, [ms(0), ms(34), ms(217)]);
     }
 
-    #[tokio::test]
+    /// Changes every millisecond for a second: 60 frames, one a frame
+    /// time, as the recipe's render interval drew them.
+    #[tokio::test(start_paused = true)]
+    async fn frames_come_at_most_sixty_times_a_second() {
+        let mut app = Script::default();
+        let mut events: Vec<_> = (1..=1_000).map(|at| input(at, char_key('r'))).collect();
+        events.push(input(1_001, char_key('q')));
+        run(&mut app, events, &CancellationToken::new())
+            .await
+            .expect("ends");
+        assert!((60..=62).contains(&app.draws), "{} frames", app.draws);
+        let closest = app
+            .drawn
+            .windows(2)
+            .map(|pair| pair[1].saturating_sub(pair[0]))
+            .min()
+            .expect("frames");
+        assert!(closest >= ms(16), "{closest:?}");
+    }
+
+    /// A screen whose first frame waits draws it at its source's first
+    /// wake that asks for a frame, at once, with nothing drawn before;
+    /// without one, a frame time after the start.
+    #[tokio::test(start_paused = true)]
+    async fn a_first_frame_that_waits_comes_at_the_first_wake() {
+        let token = CancellationToken::new();
+        let first = |app: &Script, before: Instant| app.started.map(|at| at.duration_since(before));
+        let mut app = Script {
+            first_frame_waits: true,
+            wake_flow: Some(Flow::Redraw),
+            ..Script::default()
+        };
+        let wake = Notify::new();
+        let woken = async {
+            tokio::time::sleep(ms(5)).await;
+            wake.notify_one();
+            std::future::pending::<()>().await;
+        };
+        let before = Instant::now();
+        tokio::select! {
+            ending = run_with(&mut app, vec![input(100, char_key('q'))], &token, &wake) => {
+                assert_eq!(ending.expect("ends"), Ending::Quit);
+            }
+            () = woken => unreachable!("never ends"),
+        }
+        assert_eq!((app.draws, first(&app, before)), (1, Some(ms(5))));
+        let mut quiet = Script {
+            first_frame_waits: true,
+            ..Script::default()
+        };
+        let before = Instant::now();
+        run(&mut quiet, vec![input(100, char_key('q'))], &token)
+            .await
+            .expect("ends");
+        assert_eq!((quiet.draws, first(&quiet, before)), (1, Some(ms(17))));
+    }
+
+    /// An idle screen: one frame, no tick, the loop waiting on nothing
+    /// but its events (paused time stays where it is, so a wake would
+    /// draw or tick).
+    #[tokio::test(start_paused = true)]
+    async fn an_idle_screen_draws_once_and_never_ticks() {
+        let mut app = Script::default();
+        let events = vec![input(60_000, char_key('q'))];
+        run(&mut app, events, &CancellationToken::new())
+            .await
+            .expect("ends");
+        assert_eq!((app.draws, app.ticks.len()), (1, 0));
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn the_frame_is_what_the_app_draws() {
         let mut terminal = Terminal::new(TestBackend::new(20, 2)).expect("test terminal");
         let (tx, mut rx) = mpsc::unbounded_channel();
-        for event in [Event::Render, Event::Input(char_key('q'))] {
-            tx.send(event).expect("send");
-        }
         let mut app = Script::default();
-        run_loop(
-            &mut terminal,
-            &mut rx,
-            &mut app,
-            &CancellationToken::new(),
-            &Notify::new(),
+        let token = CancellationToken::new();
+        let ran = tokio::time::timeout(
+            ms(100),
+            run_loop(&mut terminal, &mut rx, &mut app, &token, &Notify::new()),
         )
-        .await
-        .expect("ends");
+        .await;
+        assert!(ran.is_err(), "the loop waits for input");
         terminal
             .backend()
             .assert_buffer_lines(["draw 1              ", "                    "]);
+        tx.send(Event::Input(char_key('q'))).expect("send");
+        let ending = run_loop(&mut terminal, &mut rx, &mut app, &token, &Notify::new()).await;
+        assert_eq!(ending.expect("ends"), Ending::Quit);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn ctrl_c_interrupts_without_reaching_the_app() {
         let mut app = Script::default();
         let events = vec![
-            Event::Input(key(KeyCode::Char('c'), KeyModifiers::NONE)),
-            Event::Input(key(
-                KeyCode::Char('c'),
-                KeyModifiers::CONTROL | KeyModifiers::SHIFT,
-            )),
-            Event::Input(char_key('q')),
+            input(1, key(KeyCode::Char('c'), KeyModifiers::NONE)),
+            input(
+                2,
+                key(
+                    KeyCode::Char('c'),
+                    KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+                ),
+            ),
+            input(3, char_key('q')),
         ];
         let ending = run(&mut app, events, &CancellationToken::new()).await;
         assert_eq!(ending.expect("ends"), Ending::Interrupted);
@@ -863,12 +1061,11 @@ mod tests {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let token = CancellationToken::new();
         let ran = tokio::time::timeout(
-            Duration::from_millis(200),
+            ms(200),
             run_loop(&mut terminal, &mut rx, &mut viewer, &token, &wake),
         )
         .await;
         assert!(ran.is_err(), "the loop waits for input");
-        tx.send(Event::Render).expect("send");
         tx.send(Event::Input(key(KeyCode::Char('c'), KeyModifiers::CONTROL)))
             .expect("send");
         let ending = run_loop(&mut terminal, &mut rx, &mut viewer, &token, &wake).await;
@@ -883,12 +1080,12 @@ mod tests {
         assert_eq!(viewer.leave(), None);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn ctrl_with_another_key_reaches_the_app() {
         let mut app = Script::default();
         let events = vec![
-            Event::Input(key(KeyCode::Char('d'), KeyModifiers::CONTROL)),
-            Event::Input(char_key('q')),
+            input(1, key(KeyCode::Char('d'), KeyModifiers::CONTROL)),
+            input(2, char_key('q')),
         ];
         assert_eq!(
             run(&mut app, events, &CancellationToken::new())
@@ -899,12 +1096,12 @@ mod tests {
         assert_eq!(app.inputs.len(), 2);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_cancelled_token_ends_the_run_before_waiting_events() {
         let token = CancellationToken::new();
         token.cancel();
         let mut app = Script::default();
-        let ending = run(&mut app, vec![Event::Input(char_key('q'))], &token).await;
+        let ending = run(&mut app, vec![input(0, char_key('q'))], &token).await;
         assert_eq!(ending.expect("ends"), Ending::Cancelled);
         assert_eq!(app.inputs, [] as [Input; 0]);
     }
@@ -927,13 +1124,13 @@ mod tests {
         assert_eq!(ending.expect("ends"), Ending::Cancelled);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_failed_read_is_the_error() {
         let mut app = Script::default();
         let failed = Event::Failed(io::Error::new(io::ErrorKind::BrokenPipe, "gone"));
         let err = run(
             &mut app,
-            vec![failed, Event::Input(char_key('q'))],
+            vec![(ms(1), failed), input(2, char_key('q'))],
             &CancellationToken::new(),
         )
         .await
@@ -959,27 +1156,45 @@ mod tests {
         assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
     }
 
-    #[tokio::test]
-    async fn ticks_reach_the_app_and_can_ask_for_a_frame() {
+    /// A tick comes at the 4/s grid's first time at or after the one
+    /// asked for, and can ask for a frame; then the next asked for.
+    #[tokio::test(start_paused = true)]
+    async fn a_tick_comes_on_the_grid_when_asked_and_can_ask_for_a_frame() {
+        let start = Instant::now();
         let mut app = Script {
             tick_flow: Some(Flow::Redraw),
+            tick_at: Some(start + ms(1_100)),
+            tick_again: Some(ms(5_000)),
             ..Script::default()
         };
-        let events = vec![
-            Event::Render,
-            Event::Tick,
-            Event::Render,
-            Event::Input(char_key('q')),
-        ];
+        let events = vec![input(13_000, char_key('q'))];
         run(&mut app, events, &CancellationToken::new())
             .await
             .expect("ends");
-        assert_eq!((app.ticks, app.draws), (1, 2));
+        let at: Vec<_> = app.ticks.iter().map(|t| t.duration_since(start)).collect();
+        assert_eq!(at, [ms(1_250), ms(6_250), ms(11_250)]);
+        assert_eq!(app.draws, 4, "the first frame and one a tick");
+    }
+
+    /// A tick asked for before the loop starts comes at once.
+    #[tokio::test(start_paused = true)]
+    async fn a_tick_asked_for_in_the_past_comes_at_once() {
+        let start = Instant::now();
+        tokio::time::advance(ms(10)).await;
+        let mut app = Script {
+            tick_at: Some(start),
+            ..Script::default()
+        };
+        let events = vec![input(100, char_key('q'))];
+        run(&mut app, events, &CancellationToken::new())
+            .await
+            .expect("ends");
+        assert_eq!(app.ticks, [start + ms(10)]);
     }
 
     /// A wake waiting with input: the input first, then one wake for
     /// any number of notifies, which can ask for a frame.
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_wake_comes_after_waiting_input_and_can_ask_for_a_frame() {
         let mut app = Script {
             wake_flow: Some(Flow::Redraw),
@@ -990,64 +1205,57 @@ mod tests {
         let wake = Notify::new();
         wake.notify_one();
         wake.notify_one();
-        tx.send(Event::Render).expect("send");
         tx.send(Event::Input(char_key('x'))).expect("send");
         let token = CancellationToken::new();
         let ran = tokio::time::timeout(
-            Duration::from_millis(300),
+            ms(300),
             run_loop(&mut terminal, &mut rx, &mut app, &token, &wake),
         )
         .await;
         assert!(ran.is_err(), "the loop waits for more");
         assert_eq!(app.wakes, [1], "after the input, once");
-        assert_eq!(app.draws, 1);
-        tx.send(Event::Render).expect("send");
+        assert_eq!(app.draws, 2, "the first frame, then the wake's");
         tx.send(Event::Input(char_key('q'))).expect("send");
         let ending = run_loop(&mut terminal, &mut rx, &mut app, &token, &wake).await;
         assert_eq!(ending.expect("ends"), Ending::Quit);
-        assert_eq!(app.draws, 2, "the wake's frame");
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_wake_can_quit() {
         let mut app = Script {
             wake_flow: Some(Flow::Quit),
             ..Script::default()
         };
-        let mut terminal = Terminal::new(TestBackend::new(20, 2)).expect("test terminal");
-        let (_tx, mut rx) = mpsc::unbounded_channel();
         let wake = Notify::new();
         wake.notify_one();
-        let token = CancellationToken::new();
-        let ending = run_loop(&mut terminal, &mut rx, &mut app, &token, &wake).await;
+        let ending = run_with(&mut app, Vec::new(), &CancellationToken::new(), &wake).await;
         assert_eq!(ending.expect("ends"), Ending::Quit);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_tick_can_quit() {
         let mut app = Script {
             tick_flow: Some(Flow::Quit),
+            tick_at: Some(Instant::now()),
             ..Script::default()
         };
-        let ending = run(&mut app, vec![Event::Tick], &CancellationToken::new()).await;
+        let ending = run(&mut app, Vec::new(), &CancellationToken::new()).await;
         assert_eq!(ending.expect("ends"), Ending::Quit);
     }
 
-    #[tokio::test]
+    /// A resize asks for a frame whatever the screen says; focus doesn't.
+    #[tokio::test(start_paused = true)]
     async fn a_resize_asks_for_a_frame() {
         let mut app = Script::default();
         let events = vec![
-            Event::Render,
-            Event::Input(Input::Resize(30, 3)),
-            Event::Render,
-            Event::Input(Input::FocusGained),
-            Event::Render,
-            Event::Input(char_key('q')),
+            input(5, Input::Resize(30, 3)),
+            input(50, Input::FocusGained),
+            input(100, char_key('q')),
         ];
         run(&mut app, events, &CancellationToken::new())
             .await
             .expect("ends");
-        assert_eq!(app.draws, 2);
+        assert_eq!(app.drawn, [ms(0), ms(17)]);
     }
 
     /// Collect what the event task sends until it stops.
@@ -1082,7 +1290,7 @@ mod tests {
             .iter()
             .filter_map(|event| match event {
                 Event::Input(input) => Some(input.clone()),
-                _ => None,
+                Event::Failed(_) => None,
             })
             .collect();
         assert_eq!(inputs, [char_key('b'), Input::FocusLost]);
@@ -1106,25 +1314,14 @@ mod tests {
         assert!(!events.iter().any(|event| matches!(event, Event::Input(_))));
     }
 
+    /// The event task sends input only: no tick or render of its own.
     #[tokio::test(start_paused = true)]
-    async fn ticks_come_four_times_and_renders_sixty_times_a_second() {
+    async fn the_event_task_sends_nothing_without_input() {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let task = tokio::spawn(read_events(stream::pending(), tx));
-        // Each interval's first tick is immediate; then one second's worth.
-        tokio::time::sleep(Duration::from_millis(1_001)).await;
+        tokio::time::sleep(Duration::from_secs(10)).await;
         task.abort();
-        let (mut ticks, mut renders) = (0, 0);
-        while let Ok(event) = rx.try_recv() {
-            match event {
-                Event::Tick => ticks += 1,
-                Event::Render => renders += 1,
-                other => panic!("unexpected {other:?}"),
-            }
-        }
-        // The render period isn't a whole number of milliseconds, and
-        // tokio's timer rounds each deadline to one.
-        assert_eq!(ticks, 5);
-        assert!((60..=61).contains(&renders), "{renders} renders");
+        assert!(rx.try_recv().is_err());
     }
 
     #[tokio::test(start_paused = true)]
@@ -1132,7 +1329,8 @@ mod tests {
         let (tx, rx) = mpsc::unbounded_channel();
         drop(rx);
         // Returns at its first send instead of running forever.
-        read_events(stream::pending(), tx).await;
+        let input = stream::iter([Ok(char_key('b'))]).chain(stream::pending());
+        read_events(input, tx).await;
     }
 
     /// What reaches the terminal, each write as it came.

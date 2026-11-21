@@ -2195,6 +2195,11 @@ impl App for Viewer {
         }
     }
 
+    /// Nothing to show until the source's first page or notice.
+    fn first_frame_waits(&self) -> bool {
+        !self.loaded && self.entries.is_empty()
+    }
+
     /// Takes every event the source has sent; those of another
     /// generation (a source the user left) are dropped.
     fn wake(&mut self) -> Flow {

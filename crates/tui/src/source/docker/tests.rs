@@ -904,3 +904,45 @@ async fn a_stopped_search_goes_quiet() {
         }
     }
 }
+
+/// A stale list waits for the ticks' next time on their grid, as it did
+/// while they ran all along: one at the time itself is that time.
+#[tokio::test(start_paused = true)]
+async fn the_next_tick_is_on_the_grid() {
+    let start = tokio::time::Instant::now();
+    let tick = Duration::from_millis(250);
+    let at = |ms: u64| start + Duration::from_millis(ms);
+    assert_eq!(next_tick(start, tick, start), start);
+    assert_eq!(next_tick(start, tick, at(1)), at(250));
+    assert_eq!(next_tick(start, tick, at(250)), at(250));
+    assert_eq!(next_tick(start, tick, at(251)), at(500));
+    assert_eq!(next_tick(start, tick, at(3_600_010)), at(3_600_250));
+}
+
+/// The gate: no tick waited for while the list is fresh; a stale list
+/// waits for the grid's next tick; a reload that outlasts a tick leaves
+/// that tick due, waited for even with the list fresh, and a list gone
+/// stale then takes it, not the grid's next.
+#[tokio::test(start_paused = true)]
+async fn the_reload_tick_is_waited_for_only_while_wanted() {
+    let start = tokio::time::Instant::now();
+    let tick = Duration::from_millis(250);
+    let at = |ms: u64| start + Duration::from_millis(ms);
+    let mut gate = TickGate::new(start, tick);
+    assert!(!gate.waits(false));
+    assert!(gate.waits(true));
+    assert_eq!(gate.stale_at(at(10)), Some(at(250)));
+    gate.ticked();
+    // A reload of 100 ms: within its tick.
+    gate.reloaded(at(250), at(350));
+    assert!(!gate.waits(false));
+    assert_eq!(gate.stale_at(at(400)), Some(at(500)));
+    // A reload past the next tick's time: that tick is due.
+    gate.ticked();
+    gate.reloaded(at(500), at(750));
+    assert!(gate.waits(false));
+    assert_eq!(gate.stale_at(at(760)), None);
+    gate.ticked();
+    assert!(!gate.waits(false));
+    assert_eq!(gate.stale_at(at(800)), Some(at(1_000)));
+}
