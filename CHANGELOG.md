@@ -164,6 +164,9 @@ you could trip over.
   containers in one picker; `sb docker logs` is an error that names it.
 - **`sb announcements`' `-b`, `-a` and `-r`.**
 - **`DOCKER_HOST` with TLS or ssh,** and `DOCKER_API_VERSION`.
+- **libpq-dev isn't installed any more,** by `sb setup`, `sb gha` or
+  the Ansible virtual environment's update: Saltbox's `psycopg[binary]`
+  brings its own libpq. A host that has it keeps it.
 
 [Unreleased]: https://github.com/saltyorg/sb-rust/compare/1.0.0...HEAD
 [1.0.0]: https://github.com/saltyorg/sb-rust/releases/tag/1.0.0

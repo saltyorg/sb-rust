@@ -59,6 +59,11 @@ completion files call a command sb doesn't have.
   printing `another sb command is running (...); waiting… (Ctrl-C to give
   up)`. Read-only commands such as `motd`, `list`, `logs` and
   `validate-config` never wait.
+- **libpq-dev isn't installed** by `sb setup`, `sb gha`, `sb update`
+  or the venv commands: nothing in Saltbox builds against it since its lock moved
+  to `psycopg[binary]`, whose wheels bundle libpq. A host that has it
+  keeps it; sb just stops installing it. Install it yourself if your
+  own `custom_pip` packages build against PostgreSQL.
 
 ### Stricter checks
 

@@ -5,7 +5,7 @@
 # test-deadsnakes-cleanup-container.sh) rebuilt for sb: in a throwaway
 # ubuntu:<release> container per supported release, one at a time,
 #
-#   - `sb update-venv` from nothing (uv, libpq-dev, Python, the venv and
+#   - `sb update-venv` from nothing (uv, Python, the venv and
 #     saltbox.fact installed), run from a hostile environment as sb-go's
 #     script does; then again, up to date, nothing changed;
 #   - sb-go's `update-venv` on that tree: up to date, nothing changed
@@ -192,7 +192,8 @@ said "saltbox.fact installed successfully"
 uv=$(uv --version | cut -d' ' -f2)
 [ "$uv" = "$(cat "$checkout/.uv-version")" ] || fail "uv $uv"
 [ "$(uvx --version | cut -d' ' -f2)" = "$uv" ] || fail "uvx $(uvx --version)"
-[ "$(dpkg-query -W -f='${db:Status-Abbrev}' libpq-dev)" = "ii " ] || fail "libpq-dev"
+# libpq-dev is no longer installed (python-env difference 21, 2026-11-21).
+[ "$(dpkg-query -W -f='${db:Status-Abbrev}' libpq-dev 2>/dev/null)" != "ii " ] || fail "libpq-dev installed"
 healthy "$from"
 fact_sum=$(sha256sum <"$fact")
 if [ "$rel" = 22.04 ]; then

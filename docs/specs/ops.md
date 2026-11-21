@@ -159,9 +159,10 @@ named as in sb-go (`<name>`, success `<name> completed`):
    4. install `software-properties-common apt-transport-https`;
    5. `add_repositories` (**destructive**, see below);
    6. `apt::update_lists` again;
-   7. install `locales nano wget jq file gpg-agent libpq-dev
-      build-essential libssl-dev libffi-dev python3-dev
-      python3-testresources python3-apt python3-venv python3-pip`.
+   7. install `locales nano wget jq file gpg-agent build-essential
+      libssl-dev libffi-dev python3-dev python3-testresources python3-apt
+      python3-venv python3-pip` (sb-go's list but libpq-dev, difference
+      71).
 3. **Configuring system locale** (`locale`, shared with gha; error
    `error configuring locale: <cause>`), sb-go's `ConfigureLocale`
    (saltbox/setup.go:92-185):
@@ -1452,6 +1453,10 @@ The system's CA bundle (the maintainer, 2026-11-21; decision 44):
     imports no `x509roots/fallback`): its bench fails before any output
     with `x509: certificate signed by unknown authority`, and bench.sh's
     curl rows say offline or nothing.
+71. `setup` and `gha` don't install libpq-dev, and no venv reconcile
+    checks for it (decision 45; python-env difference 21). sb-go
+    installs it in setup (`saltbox/setup.go:79`) and on every venv
+    reconcile where it is missing. A host that has it keeps it.
 
 ## Scope
 
@@ -2228,6 +2233,10 @@ the real services.
     both keep reqwest's text. Known limit: an `SSL_CERT_FILE` or
     `SSL_CERT_DIR` pointing at a bad place gives the same sentence,
     whose fix doesn't help there; sudo's relaunch drops both.
+45. **libpq-dev is dropped from setup's packages** (the maintainer,
+    2026-11-21; python-env decision 26 has the evidence): nothing on a
+    Saltbox host builds against it since Saltbox's lock moved to
+    `psycopg[binary]`.
 
 ## Known limits
 

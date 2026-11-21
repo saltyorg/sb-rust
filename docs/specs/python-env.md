@@ -112,18 +112,11 @@ build it on a temporary root (sb-go's `releaseLayout` injection).
      Text: `downloaded <name> reports version <got>, expected <v>`.
    - Both are activated by rename with a directory fsync (release's
      `activate`), uv first, as sb-go does.
-3. **Native build prerequisites.** If `host::package_installed("libpq-dev")`
-   is false: steps **"Updating apt package cache"** (`host::update_lists`)
-   and **"Installing native Python build prerequisites"**
-   (`host::install(["libpq-dev"])`). Errors: `check native Python build
-   prerequisites: <cause>`, `update apt cache for native Python build
-   prerequisites: <cause>`, `install native Python build prerequisites:
-   <cause>`.
-   *Amended 2026-11-20 (performance round 3, ops finding 5):* the first
-   step is left out when the lists were refreshed earlier in the process
-   with no source changed since (host's `Apt::lists_refreshed`): `sb
-   update`'s own first step, or the deadsnakes cleanup's refresh after it
-   moved sources (difference 21).
+3. **Native build prerequisites: none** (decision 26, difference 21).
+   *Amended 2026-11-21 (the maintainer):* this step checked dpkg for
+   libpq-dev and, when it was missing, refreshed apt's lists ("Updating
+   apt package cache") and installed it ("Installing native Python
+   build prerequisites"). It is gone, with its three error texts.
 4. **Inspect the active venv** (venv.go:281-317), in the step
    **"Inspecting the active Ansible virtual environment"** (done "Active
    Ansible virtual environment inspected"; decision 24), where its error,
@@ -551,8 +544,8 @@ moved), so `ops` callers and the tests can read them.
 10. **Errors** are cli-core's error block; a positional argument is a parse
     error, exit 2 (sb-go: exit 1); Ctrl-C exits 130.
 11. **apt's lock wait** is host's `DPkg::Lock::Timeout` (host difference 1),
-    replacing sb-go's `WaitForAptLock` around the deadsnakes and libpq-dev
-    calls.
+    replacing sb-go's `WaitForAptLock` around the deadsnakes calls (and,
+    until decision 26, libpq-dev's).
 12. **The deadsnakes source files are moved aside** into a root-only
     `/var/backups/sb/deadsnakes/<run id>/` through fenced directory
     handles, not deleted (decision 22). sb-go deleted them by path. A
@@ -617,16 +610,12 @@ moved), so `ops` callers and the tests can read them.
 20. **A linked `releases/` is refused** by the cleanup (step 15; from
     decision 25's security review): sb-go's `removeUnretainedDirectories`
     listed through the link and removed what it found there.
-21. **apt's package lists are refreshed once per run before libpq-dev's
-    install** (step 3, 2026-11-20): when libpq-dev is missing, its
-    install follows any successful refresh earlier in the process with
-    no source changed since: `sb update`'s own first step (about 1.5-1.8
-    s sooner on a first run), or, in any command that runs the deadsnakes
-    cleanup (`update`, `update-venv`, the branch commands), the cleanup's
-    refresh after it moved sources. sb-go ran `apt-get update` again
-    seconds later. Without such a refresh (`reinstall-venv`,
-    `reinstall-python`, or no sources moved) step 3 refreshes first, as
-    before.
+21. **libpq-dev is neither checked for nor installed** (step 3,
+    decision 26, 2026-11-21): sb-go asks dpkg for it on every venv
+    reconcile and, when it is missing, refreshes apt's lists and installs
+    it (`python/venv.go:109-124`); sb doesn't. A host that has it keeps
+    it. (This entry replaces 2026-11-20's, which let that install follow
+    an earlier refresh in the run.)
 
 ### Scope
 
@@ -980,6 +969,20 @@ developer's host. Every path is a `Layout` field on a `tempfile` root.
     a stray redirect), not a control against the Saltbox user: the
     RECORDs and the generation manifest naming the Python are that
     user's, who can already change what root runs from the venv.
+26. **libpq-dev is dropped** (step 3, difference 21; the maintainer,
+    2026-11-21: dropped, since nothing else needs
+    it). It was added for `psycopg2` built from source,
+    which Saltbox left for `psycopg[binary]` on 2025-10-19 (Saltbox
+    f2d83a34): the hashed lock's `psycopg-binary` wheels bundle their own
+    libpq, and the whole lock installed and worked with no libpq-dev,
+    libpq5 or compiler on 22.04, 24.04 and 26.04 (x86_64, and aarch64
+    emulated), `community.postgresql`'s modules included, over TCP and
+    PostgreSQL's socket. No Saltbox, Sandbox or saltbox_mod role, other
+    venv, build or apt package needs its headers, `pg_config` or
+    `libpq.so` (performance research, round 5, libpq.md). If Saltbox ever
+    pins a source-only psycopg2 or psycopg-c again, the sync fails with a
+    `pg_config` error and this is to be revisited. `sb setup` drops it
+    too (ops difference 71).
 
 ## Known limits
 
@@ -1040,7 +1043,8 @@ developer's host. Every path is a `Layout` field on a `tempfile` root.
   Passed on 22.04.5, 24.04.5 and 26.04.1, each with the same results:
   - `sb update-venv` from nothing, from sb-go's hostile caller (uv, pip
     and Python variables and config files pointing elsewhere): uv and
-    uvx 0.13.4 installed, libpq-dev installed through apt, Python 3.12.13
+    uvx 0.13.4 installed, libpq-dev installed through apt (before decision
+    26), Python 3.12.13
     (the start pin), the venv synced from the lock, saltbox.fact installed
     ("saltbox.fact not found. Proceeding with update."), one generation
     and one Python release kept, the trees the Saltbox user's, the
@@ -1187,7 +1191,8 @@ add sb-go's wrapping, `error getting saltbox user: <cause>`.
    Layout, toolchain files, the uv minimum, isolation, the uv `--version`
    probe (uv present), manifest reading, the environment check, wrapper
    rewrite, generation cleanup, ownership (host H1 built here: `ensure_owner`
-   and `ensure_owner_recursive`), libpq-dev present (`package_installed`).
+   and `ensure_owner_recursive`), libpq-dev present (`package_installed`;
+   both gone with decision 26).
    Deadsnakes and fact are stubs returning "nothing to do" behind the same
    steps. Proves exec isolation and the step texts on the path every
    `sb update` hits.
@@ -1198,7 +1203,8 @@ add sb-go's wrapping, `error getting saltbox user: <cause>`.
 3. **Self-healing (S):** the wider Python check and the clean retry.
 4. **uv install (M):** needs release's `Releases`, `release`, `download`, `activate` and `Arch` (R1-R6). Metadata, download,
    extraction, staged `--version`, activation; the libpq-dev apt steps
-   (host's `install` and `update_lists`, first use).
+   (host's `install` and `update_lists`, first use; gone with decision
+   26).
 5. **The fact (M):** needs release's `check_elf` and `sha256_file` (R7-R8). Version probe, decision with
    the digest rule, download, ELF and staged `--version`, activation;
    `reinstall-facts` and update-venv's real fact step. Measures `object`.

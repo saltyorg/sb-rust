@@ -13,7 +13,6 @@ use anyhow::Context as _;
 use sb_cli_core::exit::{Exit, escaped, shown_chain};
 use sb_exec::Cmd;
 use sb_host::OwnerError;
-use sb_host::apt::PackageQueryError;
 use sb_term_ui::{Labels, Step};
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
@@ -438,8 +437,6 @@ pub enum VenvError {
     // The causes below are part of the text, not a `source` as well: the
     // failure block shows the whole chain, which would print them twice
     // (as sb-host's `OwnerError`).
-    #[error("check native Python build prerequisites: {0}")]
-    Prerequisites(PackageQueryError),
     /// Shown in the inspection's own step; the reconcile then ends as
     /// [`VenvError::Stopped`].
     #[error("inspect active Ansible environment: {0}")]
@@ -490,9 +487,9 @@ pub(crate) fn status_label(healthy: bool, force: Force) -> &'static str {
 
 /// Bring the active venv in line with the checkout (spec, "The venv
 /// reconcile", sb-go's `Reconcile`): the toolchain; "Ensuring uv <v> is
-/// installed"; libpq-dev, installed when missing; "Inspecting the active
-/// Ansible virtual environment"; "Checking Ansible virtual environment
-/// for updates" with sb-go's done label. On a healthy venv and no force, the wrappers
+/// installed"; "Inspecting the active Ansible virtual environment";
+/// "Checking Ansible virtual environment for updates" with sb-go's done
+/// label. On a healthy venv and no force, the wrappers
 /// rewritten, old generations cleaned and ownership given to `user`
 /// (skipped when `None`). Otherwise a new generation is built into
 /// staging ([`build`]; a failed build on the normal path is retried
@@ -523,7 +520,6 @@ pub async fn reconcile_venv(
             .context("install pinned uv")
     })
     .await?;
-    prerequisites(step, env, &token).await?;
     // Its probes take about a second on a Saltbox venv: a step of its
     // own, so the run doesn't sit silent before the next one (spec, step 4).
     let inspecting = Labels::new(
@@ -809,51 +805,6 @@ async fn activate_staged(
         }
     }
 }
-
-/// libpq-dev, which psycopg's build needs (spec, step 3; sb-go's
-/// `IsPackageInstalled`, `UpdatePackageLists`, `InstallPackage`): when
-/// dpkg hasn't it installed, "Updating apt package cache", unless the
-/// lists were refreshed earlier in this run (sb host's
-/// `Apt::lists_refreshed`: `sb update`'s own first step), and
-/// "Installing native Python build prerequisites".
-async fn prerequisites(
-    step: &mut Step,
-    env: &Env<'_>,
-    token: &CancellationToken,
-) -> Result<(), VenvError> {
-    let installed = env
-        .apt
-        .package_installed(LIBPQ, token)
-        .await
-        .map_err(VenvError::Prerequisites)?;
-    if installed {
-        return Ok(());
-    }
-    if env.apt.lists_refreshed() {
-        tracing::info!("apt package lists already refreshed in this run");
-    } else {
-        let updating = "Updating apt package cache";
-        step.step(Labels::new(updating, updating), async |step| {
-            env.apt
-                .update_lists(step)
-                .await
-                .context("update apt cache for native Python build prerequisites")
-        })
-        .await?;
-    }
-    let installing = "Installing native Python build prerequisites";
-    step.step(Labels::new(installing, installing), async |step| {
-        env.apt
-            .install(step, &[LIBPQ])
-            .await
-            .context("install native Python build prerequisites")
-    })
-    .await?;
-    Ok(())
-}
-
-/// The package psycopg's build needs.
-const LIBPQ: &str = "libpq-dev";
 
 /// The Saltbox user's ownership (spec, step 16; sb-go's
 /// `ensureManagedOwnership`): `/srv/git` itself, then the checkout,

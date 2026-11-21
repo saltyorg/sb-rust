@@ -10,15 +10,16 @@ use anyhow::Context as _;
 use sb_host::apt::Apt;
 use sb_term_ui::{Labels, Step};
 
-/// The packages sb-go installs last, in its order.
-pub const PACKAGES: [&str; 15] = [
+/// The packages sb-go installs last, in its order, but libpq-dev (ops
+/// difference 71): nothing on a Saltbox host builds against it since
+/// Saltbox's lock moved to `psycopg[binary]`.
+pub const PACKAGES: [&str; 14] = [
     "locales",
     "nano",
     "wget",
     "jq",
     "file",
     "gpg-agent",
-    "libpq-dev",
     "build-essential",
     "libssl-dev",
     "libffi-dev",

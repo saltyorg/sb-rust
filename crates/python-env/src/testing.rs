@@ -206,7 +206,7 @@ impl Tree {
         tree.python(&templates.join("python3"), PYTHON);
         tree.entry_points(&templates.join("bin"));
         tree.uv(UV, UV);
-        tree.libpq(true);
+        tree.dpkg_query();
         let _ = stand_in(&tree.stand_ins(), "apt-get", &tree.apt_get_script());
         let policies = tree.root.path().join("policy");
         let _ = stand_in(
@@ -447,19 +447,16 @@ exit 0"#;
         self.root.path().join("stand-ins")
     }
 
-    /// A dpkg-query that has libpq-dev installed (`ii`), or knows no such
-    /// package (exit 1, as dpkg-query for an unknown one); its package
-    /// list is [`Tree::rows`]' (none by default).
+    /// A dpkg-query whose package list is [`Tree::rows`]' (none by
+    /// default).
     ///
     /// # Panics
     ///
     /// When it can't be written.
-    pub fn libpq(&self, installed: bool) {
-        let answer = if installed { "printf 'ii '" } else { "exit 1" };
+    fn dpkg_query(&self) {
         let rows = self.root.path().join("dpkg-rows");
         let script = format!(
-            "{}\ncase \"$2\" in\n'-f=${{db:Status-Abbrev}}') {answer} ;;\n\
-             *) cat '{}' 2>/dev/null; exit 0 ;;\nesac",
+            "{}\ncat '{}' 2>/dev/null; exit 0",
             self.calls_line(),
             rows.display()
         );

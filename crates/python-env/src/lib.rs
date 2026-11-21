@@ -155,8 +155,7 @@ pub struct Env<'a> {
     pub arch: sb_release::Arch,
     /// git, for the checkout's commit (`git` from `PATH`).
     pub git: PathBuf,
-    /// apt and dpkg, for libpq-dev (spec, step 3) and the deadsnakes
-    /// cleanup.
+    /// apt and dpkg, for the deadsnakes cleanup.
     pub apt: Apt,
     /// The Ubuntu release (os-release's `VERSION_ID`) the deadsnakes
     /// cleanup takes the host for; `None` reads the host's

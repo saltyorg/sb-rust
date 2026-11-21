@@ -122,7 +122,7 @@ async fn a_healthy_tree_is_kept_with_sb_gos_steps() {
         );
         assert!(text.ends_with(&exec), "{text}");
     }
-    // libpq-dev is there: apt-get never ran.
+    // The reconcile runs no apt-get.
     assert!(
         !tree
             .calls_made()
@@ -186,70 +186,40 @@ async fn the_tree_is_given_to_the_saltbox_user() {
     }
 }
 
+/// libpq-dev is neither looked for nor installed (spec, step 3, dropped
+/// 2026-11-21): a reconcile that rebuilds, as every reconcile once
+/// checked for it, asks neither dpkg nor apt about it, and shows no
+/// prerequisites step.
 #[tokio::test]
-async fn libpq_dev_is_installed_when_missing() {
+async fn a_rebuild_needs_no_native_build_prerequisites() {
     let _spawns = SPAWNS.lock().await;
     let tree = Tree::new();
     let _ = tree.healthy();
-    tree.libpq(false);
     let env = tree.env();
     let ran = in_step(async |step| {
-        reconcile_venv(step, &env, None, Force::None).await?;
-        Ok(())
-    })
-    .await;
-    assert_eq!(ran.error, None, "{}", ran.screen);
-    for line in [
-        "Updating apt package cache",
-        "Installing native Python build prerequisites",
-    ] {
-        assert!(ran.screen.contains(line), "{line}:\n{}", ran.screen);
-    }
-    let apt: Vec<String> = tree
-        .calls_made()
-        .into_iter()
-        .filter(|call| call.contains("apt-get"))
-        .collect();
-    assert_eq!(apt.len(), 2, "{apt:?}");
-    assert!(apt[0].contains(" update"), "{apt:?}");
-    assert!(apt[1].ends_with("install -y libpq-dev"), "{apt:?}");
-}
-
-#[tokio::test]
-async fn libpq_dev_needs_no_second_refresh_of_the_lists_in_a_run() {
-    let _spawns = SPAWNS.lock().await;
-    let tree = Tree::new();
-    let _ = tree.healthy();
-    tree.libpq(false);
-    let env = tree.env();
-    // `sb update`'s own first step, on an apt sharing the record.
-    let before = in_step(async |step| env.apt.update_lists(step).await).await;
-    assert_eq!(before.error, None, "{}", before.screen);
-    let ran = in_step(async |step| {
-        reconcile_venv(step, &env, None, Force::None).await?;
+        reconcile_venv(step, &env, None, Force::Venv).await?;
         Ok(())
     })
     .await;
     assert_eq!(ran.error, None, "{}", ran.screen);
     assert!(
         ran.screen
-            .contains("Installing native Python build prerequisites"),
+            .contains("Ansible virtual environment recreation requested"),
         "{}",
         ran.screen
     );
     assert!(
-        !ran.screen.contains("Updating apt package cache"),
+        !ran.screen.contains("native Python build prerequisites"),
         "{}",
         ran.screen
     );
-    let apt: Vec<String> = tree
-        .calls_made()
-        .into_iter()
-        .filter(|call| call.contains("apt-get"))
-        .collect();
-    assert_eq!(apt.len(), 2, "{apt:?}");
-    assert!(apt[0].contains(" update"), "{apt:?}");
-    assert!(apt[1].ends_with("install -y libpq-dev"), "{apt:?}");
+    let calls = tree.calls_made();
+    assert!(
+        !calls
+            .iter()
+            .any(|call| call.contains("libpq") || call.contains("apt-get")),
+        "{calls:?}"
+    );
 }
 
 /// The generation the active link names.

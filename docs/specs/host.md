@@ -110,7 +110,7 @@ stops on Ctrl-C through exec.
 |---|---|---|---|
 | `check_architecture` | `uname(2)` machine | `x86_64` | `UNSUPPORTED CPU Architecture - Install cancelled: <arch> is not supported. Supported: x86_64` |
 | `check_lxc` | `systemd-detect-virt -c`, capture, 5 s | a non-zero exit with output `none`; or success with any container other than `lxc` (compared lowercased) | `UNSUPPORTED VIRTUALIZATION - Install cancelled: Running in an LXC container is not supported`; otherwise `could not detect virtualization using systemd-detect-virt: <cause>, output: <out>` |
-| `check_desktop` | `package_installed("ubuntu-desktop")` | not installed | `UNSUPPORTED DESKTOP INSTALL - Install cancelled: Only Ubuntu Server is supported`; a failed query gives `unexpected error checking for desktop environment: <cause>` |
+| `check_desktop` | the installed-state query of `ubuntu-desktop` (below) | not installed | `UNSUPPORTED DESKTOP INSTALL - Install cancelled: Only Ubuntu Server is supported`; a failed query gives `unexpected error checking for desktop environment: <cause>` |
 
 The output that `check_lxc` matches is stdout and stderr together, as in
 sb-go.
@@ -158,8 +158,11 @@ Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold <args>`.
 - **Lock wait:** `install`, `remove` and `autoremove` also get
   `-o DPkg::Lock::Timeout=240` (decision 3).
 
-**`package_installed(name)`.** Runs `dpkg-query -W -f=${db:Status-Abbrev}
-<name>` (capture, 10 s; 5 s for `check_desktop`, sb-go's timeout there).
+**The installed-state query (`installed_within(name, limit)`).** Runs
+`dpkg-query -W -f=${db:Status-Abbrev} <name>` (capture, 5 s for
+`check_desktop`, sb-go's timeout there; its 10 s public form,
+`package_installed`, went with python-env's libpq-dev check,
+2026-11-21).
 - True only for `ii`.
 - Exit 1 means unknown or not installed: false.
 - Any other failure gives `query package <name>: <cause>`.
@@ -240,13 +243,12 @@ re-checks with it after its cleanup and `update_lists` (a second
 the run's backup directory already existing).
 
 **`update_lists(step)`.** Runs `update` with retries.
-- *Added 2026-11-20 (performance round 3, ops finding 5):* each `Apt`
-  records whether its last `update_lists` succeeded, cleared when
-  `add_repositories` runs or `remove_sources_mentioning` moves a file;
-  `lists_refreshed()` reads it. Clones share the record, and
-  `sharing_lists_with(other)` joins another's, so `sb update`'s own
-  step and python-env's libpq-dev install see one record (python-env
-  difference 21). The record lives for the process only.
+- *Added 2026-11-20 (performance round 3, ops finding 5), removed
+  2026-11-21:* a record of whether `update_lists` succeeded in the run
+  (`lists_refreshed()`, `sharing_lists_with(other)`), read only by
+  python-env's libpq-dev install, which is gone (python-env decision
+  26); so is `package_installed`, the desktop check keeping its own
+  query.
 - **Attempts:** up to 3, each with a 2 min timeout.
 - **Retry when** the attempt timed out, or its stderr (`Streamed`'s
   stderr tail, as sb-go matched `RunVerbose`'s stderr) names one of:
@@ -475,9 +477,9 @@ Pinned tests are named in Success criteria.
    disabled leftovers. One listing error replaces sb-go's per-pattern
    text.
 7. **Timeouts sb-go doesn't have:** 10 s on `package_installed`'s
-   `dpkg-query` for python-env (sb-go's desktop check already had 5 s,
-   which stays), 10 s on each `systemctl` query, and 5 s on
-   `lsb_release`. A hung call would hang sb-go.
+   `dpkg-query` for python-env (until its libpq-dev check went,
+   2026-11-21; sb-go's desktop check already had 5 s, which stays),
+   10 s on each `systemctl` query, and 5 s on `lsb_release`. A hung call would hang sb-go.
 8. **`add_repositories` writes atomically,** keeping owner and mode,
    instead of truncating in place.
 9. **The runtime comes from the active-enter wall-clock timestamp**
