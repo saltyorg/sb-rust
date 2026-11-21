@@ -160,28 +160,80 @@ pub fn sha256_file(path: &Path) -> std::io::Result<[u8; 32]> {
 
 /// The SHA-256 of what `reader` yields to its end.
 ///
-/// Read in parts (python-env's digest rule: the installed fact against
-/// its release's [`Asset::sha256`]; its `--verify-venv` check, on files it
-/// opened itself); sha2's `update` takes each part
-/// (<https://docs.rs/sha2/0.11.1/sha2/>); why not `io::copy` into the
-/// hasher: digest 0.11's hashers implement no `io::Write` (its crate docs
-/// point to `digest-io`, which isn't in the tree), and this loop is all
-/// that wrapper would add.
+/// Read in parts (python-env's lock digest; its digest rule, the
+/// installed fact against its release's [`Asset::sha256`]; its
+/// `--verify-venv` check, on files it opened itself), each given to the hasher's `update`; why not `io::copy`
+/// into the hasher: digest 0.11's hashers implement no `io::Write` (its
+/// crate docs point to `digest-io`, which isn't in the tree), and this
+/// loop is all that wrapper would add.
+///
+/// The hasher is chosen by the CPU ([`has_sha_instructions`]): sha2's
+/// (<https://docs.rs/sha2/0.11.1/sha2/>) where the CPU has SHA
+/// instructions, which it uses; aws-lc's digest, already in sb for TLS
+/// (<https://docs.rs/aws-lc-rs/1.18.2/aws_lc_rs/digest/struct.Context.html>),
+/// where it hasn't, as sha2's code there is portable Rust and aws-lc's is
+/// SSSE3/AVX assembly: 21.1 ms against 13.5 ms for 5 MiB (the size of
+/// saltbox.fact), 278 against 176 ms for 64 MiB, on an x86-64 core with SHA
+/// hidden from the guest's CPUID (KVM), and the same 3.3-3.4 ms for both
+/// with it (performance research, round 5; the maintainer's decision,
+/// 2026-11-21). Why not aws-lc's alone, which picks the SHA instructions
+/// itself (aws-lc-sys 0.46.0, `sha256_block_data_order` in
+/// crypto/fipsmodule/sha/sha256.c): with them its loop took 4% more
+/// instructions than sha2's over a venv's 461 MB (1.109 against 1.067 G,
+/// round 5), and the rule is no cost anywhere.
 ///
 /// # Errors
 ///
 /// The reader's error.
-pub fn sha256_reader(mut reader: impl Read) -> std::io::Result<[u8; 32]> {
-    let mut hasher = Sha256::new();
+pub fn sha256_reader(reader: impl Read) -> std::io::Result<[u8; 32]> {
+    if has_sha_instructions() {
+        sha256_with_sha2(reader)
+    } else {
+        sha256_with_aws_lc(reader)
+    }
+}
+
+/// Whether the CPU has the SHA-256 instructions sha2 uses, SHA and
+/// SSE4.1 (sha2 0.11.1's `shani_cpuid`): std's runtime detection on
+/// `x86_64` (<https://doc.rust-lang.org/std/arch/macro.is_x86_feature_detected.html>),
+/// which caches its answer. Every other architecture keeps sha2's, which
+/// uses `aarch64`'s SHA2 instructions where they are: aws-lc's code was
+/// measured on `x86_64` only.
+fn has_sha_instructions() -> bool {
+    #[cfg(target_arch = "x86_64")]
+    return std::arch::is_x86_feature_detected!("sha")
+        && std::arch::is_x86_feature_detected!("sse4.1");
+    #[cfg(not(target_arch = "x86_64"))]
+    true
+}
+
+/// `update(part)` for each part `reader` yields, to its end.
+fn parts(mut reader: impl Read, mut update: impl FnMut(&[u8])) -> std::io::Result<()> {
     let mut part = vec![0; 64 << 10];
     loop {
         match reader.read(&mut part) {
-            Ok(0) => return Ok(hasher.finalize().into()),
-            Ok(read) => hasher.update(&part[..read]),
+            Ok(0) => return Ok(()),
+            Ok(read) => update(&part[..read]),
             Err(err) if err.kind() == std::io::ErrorKind::Interrupted => {}
             Err(err) => return Err(err),
         }
     }
+}
+
+/// [`sha256_reader`] with sha2's hasher.
+fn sha256_with_sha2(reader: impl Read) -> std::io::Result<[u8; 32]> {
+    let mut hasher = Sha256::new();
+    parts(reader, |part| hasher.update(part))?;
+    Ok(hasher.finalize().into())
+}
+
+/// [`sha256_reader`] with aws-lc's.
+fn sha256_with_aws_lc(reader: impl Read) -> std::io::Result<[u8; 32]> {
+    let mut hasher = aws_lc_rs::digest::Context::new(&aws_lc_rs::digest::SHA256);
+    parts(reader, |part| hasher.update(part))?;
+    let mut digest = [0; 32];
+    digest.copy_from_slice(hasher.finish().as_ref());
+    Ok(digest)
 }
 
 /// `digest` as exactly `sha256:` and 64 hex digits (sb-go trims
@@ -239,6 +291,109 @@ fn pinned(url: &Url, base: &Url, repo: GithubRepo, tag: &str, name: &str) -> boo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Both hashers give the same digests, and the known ones: empty, one
+    /// byte, either side of a part's 64 KiB, several parts, and a reader
+    /// that yields a few bytes at a time and is interrupted.
+    #[test]
+    fn both_hashers_give_the_same_digest() {
+        /// Three bytes a read, an interruption before each.
+        struct Trickle<'a> {
+            left: &'a [u8],
+            interrupted: bool,
+        }
+        impl Read for Trickle<'_> {
+            fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+                self.interrupted = !self.interrupted;
+                if self.interrupted {
+                    return Err(std::io::ErrorKind::Interrupted.into());
+                }
+                let n = self.left.len().min(3).min(out.len());
+                out[..n].copy_from_slice(&self.left[..n]);
+                self.left = &self.left[n..];
+                Ok(n)
+            }
+        }
+        let mut x: u32 = 0x9e37_79b9;
+        let bytes: Vec<u8> = (0..(5 << 20) + 7)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 17;
+                x ^= x << 5;
+                x.to_le_bytes()[0]
+            })
+            .collect();
+        for len in [
+            0,
+            1,
+            55,
+            56,
+            64,
+            (64 << 10) - 1,
+            64 << 10,
+            (64 << 10) + 1,
+            bytes.len(),
+        ] {
+            let data = &bytes[..len];
+            let want: [u8; 32] = Sha256::digest(data).into();
+            assert_eq!(sha256_with_sha2(data).expect("sha2"), want, "{len}");
+            assert_eq!(sha256_with_aws_lc(data).expect("aws-lc"), want, "{len}");
+            assert_eq!(sha256_reader(data).expect("chosen"), want, "{len}");
+        }
+        assert_eq!(
+            hex::encode(sha256_with_aws_lc(&b"abc"[..]).expect("aws-lc")),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        let data = &bytes[..1000];
+        let want: [u8; 32] = Sha256::digest(data).into();
+        assert_eq!(
+            sha256_with_sha2(Trickle {
+                left: data,
+                interrupted: false
+            })
+            .expect("sha2"),
+            want
+        );
+        assert_eq!(
+            sha256_with_aws_lc(Trickle {
+                left: data,
+                interrupted: false
+            })
+            .expect("aws"),
+            want
+        );
+    }
+
+    /// A read error ends either hasher with it.
+    #[test]
+    fn a_read_error_ends_either_hasher() {
+        struct Broken;
+        impl Read for Broken {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other("broken"))
+            }
+        }
+        assert_eq!(sha256_with_sha2(Broken).unwrap_err().to_string(), "broken");
+        assert_eq!(
+            sha256_with_aws_lc(Broken).unwrap_err().to_string(),
+            "broken"
+        );
+        assert_eq!(sha256_reader(Broken).unwrap_err().to_string(), "broken");
+    }
+
+    /// The choice follows std's detection of the CPU's SHA instructions:
+    /// the digests can't show which hasher ran, so this pins the choice.
+    #[test]
+    fn the_hasher_follows_the_cpus_sha_instructions() {
+        #[cfg(target_arch = "x86_64")]
+        assert_eq!(
+            has_sha_instructions(),
+            std::arch::is_x86_feature_detected!("sha")
+                && std::arch::is_x86_feature_detected!("sse4.1")
+        );
+        #[cfg(not(target_arch = "x86_64"))]
+        assert!(has_sha_instructions());
+    }
 
     const REPO: GithubRepo = GithubRepo {
         owner: "saltyorg",

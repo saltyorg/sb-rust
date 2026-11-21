@@ -85,7 +85,8 @@ build it on a temporary root (sb-go's `releaseLayout` injection).
 - `.uv-version` is a minimum, compared with `semver`. If sb's pinned uv
   (`cli-core::UV_VERSION`, passed in by `sb`) is older: `saltbox requires
   uv <min> or newer, but this sb release provides <v>; run sb self-update`.
-- The lock's sha256 (sha2) and `git rev-parse HEAD` in the checkout
+- The lock's sha256 (sb-release's `sha256_file`: sha2, or aws-lc on an
+  `x86_64` CPU without SHA instructions) and `git rev-parse HEAD` in the checkout
   (capture, 10 s; sb-go has none) go into the manifest.
 
 ### The venv reconcile, step by step (venv.go:76-236)
@@ -656,6 +657,7 @@ moved), so `ops` callers and the tests can read them.
 | `tar` | 0.4.46 | reads uv's archive, pure Rust | https://docs.rs/tar/0.4.46/tar/struct.Archive.html | no / no |
 | `flate2` | 1.1.10 (lockfile), `rust_backend` (miniz_oxide) | gzip, pure Rust | https://docs.rs/flate2/1.1.10/flate2/read/struct.GzDecoder.html | yes / no |
 | `sha2` | 0.11.1 | lock digest, the fact's digest rule | https://docs.rs/sha2/0.11.1/sha2/ | yes / yes |
+| `aws-lc-rs` | 1.18.2 | the lock's, the fact's and `--verify-venv`'s digests (sb-release's `sha256_reader`) on an `x86_64` CPU without SHA instructions, where sha2's code is portable Rust; sha2's elsewhere (*the maintainer, 2026-11-21: 21.1 against 13.5 ms for 5 MiB on an x86_64 core with SHA hidden in KVM, the same with it*) | https://docs.rs/aws-lc-rs/1.18.2/aws_lc_rs/digest/ | yes (rustls's crypto) / yes |
 | `semver` | 1.0.28 | uv minimum, fact versions | https://docs.rs/semver/1.0.28/semver/ | yes (build dep) / no |
 | `tempfile` | 3.27.0 | manifest, wrappers, staging dirs, scratch TMPDIR | https://docs.rs/tempfile/3.27.0/tempfile/ | yes / yes |
 | `serde`, `serde_json` | workspace | manifest | https://docs.rs/serde_json/ | yes / yes |

@@ -3804,6 +3804,7 @@ name = "sb-release"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "aws-lc-rs",
  "axum",
  "futures-util",
  "hex",

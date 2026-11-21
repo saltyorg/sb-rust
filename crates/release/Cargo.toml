@@ -31,6 +31,9 @@ semver.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+# The file digests on a CPU without SHA instructions (asset.rs,
+# `sha256_reader`): already in sb as rustls's crypto.
+aws-lc-rs.workspace = true
 tempfile.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["fs", "io-util", "time"] }
