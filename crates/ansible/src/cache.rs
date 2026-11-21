@@ -209,10 +209,28 @@ impl TagCache {
         checkout: &sb_repo::Repo,
         runner: &mut LazyRunner<F>,
     ) -> Result<Listed, CacheError> {
-        let head = match self.lookup(repo, checkout, &runner.token()).await? {
-            Lookup::Fresh(tags) => return Ok(Listed { tags, cached: true }),
-            Lookup::Stale(head) => head,
-        };
+        same_repo(repo, checkout);
+        let head = checkout.head(&runner.token()).await?;
+        self.tags_at(ansible, repo, head, runner).await
+    }
+
+    /// [`TagCache::tags_on`] with the HEAD of `repo`'s checkout already
+    /// read (sb-repo's `head()`), so `sb list` can read two checkouts'
+    /// HEADs at once.
+    ///
+    /// # Errors
+    ///
+    /// [`CacheError::Step`] when the rebuild's step failed.
+    pub(crate) async fn tags_at<F: FnOnce() -> Runner>(
+        &mut self,
+        ansible: &Ansible,
+        repo: &Repo,
+        head: String,
+        runner: &mut LazyRunner<F>,
+    ) -> Result<Listed, CacheError> {
+        if let Some(tags) = self.fresh(repo, &head) {
+            return Ok(Listed { tags, cached: true });
+        }
         let tags = self.rebuild_on(ansible, repo, head, runner).await?;
         Ok(Listed {
             tags,
@@ -237,6 +255,22 @@ impl TagCache {
     ) -> Result<Vec<String>, CacheError> {
         same_repo(repo, checkout);
         let head = checkout.head(&runner.token()).await?;
+        self.refresh_at(ansible, repo, head, runner).await
+    }
+
+    /// [`TagCache::refresh_on`] with the checkout's HEAD already read, as
+    /// [`TagCache::tags_at`].
+    ///
+    /// # Errors
+    ///
+    /// [`CacheError::Step`] when the rebuild's step failed.
+    pub(crate) async fn refresh_at<F: FnOnce() -> Runner>(
+        &mut self,
+        ansible: &Ansible,
+        repo: &Repo,
+        head: String,
+        runner: &mut LazyRunner<F>,
+    ) -> Result<Vec<String>, CacheError> {
         self.rebuild_on(ansible, repo, head, runner).await
     }
 

@@ -12,7 +12,7 @@ use sb_term_ui::{Runner, Table};
 use term_grid::{Direction, Filling, Grid, GridOptions};
 use unicode_width::UnicodeWidthChar;
 
-use crate::cache::{LazyRunner, Listed, TagCache};
+use crate::cache::{CacheError, LazyRunner, Listed, TagCache};
 use crate::{Ansible, Kind, Repo, Repos};
 
 /// The width the columns fill when stdout isn't a terminal (sb-go's
@@ -93,25 +93,41 @@ pub async fn gather<F: FnOnce() -> Runner>(
     runner: &mut LazyRunner<F>,
 ) -> Listing {
     let mut listing = Listing::default();
-    for (repo, name) in [(&repos.saltbox, "Saltbox"), (&repos.sandbox, "Sandbox")] {
-        // After a Ctrl-C, no other repository starts a child (sb-go stops
-        // at the first interruption).
+    // After a Ctrl-C, no repository starts a child it hasn't started yet
+    // (sb-go stops at the first interruption): the HEADs below start
+    // together, and a Ctrl-C during them stops both (their shared token).
+    if runner.token().is_cancelled() {
+        return listing;
+    }
+    let [saltbox, sandbox] = [(&repos.saltbox, "Saltbox"), (&repos.sandbox, "Sandbox")];
+    // Both HEADs asked at once: each `git rev-parse` is nearly all its own
+    // start, so the second no longer waits for the first. They are used
+    // in the order below, as before, so the output and the failures'
+    // order are the same. A run that isn't interrupted read both before;
+    // one interrupted during Saltbox's turn has now read Sandbox's HEAD
+    // too, before the interruption (tokio's `join!`,
+    // <https://docs.rs/tokio/1.54.1/tokio/macro.join.html>).
+    let token = runner.token();
+    let heads = tokio::join!(head_of(saltbox, &token), head_of(sandbox, &token));
+    for ((repo, name), head) in [(saltbox, heads.0), (sandbox, heads.1)] {
         if runner.token().is_cancelled() {
             return listing;
         }
-        let listed = match sb_repo::Repo::open(name, repo.dir()) {
-            Ok(checkout) if args.refresh => cache
-                .refresh_on(ansible, repo, &checkout, runner)
+        let listed = match head {
+            Ok(Ok(head)) if args.refresh => cache
+                .refresh_at(ansible, repo, head, runner)
                 .await
                 .map(|tags| Listed {
                     tags,
                     cached: false,
                 })
                 .map_err(anyhow::Error::from),
-            Ok(checkout) => cache
-                .tags_on(ansible, repo, &checkout, runner)
+            Ok(Ok(head)) => cache
+                .tags_at(ansible, repo, head, runner)
                 .await
                 .map_err(anyhow::Error::from),
+            // As the cache's own read of the HEAD fails.
+            Ok(Err(err)) => Err(CacheError::from(err).into()),
             Err(err) => Err(err.into()),
         };
         match listed {
@@ -163,6 +179,15 @@ pub async fn gather<F: FnOnce() -> Runner>(
         }
     }
     listing
+}
+
+/// The HEAD of `repo`'s checkout, named `name` (sb-repo's `head()`), or
+/// why the checkout didn't open.
+async fn head_of(
+    (repo, name): (&Repo, &str),
+    token: &tokio_util::sync::CancellationToken,
+) -> Result<Result<String, sb_repo::RepoError>, sb_repo::RepoError> {
+    Ok(sb_repo::Repo::open(name, repo.dir())?.head(token).await)
 }
 
 /// `sb list --json`'s document (spec, `--json`; decision 20): schema 1,

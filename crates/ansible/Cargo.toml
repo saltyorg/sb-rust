@@ -24,6 +24,9 @@ serde_json.workspace = true
 tempfile.workspace = true
 regex.workspace = true
 tokio-util.workspace = true
+# sb list reads Saltbox's and Sandbox's HEADs at once (`join!`; sb-exec
+# has the feature on already).
+tokio = { workspace = true, features = ["macros"] }
 tracing.workspace = true
 # The rebuild step's body result (term-ui's `Step::step`).
 anyhow.workspace = true
