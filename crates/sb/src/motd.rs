@@ -18,7 +18,9 @@ pub const ABOUT: &str = "Displays system information including Ubuntu distributi
 kernel version, system uptime, CPU load, memory usage, disk usage,
 last login, user sessions, process information, and system update status based on flags provided.";
 
-/// sb-go's flags, help texts and defaults (`cmd/motd.go:68-100`).
+// sb-go's flags, help texts and defaults (`cmd/motd.go:68-100`).
+// Not a doc comment: clap's derive would take it as the command's
+// description, over the variant's (sb's `Command` defers it).
 #[derive(clap::Args, Debug, Default, PartialEq, Eq)]
 pub struct Args {
     /// Show all information
@@ -92,10 +94,12 @@ struct FontFlag {
     given: bool,
 }
 
-/// `--json`, new in sb (motd spec, `--json`; decision 28): the chosen
-/// sections, no banner; never with `--generate-config`, which prints
-/// YAML. A struct of its own, as `Args` has three switches already
-/// (clippy's `struct_excessive_bools`).
+// `--json`, new in sb (motd spec, `--json`; decision 28): the chosen
+// sections, no banner; never with `--generate-config`, which prints
+// YAML. A struct of its own, as `Args` has three switches already
+// (clippy's `struct_excessive_bools`).
+// Not a doc comment: clap's derive would take it as the command's
+// description, over the variant's (sb's `Command` defers it).
 #[derive(clap::Args, Clone, Debug, Default, PartialEq, Eq)]
 struct JsonFlag {
     /// Print the sections as JSON

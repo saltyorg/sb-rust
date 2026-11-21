@@ -33,8 +33,10 @@ pub const SALTBOX_URL: &str = "https://github.com/saltyorg/saltbox.git";
 /// `SaltboxRepo`).
 pub const DEFAULT_BRANCH: &str = "master";
 
-/// `sb setup`'s flags: sb-go's, persistent as there (`global`), with
-/// `update`'s two branch flags (ops decision 29).
+// `sb setup`'s flags: sb-go's, persistent as there (`global`), with
+// `update`'s two branch flags (ops decision 29).
+// Not a doc comment: clap's derive would take it as the command's
+// description, over the variant's (sb's `Command` defers it).
 #[derive(clap::Args, Debug, Clone)]
 pub struct SetupArgs {
     /// Branch to use for Saltbox repository

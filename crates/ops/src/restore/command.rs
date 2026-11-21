@@ -37,8 +37,10 @@ const WRONG_PASSWORD: &str = "Decryption failed. This likely means the password 
 /// sb-go's error when nothing was restored.
 const NOTHING: &str = "restore process failed: no files were downloaded or decrypted";
 
-/// `sb restore`'s flags (ops spec, "Flags"; decision 8): no password
-/// flag, no `-v`. `Debug` never shows the user name (decision 10).
+// `sb restore`'s flags (ops spec, "Flags"; decision 8): no password
+// flag, no `-v`. `Debug` never shows the user name (decision 10).
+// Not a doc comment: clap's derive would take it as the command's
+// description, over the variant's (sb's `Command` defers it).
 #[derive(clap::Args, Clone)]
 pub struct RestoreArgs {
     /// Restore service user name (asked on a terminal when not given)

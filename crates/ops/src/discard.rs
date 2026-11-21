@@ -19,8 +19,10 @@ const NAMES: usize = 5;
 /// columns, as what moved is laid out.
 const NAME_WIDTH: usize = 78;
 
-/// `--discard-local`: flattened into each command's arguments
-/// (`#[command(flatten)]`, <https://docs.rs/clap/4.6.7/clap/_derive/index.html>).
+// `--discard-local`: flattened into each command's arguments
+// (`#[command(flatten)]`, <https://docs.rs/clap/4.6.7/clap/_derive/index.html>).
+// Not a doc comment: clap's derive would take it as the command's
+// description, over the variant's (sb's `Command` defers it).
 #[derive(clap::Args, Debug, Clone, Copy, Default)]
 pub struct DiscardFlag {
     /// Discard local commits, changes and untracked files in the checkouts without asking

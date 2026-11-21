@@ -63,8 +63,10 @@ fn purpose(doing: &str) -> Purpose<'_> {
     }
 }
 
-/// `sb update`'s flags: sb-go's but `-v` (ops decision 18), persistent as
-/// there (`global`), and `--migrations` (decision 19).
+// `sb update`'s flags: sb-go's but `-v` (ops decision 18), persistent as
+// there (`global`), and `--migrations` (decision 19).
+// Not a doc comment: clap's derive would take it as the command's
+// description, over the variant's (sb's `Command` defers it).
 #[derive(clap::Args, Debug, Clone)]
 pub struct UpdateArgs {
     #[command(flatten)]

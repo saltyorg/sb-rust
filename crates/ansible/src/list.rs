@@ -22,7 +22,9 @@ pub const PIPED_WIDTH: usize = 80;
 /// The most edits a tag may be from the query (sb-go's, as install's).
 const MOST_EDITS: usize = 2;
 
-/// `sb list`'s arguments, sb-go's names and help texts.
+// `sb list`'s arguments, sb-go's names and help texts.
+// Not a doc comment: clap's derive would take it as the command's
+// description, over the variant's (sb's `Command` defers it).
 #[derive(clap::Args, Clone, Debug, Default, PartialEq, Eq)]
 pub struct ListArgs {
     /// A tag, or part of one, to search for

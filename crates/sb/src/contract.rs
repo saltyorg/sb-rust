@@ -174,7 +174,7 @@ fn tree(root: &clap::Command) -> Vec<String> {
         };
         let about = cmd.get_about().map_or_default(ToString::to_string);
         lines.push(format!("command\t{path}\t{}\t{about}", cmd.is_hide_set()));
-        for arg in cmd.get_arguments() {
+        for arg in &crate::own_arguments(cmd) {
             if arg.is_positional() {
                 continue;
             }
@@ -543,7 +543,7 @@ fn aliases(root: &clap::Command) -> Vec<String> {
         for long in cmd.get_all_long_flag_aliases() {
             lines.push(format!("alias\t{path}\t--{long}"));
         }
-        for arg in cmd.get_arguments() {
+        for arg in &crate::own_arguments(cmd) {
             for alias in arg.get_all_aliases().unwrap_or_default() {
                 lines.push(format!("alias\t{path}\t--{alias}"));
             }
@@ -698,7 +698,10 @@ fn sb_defaults(root: &clap::Command) -> Vec<(String, String, String)> {
             Some(parent) => format!("{parent} {}", cmd.get_name()),
             None => cmd.get_name().to_string(),
         };
-        for arg in cmd.get_arguments().filter(|a| !a.is_positional()) {
+        for arg in crate::own_arguments(cmd)
+            .iter()
+            .filter(|a| !a.is_positional())
+        {
             let values: Vec<String> = arg
                 .get_default_values()
                 .iter()

@@ -36,9 +36,11 @@ Each value reaches Ansible whole, as one --extra-vars:
 A key=value value is passed as text; use the JSON form to pass a number or a list.
 Repeat -e for more; later values win.";
 
-/// `sb install`'s arguments. Its `Debug` shows counts only: the tags and
-/// `-e` values are shown and logged once, in the playbook's command
-/// (decision 17), not in every record that carries them.
+// `sb install`'s arguments. Its `Debug` shows counts only: the tags and
+// `-e` values are shown and logged once, in the playbook's command
+// (decision 17), not in every record that carries them.
+// Not a doc comment: clap's derive would take it as the command's
+// description, over the variant's (sb's `Command` defers it).
 #[derive(clap::Args, Clone, Default, PartialEq, Eq)]
 pub struct InstallArgs {
     /// The tags to run: words, comma lists, or both.

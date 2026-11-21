@@ -8,7 +8,7 @@
 //! not a derived field on each command: one table holds sb-go's 14
 //! commands, checked against sb-go's command tree, without reshaping 14
 //! variants (several flatten another crate's arguments). The cost: a
-//! parse that skips [`with_flags`] refuses `-v`; `Cli`'s doc says so, and
+//! parse that skips [`with_flags`] refuses `-v`; `Cli`'s comment says so, and
 //! the four parses (the real one, the colour pre-pass, the completion
 //! tree and the contract test) all go through it.
 

@@ -29,9 +29,11 @@ pub const DISCARD_FLAG: &str = "--discard-local";
 /// (ops decision 29).
 pub const BRANCH_FLAGS: &str = "--keep-branch or --reset-branch";
 
-/// The flags that answer the branch question, `update`'s and `setup`'s
-/// (ops decision 29): flattened into each command's arguments
-/// (`#[command(flatten)]`, <https://docs.rs/clap/4.6.7/clap/_derive/index.html>).
+// The flags that answer the branch question, `update`'s and `setup`'s
+// (ops decision 29): flattened into each command's arguments
+// (`#[command(flatten)]`, <https://docs.rs/clap/4.6.7/clap/_derive/index.html>).
+// Not a doc comment: clap's derive would take it as the command's
+// description, over the variant's (sb's `Command` defers it).
 #[derive(clap::Args, Debug, Clone, Copy)]
 pub struct BranchFlags {
     /// Skip branch reset prompt and stay on current branch

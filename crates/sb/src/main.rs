@@ -21,10 +21,10 @@ use sb_cli_core::tail;
 use sb_cli_core::theme;
 use sb_ops::Checkout;
 
-/// Saltbox CLI. Its derived tree lacks sb-go's hidden `-v` on 14 commands:
-/// every parse goes through `verbose::with_flags` (the real parse, the
-/// colour pre-pass, the completion tree, the contract test); a
-/// `Cli::parse()` or `Cli::command()` alone refuses `-v`.
+// Saltbox CLI. Its derived tree lacks sb-go's hidden `-v` on 14 commands:
+// every parse goes through `verbose::with_flags` (the real parse, the
+// colour pre-pass, the completion tree, the contract test); a
+// `Cli::parse()` or `Cli::command()` alone refuses `-v`.
 #[cfg_attr(test, derive(Debug))]
 #[derive(Parser)]
 #[command(name = "sb", about = "Saltbox CLI")]
@@ -40,11 +40,28 @@ struct Cli {
     verbose_given: bool,
 }
 
-/// Why not clap's `#[command(version)]`: it adds a `--version` flag that
-/// prints `<name> <version>` (`clap_builder` 4.6.7 `Command::_render_version`);
-/// sb-go has a `version` subcommand with its own line and `--json`.
+// Why not clap's `#[command(version)]`: it adds a `--version` flag that
+// prints `<name> <version>` (`clap_builder` 4.6.7 `Command::_render_version`);
+// sb-go has a `version` subcommand with its own line and `--json`.
 #[cfg_attr(test, derive(Debug))]
 #[derive(Subcommand)]
+// A command's arguments are built only when clap builds that command: the
+// one a line runs, or each one help lays out. Every start built every
+// command's (performance round 5, core finding 2: `version` 0.39 M
+// instructions and 48 page faults). The names, descriptions and the
+// variants' other attributes are registered at once; an `Args` type's own
+// attributes and doc comment would apply after the variant's, so the types
+// here carry none, nor do the enums and `Cli`, whose doc comments clap set
+// and replaced at every start (clap's derive reference, `defer`:
+// <https://docs.rs/clap/4.6.7/clap/_derive/index.html#command-attributes>).
+// The groups are flattened enums without `defer` (`DockerGroup`). A
+// completion request builds every command, and there each deferred one
+// costs about 0.7 k instructions more (clap moves it to run its step), so
+// a group's subcommands are deferred only where their arguments are worth
+// it at every start (`AnnouncementsCommand`'s five): deferring docker's
+// and completion's too made `sb <Tab>` 4 k instructions dearer than
+// before, for 50 k at a start.
+#[command(defer = true)]
 enum Command {
     /// Print Saltbox CLI version
     Version {
@@ -52,20 +69,8 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Manage Docker containers managed by Saltbox
-    // Alone: help on stdout, exit 0, as sb-go (`arg_required_else_help`
-    // makes clap's missing-subcommand error the kind `parse` prints as
-    // help). No `help` subcommand: sb-go's docker group has none (cobra
-    // adds one at the root only).
-    #[command(
-        long_about = "Manage Docker containers managed by Saltbox",
-        arg_required_else_help = true,
-        disable_help_subcommand = true
-    )]
-    Docker {
-        #[command(subcommand)]
-        command: DockerCommand,
-    },
+    #[command(flatten)]
+    Docker(DockerGroup),
     /// Validate Saltbox configuration files
     // No verbose mode: the run log has the detail (config decision 1);
     // sb-go's `-v` only hidden, with a notice (`verbose`).
@@ -98,23 +103,8 @@ enum Command {
     // `verbose`), and `--migrations` (decision 19).
     #[command(long_about = "Update Saltbox & Sandbox")]
     Update(sb_ops::update::UpdateArgs),
-    /// Edit Saltbox configuration files
-    // Alone: the picker (M53). The help is sb-go's without "Editor
-    // wrappers should exec the foreground editor so cancellation can stop
-    // it" (tui spec, difference 27) and without its GUI-client sentence
-    // (difference 34).
-    #[command(long_about = EDIT_ABOUT, disable_help_subcommand = true)]
-    Edit {
-        /// Don't offer to edit the file again when it has issues
-        // On `edit` and each subcommand (tui spec, editors): a global
-        // flag reaches the subcommands
-        // (<https://docs.rs/clap/4.6.7/clap/struct.Arg.html#method.global>).
-        #[arg(long, global = true)]
-        no_edit_again: bool,
-        /// None: the picker.
-        #[command(subcommand)]
-        command: Option<EditCommand>,
-    },
+    #[command(flatten)]
+    Edit(EditGroup),
     /// Manage Saltbox configuration facts
     #[command(long_about = fact::ABOUT)]
     Fact,
@@ -189,6 +179,80 @@ enum Command {
     // No verbose mode (python-env decision 9): sb-go's `-v` only hidden, with a notice (`verbose`).
     #[command(long_about = "Reinstall the Rust saltbox.fact file")]
     ReinstallFacts,
+    #[command(flatten)]
+    Completion(CompletionGroup),
+    #[command(flatten)]
+    Announcements(AnnouncementsGroup),
+    /// Fetches and decrypts files based on username and password
+    // Hidden, as sb-go's (ops decision 2). No verbose mode (ops decision
+    // 3): sb-go's `-v` only hidden, with a notice (`verbose`); `--user` and `--password-file` are new
+    // (decision 8).
+    #[command(long_about = RESTORE_LONG, hide = true)]
+    Restore(sb_ops::restore::RestoreArgs),
+    /// Benchmarks this server's system, disk and network
+    // sb's own help: bench is rewritten in Rust (ops difference 15). No
+    // flags.
+    #[command(long_about = "Benchmarks this server's system, disk and network")]
+    Bench,
+}
+
+// `sb docker`, the one variant of an enum without `defer`, flattened into
+// `Command`: a flattened enum keeps its own `defer` and is registered at
+// once (clap's derive reference, `defer`), so a group's subcommands are
+// there before any build, for `verbose`'s hidden `-v` on them, help's
+// layout of each and the error lines' suggestions. As a named variant of
+// `Command`, the group's own arguments and subcommands would wait for its
+// build. For docker alone clap's nested form (`#[command(subcommand)]
+// Docker(DockerCommand)`) would do; edit's own flag and the optional
+// subcommands of completion and announcements need the enum, so the four
+// stay alike. The four carry no doc comment: clap would apply it to `sb`
+// itself.
+#[cfg_attr(test, derive(Debug))]
+#[derive(Subcommand)]
+enum DockerGroup {
+    /// Manage Docker containers managed by Saltbox
+    // Alone: help on stdout, exit 0, as sb-go (`arg_required_else_help`
+    // makes clap's missing-subcommand error the kind `parse` prints as
+    // help). No `help` subcommand: sb-go's docker group has none (cobra
+    // adds one at the root only).
+    #[command(
+        long_about = "Manage Docker containers managed by Saltbox",
+        arg_required_else_help = true,
+        disable_help_subcommand = true
+    )]
+    Docker {
+        #[command(subcommand)]
+        command: DockerCommand,
+    },
+}
+
+// `sb edit`, the one variant of an enum without `defer` (`DockerGroup`).
+#[cfg_attr(test, derive(Debug))]
+#[derive(Subcommand)]
+enum EditGroup {
+    /// Edit Saltbox configuration files
+    // Alone: the picker (M53). The help is sb-go's without "Editor
+    // wrappers should exec the foreground editor so cancellation can stop
+    // it" (tui spec, difference 27) and without its GUI-client sentence
+    // (difference 34).
+    #[command(long_about = EDIT_ABOUT, disable_help_subcommand = true)]
+    Edit {
+        /// Don't offer to edit the file again when it has issues
+        // On `edit` and each subcommand (tui spec, editors): a global
+        // flag reaches the subcommands
+        // (<https://docs.rs/clap/4.6.7/clap/struct.Arg.html#method.global>).
+        #[arg(long, global = true)]
+        no_edit_again: bool,
+        /// None: the picker.
+        #[command(subcommand)]
+        command: Option<EditCommand>,
+    },
+}
+
+// `sb completion`, the one variant of an enum without `defer` (`DockerGroup`).
+#[cfg_attr(test, derive(Debug))]
+#[derive(Subcommand)]
+enum CompletionGroup {
     /// Install shell completion for sb
     // Hidden, as sb-go's (completion spec, "`sb completion`"); alone, it
     // installs for every installed shell.
@@ -197,6 +261,12 @@ enum Command {
         #[command(subcommand)]
         command: Option<CompletionCommand>,
     },
+}
+
+// `sb announcements`, the one variant of an enum without `defer` (`DockerGroup`).
+#[cfg_attr(test, derive(Debug))]
+#[derive(Subcommand)]
+enum AnnouncementsGroup {
     /// Display announcements from announcement files
     // Shown, not hidden as sb-go's test harness was: it reads
     // announcements now, and migrations stay with `update` (ops decision
@@ -210,17 +280,6 @@ enum Command {
         #[command(subcommand)]
         command: Option<AnnouncementsCommand>,
     },
-    /// Fetches and decrypts files based on username and password
-    // Hidden, as sb-go's (ops decision 2). No verbose mode (ops decision
-    // 3): sb-go's `-v` only hidden, with a notice (`verbose`); `--user` and `--password-file` are new
-    // (decision 8).
-    #[command(long_about = RESTORE_LONG, hide = true)]
-    Restore(sb_ops::restore::RestoreArgs),
-    /// Benchmarks this server's system, disk and network
-    // sb's own help: bench is rewritten in Rust (ops difference 15). No
-    // flags.
-    #[command(long_about = "Benchmarks this server's system, disk and network")]
-    Bench,
 }
 
 /// `sb update-venv`'s help (sb-go cmd/updateVenv.go, `Long`).
@@ -236,7 +295,7 @@ loading directory. Generated legacy files are migrated after successful installa
 Restart an existing shell, or source its installed file.
 Use \"completion generate <shell>\" to write a script to standard output.";
 
-/// `sb completion`'s subcommands (completion spec).
+// `sb completion`'s subcommands (completion spec).
 #[cfg_attr(test, derive(Debug))]
 #[derive(Subcommand, Clone, Copy)]
 enum CompletionCommand {
@@ -271,10 +330,12 @@ enum CompletionCommand {
     },
 }
 
-/// `sb announcements`' hidden subcommands, for developers (ops spec,
-/// "`sb announcements preview`" and "`sb announcements check`").
+// `sb announcements`' hidden subcommands, for developers (ops spec,
+// "`sb announcements preview`" and "`sb announcements check`").
 #[cfg_attr(test, derive(Debug))]
 #[derive(Subcommand, Clone)]
+// Its two subcommands' five arguments wait for their build (`Command`).
+#[command(defer = true)]
 enum AnnouncementsCommand {
     /// Show what the next sb update would show of the announcements
     #[command(long_about = PREVIEW_LONG, hide = true)]
@@ -437,8 +498,8 @@ After the editor exits, the file is checked as sb validate-config checks it,
 without the credential checks. If it has issues, sb offers to edit it again;
 --no-edit-again answers no.";
 
-/// `sb edit`'s subcommands, one per file (tui spec, editors; sb-go's
-/// names, underscores kept).
+// `sb edit`'s subcommands, one per file (tui spec, editors; sb-go's
+// names, underscores kept).
 #[cfg_attr(test, derive(Debug))]
 #[derive(Subcommand, Clone, Copy)]
 // Each also takes its file's name, and the inventory its own
@@ -488,9 +549,9 @@ impl EditCommand {
     }
 }
 
-/// `sb docker`'s subcommands (docker spec). sb-go's `logs` is gone:
-/// `sb logs` shows the containers too (the maintainer, 2026-11-18; tui
-/// decision 1), and `hinted` names it.
+// `sb docker`'s subcommands (docker spec). sb-go's `logs` is gone:
+// `sb logs` shows the containers too (the maintainer, 2026-11-18; tui
+// decision 1), and `hinted` names it.
 #[cfg_attr(test, derive(Debug))]
 #[derive(Subcommand)]
 enum DockerCommand {
@@ -531,7 +592,7 @@ impl Command {
     fn name(&self) -> &'static str {
         match self {
             Command::Version { .. } => "version",
-            Command::Docker { command } => match command {
+            Command::Docker(DockerGroup::Docker { command }) => match command {
                 DockerCommand::Ps { .. } => "docker ps",
                 DockerCommand::Start => "docker start",
                 DockerCommand::Stop { .. } => "docker stop",
@@ -541,7 +602,7 @@ impl Command {
             Command::Branch { .. } => "branch",
             Command::BranchSandbox { .. } => "branch-sandbox",
             Command::Update(_) => "update",
-            Command::Edit { command, .. } => match command {
+            Command::Edit(EditGroup::Edit { command, .. }) => match command {
                 None => "edit",
                 Some(EditCommand::Accounts) => "edit accounts",
                 Some(EditCommand::AdvSettings) => "edit adv_settings",
@@ -565,14 +626,16 @@ impl Command {
             Command::ReinstallVenv => "reinstall-venv",
             Command::ReinstallPython => "reinstall-python",
             Command::ReinstallFacts => "reinstall-facts",
-            Command::Announcements { command } => match command {
-                None => "announcements",
-                Some(AnnouncementsCommand::Preview { .. }) => "announcements preview",
-                Some(AnnouncementsCommand::Check { .. }) => "announcements check",
-            },
+            Command::Announcements(AnnouncementsGroup::Announcements { command }) => {
+                match command {
+                    None => "announcements",
+                    Some(AnnouncementsCommand::Preview { .. }) => "announcements preview",
+                    Some(AnnouncementsCommand::Check { .. }) => "announcements check",
+                }
+            }
             Command::Restore(_) => "restore",
             Command::Bench => "bench",
-            Command::Completion { command } => match command {
+            Command::Completion(CompletionGroup::Completion { command }) => match command {
                 None => "completion",
                 Some(CompletionCommand::Bash) => "completion bash",
                 Some(CompletionCommand::Zsh) => "completion zsh",
@@ -603,25 +666,25 @@ impl Command {
             | Command::Restore(_)
             // A preview that runs its migrations changes the host as
             // update's migrations do (ops decision 34).
-            | Command::Announcements {
+            | Command::Announcements(AnnouncementsGroup::Announcements {
                 command: Some(AnnouncementsCommand::Preview { run_migrations: true, .. }),
-            } => true,
+            }) => true,
             // Read-only or interactive; motd never waits (pam_motd runs
             // it at login); diag's role only reports; docker start, stop
             // and restart go through the controller's own jobs; list's
             // tag cache and completion's files are written atomically.
             Command::Version { .. }
-            | Command::Docker { .. }
+            | Command::Docker(_)
             | Command::ValidateConfig { .. }
-            | Command::Edit { .. }
+            | Command::Edit(_)
             | Command::Fact
             | Command::Motd(_)
             | Command::Logs
             | Command::Diag
             | Command::List(_)
-            | Command::Announcements { .. }
+            | Command::Announcements(_)
             | Command::Bench
-            | Command::Completion { .. } => false,
+            | Command::Completion(_) => false,
         }
     }
 
@@ -639,9 +702,9 @@ impl Command {
             // `completion generate` prints a stub and reads nothing
             // (completion spec, decision 4).
             Command::Version { .. }
-            | Command::Completion {
+            | Command::Completion(CompletionGroup::Completion {
                 command: Some(CompletionCommand::Generate { .. }),
-            } => false,
+            }) => false,
             // The Docker socket, and sb's rule that only version and
             // completion run unprivileged (cli-core decision 3); Saltbox's
             // config is root's to read (config spec); the Saltbox and
@@ -660,12 +723,12 @@ impl Command {
             // `announcements`, `gha`, `setup` and `bench`, as every ops
             // command (ops assumption 2; gha's and setup's apt, /srv and
             // the configs).
-            Command::Docker { .. }
+            Command::Docker(_)
             | Command::ValidateConfig { .. }
             | Command::Branch { .. }
             | Command::BranchSandbox { .. }
             | Command::Update(_)
-            | Command::Edit { .. }
+            | Command::Edit(_)
             | Command::Fact
             | Command::Motd(_)
             | Command::SelfUpdate { .. }
@@ -679,12 +742,12 @@ impl Command {
             | Command::ReinstallVenv
             | Command::ReinstallPython
             | Command::ReinstallFacts
-            | Command::Announcements { .. }
+            | Command::Announcements(_)
             | Command::Restore(_)
             | Command::Bench
             // The installing forms write the shells' system directories
             // (completion spec, assumption 4).
-            | Command::Completion {
+            | Command::Completion(CompletionGroup::Completion {
                 command:
                     None
                     | Some(
@@ -693,7 +756,7 @@ impl Command {
                         | CompletionCommand::Fish
                         | CompletionCommand::Install { .. },
                     ),
-            } => true,
+            }) => true,
         }
     }
 }
@@ -931,12 +994,47 @@ fn start() -> RunEnd {
 /// sb's tree for a completion request: the tag completer on `install`'s
 /// tags (completion spec, "Tags for `sb install`"). Added here, not in
 /// `InstallArgs`: the completer reads ansible's cache, so sb-ansible can't
-/// depend on it.
+/// depend on it. `install`'s arguments are deferred (`Command`), so the
+/// completer is added where they are: its deferred step is replaced
+/// (`Command::defer`,
+/// <https://docs.rs/clap/4.6.7/clap/struct.Command.html#method.defer>)
+/// by [`install_with_completer`].
 fn completion_tree() -> clap::Command {
-    use sb_completion::tags;
-    verbose::with_flags(Cli::command()).mut_subcommand(tags::INSTALL, |install| {
-        install.mut_arg(tags::TAGS, |arg| arg.add(tags::completer(Cli::command)))
+    verbose::with_flags(Cli::command()).mut_subcommand(sb_completion::tags::INSTALL, |install| {
+        install.defer(install_with_completer)
     })
+}
+
+/// What the derive defers for `install`, a newtype variant: the whole
+/// `Args::augment_args` of `InstallArgs` (clap's derive reference,
+/// `defer`: <https://docs.rs/clap/4.6.7/clap/_derive/index.html#command-attributes>),
+/// then the completer on its tags.
+fn install_with_completer(install: clap::Command) -> clap::Command {
+    use clap::Args as _;
+    use sb_completion::tags;
+    sb_ansible::InstallArgs::augment_args(install)
+        .mut_arg(tags::TAGS, |arg| arg.add(tags::completer(Cli::command)))
+}
+
+/// `cmd`'s own arguments, a deferred command's (`Command`) included, for
+/// the tests that walk the tree: read from a copy built alone, as
+/// cli-core's help reads them (`Command::build`, which clap's docs ask
+/// for before inspecting deferred arguments:
+/// <https://docs.rs/clap/4.6.7/clap/_derive/index.html#command-attributes>),
+/// clap's help flag left out. A command with subcommands is read as it
+/// is: no group is deferred (`DockerGroup`).
+#[cfg(test)]
+fn own_arguments(cmd: &clap::Command) -> Vec<clap::Arg> {
+    if cmd.has_subcommands() {
+        return cmd.get_arguments().cloned().collect();
+    }
+    let mut built = cmd.clone();
+    built.build();
+    built
+        .get_arguments()
+        .filter(|a| !(a.get_id() == "help" && matches!(a.get_action(), clap::ArgAction::Help)))
+        .cloned()
+        .collect()
 }
 
 /// The theme file's choice (`SB_CONFIG`, else
@@ -1344,10 +1442,10 @@ fn run(command: &Command, shutdown: &Shutdown, log: Option<&RunLog>) -> anyhow::
                 log,
             )?;
         }
-        Command::Edit {
+        Command::Edit(EditGroup::Edit {
             command,
             no_edit_again,
-        } => match command {
+        }) => match command {
             Some(command) => edit::edit(command.file(), no_edit_again, shutdown, log)?,
             None => edit::pick(no_edit_again, shutdown, log)?,
         },
@@ -1360,23 +1458,25 @@ fn run(command: &Command, shutdown: &Shutdown, log: Option<&RunLog>) -> anyhow::
         Command::ReinstallVenv => python_env::reinstall_venv(shutdown, log)?,
         Command::ReinstallPython => python_env::reinstall_python(shutdown, log)?,
         Command::ReinstallFacts => python_env::reinstall_facts(shutdown, log)?,
-        Command::Announcements { ref command } => match command {
-            None => announcements::announcements(shutdown, log)?,
-            Some(AnnouncementsCommand::Preview {
-                since,
-                repo,
-                run_migrations,
-            }) => announcements::preview(
-                since,
-                repo.map(RepoArg::checkout),
-                *run_migrations,
-                shutdown,
-                log,
-            )?,
-            Some(AnnouncementsCommand::Check { file, repo }) => {
-                announcements::check(file.as_deref(), repo.map(RepoArg::checkout), shutdown)?;
+        Command::Announcements(AnnouncementsGroup::Announcements { ref command }) => {
+            match command {
+                None => announcements::announcements(shutdown, log)?,
+                Some(AnnouncementsCommand::Preview {
+                    since,
+                    repo,
+                    run_migrations,
+                }) => announcements::preview(
+                    since,
+                    repo.map(RepoArg::checkout),
+                    *run_migrations,
+                    shutdown,
+                    log,
+                )?,
+                Some(AnnouncementsCommand::Check { file, repo }) => {
+                    announcements::check(file.as_deref(), repo.map(RepoArg::checkout), shutdown)?;
+                }
             }
-        },
+        }
         Command::Restore(ref args) => restore::restore(args, shutdown)?,
         Command::Bench => bench::bench(shutdown, log)?,
         Command::SelfUpdate {
@@ -1390,18 +1490,18 @@ fn run(command: &Command, shutdown: &Shutdown, log: Option<&RunLog>) -> anyhow::
         Command::Diag => ansible::diag(shutdown)?,
         Command::Install(ref args) => ansible::install(args, shutdown, log)?,
         Command::List(ref args) => ansible::list(args, shutdown, log)?,
-        Command::Docker {
+        Command::Docker(DockerGroup::Docker {
             command: DockerCommand::Ps { json },
-        } => docker_ps(json, shutdown)?,
-        Command::Docker {
+        }) => docker_ps(json, shutdown)?,
+        Command::Docker(DockerGroup::Docker {
             command: DockerCommand::Start,
-        } => docker_control(command.name(), &Control::Start, shutdown, log)?,
-        Command::Docker {
+        }) => docker_control(command.name(), &Control::Start, shutdown, log)?,
+        Command::Docker(DockerGroup::Docker {
             command: DockerCommand::Stop { ref ignore },
-        } => docker_control(command.name(), &Control::Stop(ignore), shutdown, log)?,
-        Command::Docker {
+        }) => docker_control(command.name(), &Control::Stop(ignore), shutdown, log)?,
+        Command::Docker(DockerGroup::Docker {
             command: DockerCommand::Restart { ref ignore },
-        } => docker_control(command.name(), &Control::Restart(ignore), shutdown, log)?,
+        }) => docker_control(command.name(), &Control::Restart(ignore), shutdown, log)?,
         Command::Version { json } => {
             let info = BuildInfo::current(env!("CARGO_PKG_VERSION"));
             let mut out = tail::Tracked::stdout(std::io::stdout().lock());
@@ -1417,7 +1517,9 @@ fn run(command: &Command, shutdown: &Shutdown, log: Option<&RunLog>) -> anyhow::
             // exit and be ignored (exit 0, not 141).
             out.flush().map_err(exit::output_error)?;
         }
-        Command::Completion { command } => completion::completion(command, shutdown)?,
+        Command::Completion(CompletionGroup::Completion { command }) => {
+            completion::completion(command, shutdown)?;
+        }
     }
     Ok(())
 }
@@ -1711,7 +1813,10 @@ mod tests {
         fn walk(cmd: &clap::Command, path: &str, seen: &mut usize) {
             if cmd.has_subcommands() && !cmd.is_disable_help_subcommand_set() {
                 *seen += 1;
-                let positionals: Vec<_> = cmd.get_positionals().map(clap::Arg::get_id).collect();
+                let positionals: Vec<_> = own_arguments(cmd)
+                    .into_iter()
+                    .filter(clap::Arg::is_positional)
+                    .collect();
                 assert!(positionals.is_empty(), "{path}: {positionals:?}");
                 assert!(!cmd.is_allow_external_subcommands_set(), "{path}");
             }
@@ -1736,7 +1841,7 @@ mod tests {
         fn lines(cmd: &clap::Command, path: &[String], out: &mut Vec<Vec<String>>) {
             let mut words: Vec<Vec<String>> =
                 vec![vec![], vec!["x".into()], vec!["x".into(), "y".into()]];
-            for arg in cmd.get_arguments() {
+            for arg in own_arguments(cmd) {
                 let takes = arg.get_num_args().is_none_or(|n| n.takes_values())
                     && arg.get_action().takes_values();
                 let value = arg
@@ -1894,6 +1999,114 @@ mod tests {
         assert!(styled(theme::Profile::TrueColor));
     }
 
+    /// The tree's commands by path, outermost first, with each one.
+    fn commands(cmd: &clap::Command) -> Vec<(String, &clap::Command)> {
+        fn walk<'a>(
+            cmd: &'a clap::Command,
+            path: &str,
+            out: &mut Vec<(String, &'a clap::Command)>,
+        ) {
+            out.push((path.to_owned(), cmd));
+            for sub in cmd.get_subcommands() {
+                walk(sub, &format!("{path} {}", sub.get_name()), out);
+            }
+        }
+        let mut out = Vec::new();
+        walk(cmd, cmd.get_name(), &mut out);
+        out
+    }
+
+    /// What a command shows of itself but its arguments: its texts, its
+    /// aliases, whether it is hidden and shown alone.
+    fn described(cmd: &clap::Command) -> String {
+        let text = |text: Option<&clap::builder::StyledStr>| text.map(ToString::to_string);
+        format!(
+            "{:?}",
+            (
+                [
+                    text(cmd.get_about()),
+                    text(cmd.get_long_about()),
+                    text(cmd.get_before_help()),
+                    text(cmd.get_before_long_help()),
+                    text(cmd.get_after_help()),
+                    text(cmd.get_after_long_help()),
+                ],
+                cmd.get_all_aliases().collect::<Vec<_>>(),
+                cmd.is_hide_set(),
+                cmd.is_arg_required_else_help_set(),
+            )
+        )
+    }
+
+    /// A deferred command's build adds its arguments and nothing else: no
+    /// `Args` type's doc comment or attribute replaces the variant's texts
+    /// (clap applies those after the variant's: the derive reference,
+    /// `defer`), so the parent's help, the completion descriptions and the
+    /// command's own help all read the variant's.
+    #[test]
+    fn a_deferred_build_adds_only_arguments() {
+        for tree in [real_tree(theme::Profile::Ascii), completion_tree()] {
+            for (path, cmd) in commands(&tree) {
+                let mut built = cmd.clone();
+                built.build();
+                assert_eq!(described(&built), described(cmd), "{path}");
+            }
+        }
+    }
+
+    /// Every group's subcommands are in the tree before any build (each
+    /// group is an enum of its own without `defer`, `DockerGroup`): help
+    /// lays each out, `verbose` reaches `docker start`, and the error
+    /// lines' suggestions read their names.
+    #[test]
+    fn groups_are_registered_at_once() {
+        let unbuilt = real_tree(theme::Profile::Ascii);
+        let mut built = real_tree(theme::Profile::Ascii);
+        built.build();
+        let names = |cmd: &clap::Command| -> Vec<String> {
+            cmd.get_subcommands()
+                .map(|sub| sub.get_name().to_owned())
+                .filter(|name| name != "help")
+                .collect()
+        };
+        let unbuilt: Vec<(String, Vec<String>)> = commands(&unbuilt)
+            .into_iter()
+            .map(|(path, cmd)| (path, names(cmd)))
+            .collect();
+        let built: Vec<(String, Vec<String>)> = commands(&built)
+            .into_iter()
+            .filter(|(path, _)| path != "sb help" && !path.starts_with("sb help "))
+            .map(|(path, cmd)| (path, names(cmd)))
+            .collect();
+        assert_eq!(unbuilt, built);
+        assert!(unbuilt.iter().any(|(path, _)| path == "sb docker stop"));
+    }
+
+    /// The completion tree's `install` takes the real tree's arguments:
+    /// its deferred step is replaced to add the tag completer
+    /// (`install_with_completer`), so it must stay the derive's. In any
+    /// order: `mut_arg` moves the tags last, as it did before.
+    #[test]
+    fn the_completion_trees_install_has_the_real_arguments() {
+        let shape = |tree: &clap::Command| -> std::collections::BTreeSet<String> {
+            own_arguments(
+                tree.find_subcommand(sb_completion::tags::INSTALL)
+                    .expect("install"),
+            )
+            .iter()
+            .map(|a| {
+                format!(
+                    "{:?}",
+                    (a.get_id(), a.get_short(), a.get_long(), a.get_help())
+                )
+            })
+            .collect()
+        };
+        let real = shape(&real_tree(theme::Profile::Ascii));
+        assert!(real.len() > 3, "{real:?}");
+        assert_eq!(shape(&completion_tree()), real);
+    }
+
     /// The pre-pass's tree has no `--force-update`: a line that gives it
     /// must fail there, not read it as a value, so `self-update` takes no
     /// positional (clap reads an unknown flag as a value only for a
@@ -1902,7 +2115,9 @@ mod tests {
     fn self_update_takes_no_positional() {
         let tree = real_tree(theme::Profile::Ascii);
         let update = tree.find_subcommand("self-update").expect("self-update");
-        let positionals: Vec<_> = update.get_positionals().map(clap::Arg::get_id).collect();
+        let arguments = own_arguments(update);
+        assert!(arguments.iter().any(|a| a.get_long() == Some("yes")));
+        let positionals: Vec<_> = arguments.iter().filter(|a| a.is_positional()).collect();
         assert!(positionals.is_empty(), "{positionals:?}");
         assert!(!update.is_allow_external_subcommands_set());
     }
@@ -2171,9 +2386,9 @@ mod tests {
     #[test]
     fn ignore_splits_on_commas_and_repeats() {
         let ignored = |args: &[&str]| match Cli::try_parse_from(args).expect("parses").command {
-            Command::Docker {
+            Command::Docker(DockerGroup::Docker {
                 command: DockerCommand::Stop { ignore } | DockerCommand::Restart { ignore },
-            } => ignore,
+            }) => ignore,
             _ => panic!("not stop or restart: {args:?}"),
         };
         assert_eq!(
@@ -2204,23 +2419,23 @@ mod tests {
     #[test]
     fn the_log_gets_the_command_name_not_its_arguments() {
         assert_eq!(Command::Version { json: true }.name(), "version");
-        let ps = Command::Docker {
+        let ps = Command::Docker(DockerGroup::Docker {
             command: DockerCommand::Ps { json: true },
-        };
+        });
         assert_eq!(ps.name(), "docker ps");
         // The ignored names never reach the log's name.
         let secret = || vec!["secret-name".to_string()];
-        let stop = Command::Docker {
+        let stop = Command::Docker(DockerGroup::Docker {
             command: DockerCommand::Stop { ignore: secret() },
-        };
+        });
         assert_eq!(stop.name(), "docker stop");
-        let restart = Command::Docker {
+        let restart = Command::Docker(DockerGroup::Docker {
             command: DockerCommand::Restart { ignore: secret() },
-        };
+        });
         assert_eq!(restart.name(), "docker restart");
-        let start = Command::Docker {
+        let start = Command::Docker(DockerGroup::Docker {
             command: DockerCommand::Start,
-        };
+        });
         assert_eq!(start.name(), "docker start");
     }
 
@@ -2375,10 +2590,10 @@ mod tests {
             let parsed = Cli::try_parse_from(["sb", "edit", name])
                 .unwrap_or_else(|err| panic!("{name}: {err}"))
                 .command;
-            let Command::Edit {
+            let Command::Edit(EditGroup::Edit {
                 command: Some(command),
                 ..
-            } = parsed
+            }) = parsed
             else {
                 panic!("{name}: not an edit subcommand");
             };
@@ -2394,10 +2609,10 @@ mod tests {
             let parsed = Cli::try_parse_from(["sb", "edit", file.command()])
                 .expect("parses")
                 .command;
-            let Command::Edit {
+            let Command::Edit(EditGroup::Edit {
                 command: Some(command),
                 ..
-            } = parsed
+            }) = parsed
             else {
                 panic!("{}: not an edit subcommand", file.command());
             };
@@ -2409,9 +2624,11 @@ mod tests {
     /// the picker as `edit`.
     #[test]
     fn edit_needs_root_and_logs_its_file() {
-        let edit = |command| Command::Edit {
-            command,
-            no_edit_again: false,
+        let edit = |command| {
+            Command::Edit(EditGroup::Edit {
+                command,
+                no_edit_again: false,
+            })
         };
         assert!(edit(Some(EditCommand::Settings)).needs_root());
         assert!(edit(None).needs_root());
@@ -2566,9 +2783,9 @@ mod tests {
     /// `docker ps` needs root (cli-core decision 3).
     #[test]
     fn docker_needs_root() {
-        let ps = Command::Docker {
+        let ps = Command::Docker(DockerGroup::Docker {
             command: DockerCommand::Ps { json: false },
-        };
+        });
         assert!(ps.needs_root());
     }
 

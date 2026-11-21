@@ -64,11 +64,12 @@
 //! help texts, `hide_default_value`, `last` positionals, visible aliases)
 //! are not shown.
 
+use std::borrow::Cow;
 use std::fmt::Write as _;
 
 use anstyle::Style;
 use clap::builder::StyledStr;
-use clap::{Arg, Command};
+use clap::{Arg, ArgAction, Command};
 use unicode_width::UnicodeWidthStr;
 
 use crate::theme::{Role, Theme};
@@ -193,7 +194,9 @@ fn wrapped(line: &str, width: usize) -> Vec<String> {
 /// command lists the help flag and every inherited global among its own
 /// arguments, so fang's `[--flags]` rule (own flags only) couldn't tell them
 /// apart without comparing each command with its parent, which costs as
-/// much as passing the inherited flags down here.
+/// much as passing the inherited flags down here. Only a command without
+/// subcommands is read from a copy built alone, which inherits nothing,
+/// for its deferred arguments ([`built`]).
 #[must_use]
 pub fn apply(cmd: Command, theme: &Theme, colour: bool, width: usize) -> Command {
     let path = cmd.get_name().to_string();
@@ -256,16 +259,22 @@ fn apply_at(
     shown: Option<&[String]>,
 ) -> Command {
     let refs: Vec<&Arg> = inherited.iter().collect();
-    // A command with no about starts at its USAGE heading's blank line:
-    // still one blank line, as fang's.
-    let led = |long| {
-        let text = render(&cmd, path, &refs, look, long);
-        format!("{LEAD}{}", text.trim_start_matches('\n'))
+    let (text, long, below) = {
+        let view = built(&cmd);
+        // A command with no about starts at its USAGE heading's blank line:
+        // still one blank line, as fang's.
+        let led = |long| {
+            let text = render(&view, path, &refs, look, long);
+            format!("{LEAD}{}", text.trim_start_matches('\n'))
+        };
+        let mut below = inherited.to_vec();
+        below.extend(own_arguments(&view).filter(|a| a.is_global_set()).cloned());
+        (
+            led(false),
+            has_long_help(&view, &refs).then(|| led(true)),
+            below,
+        )
     };
-    let text = led(false);
-    let long = has_long_help(&cmd, &refs).then(|| led(true));
-    let mut below = inherited.to_vec();
-    below.extend(cmd.get_arguments().filter(|a| a.is_global_set()).cloned());
     let names: Vec<String> = cmd
         .get_subcommands()
         .map(|c| c.get_name().to_string())
@@ -301,6 +310,44 @@ fn apply_at(
         cmd = cmd.mut_subcommand(&name, |sub| apply_at(sub, &sub_path, &below, look, None));
     }
     cmd
+}
+
+/// `cmd` as clap builds it, to read its arguments from: a command whose
+/// arguments clap's derive defers (`#[command(defer = true)]`) has none
+/// until clap builds it, and clap's docs say to call `Command::build`
+/// before inspecting deferred arguments
+/// (<https://docs.rs/clap/4.6.7/clap/_derive/index.html#command-attributes>).
+/// A copy is built, alone, and only for a command without subcommands:
+/// the tree itself stays unbuilt for the parse, which builds the commands
+/// a line selects in their place (a command built alone gets none of its
+/// parent's settings or global flags), and the derive builds a deferred
+/// command's subcommands with its arguments, so a command that has
+/// subcommands isn't deferred (sb's groups are enums of their own,
+/// flattened, which keep their own `defer`). Built alone, a copy lists
+/// clap's help flag among its arguments ([`own_arguments`] leaves it
+/// out) and no inherited flag. A built command lays out as the same
+/// command unbuilt: help reads no setting the build changes (it sets
+/// `false`'s and `0`'s defaults on switches and counts, which a flag's
+/// row doesn't show; it would set `true` on an `ArgAction::SetFalse`
+/// flag, which sb has none of). In a debug build, clap's checks on the
+/// copy would refuse an argument that names an inherited one
+/// (`conflicts_with` a parent's global): none does.
+fn built(cmd: &Command) -> Cow<'_, Command> {
+    if cmd.has_subcommands() {
+        return Cow::Borrowed(cmd);
+    }
+    let mut copy = cmd.clone();
+    copy.build();
+    Cow::Owned(copy)
+}
+
+/// `cmd`'s own arguments: clap's help flag, which a built command lists
+/// (`clap_builder` 4.6.7 `Command::_check_help_and_version`), left out.
+/// Why not `disable_help_flag` on the copy: [`render`] reads that setting
+/// to draw the `-h --help` row.
+fn own_arguments(cmd: &Command) -> impl Iterator<Item = &Arg> {
+    cmd.get_arguments()
+        .filter(|a| !(a.get_id() == "help" && matches!(a.get_action(), ArgAction::Help)))
 }
 
 /// Whether `cmd` has a long text that `--help` shows and `-h` doesn't: a
@@ -340,10 +387,7 @@ fn hint(cmd: &Command) -> String {
             let _ = write!(hint, " [{name}]");
         }
     }
-    if cmd
-        .get_arguments()
-        .any(|a| !a.is_positional() && !a.is_hide_set())
-    {
+    if own_arguments(cmd).any(|a| !a.is_positional() && !a.is_hide_set()) {
         hint.push_str(" [--flags]");
     }
     hint
@@ -352,7 +396,7 @@ fn hint(cmd: &Command) -> String {
 /// The flags `cmd`'s help lists: its own and `inherited`, positionals and
 /// hidden ones left out.
 fn shown_flags<'a>(cmd: &'a Command, inherited: &'a [&'a Arg]) -> impl Iterator<Item = &'a Arg> {
-    cmd.get_arguments()
+    own_arguments(cmd)
         .chain(inherited.iter().copied())
         .filter(|a| !a.is_positional() && !a.is_hide_set())
 }
@@ -452,7 +496,7 @@ fn render(cmd: &Command, path: &str, inherited: &[&Arg], look: &Look<'_>, long: 
         .filter(|c| !c.is_hide_set())
         .map(|c| {
             let about = c.get_about().map_or_default(ToString::to_string);
-            (c.get_name().to_string(), hint(c), about)
+            (c.get_name().to_string(), hint(&built(c)), about)
         })
         .collect();
     if has_help_subcommand(cmd) {
@@ -740,29 +784,92 @@ mod tests {
                     .default_value("auto")
                     .help("Controls when to use color"),
             )
+            .subcommand(version_args(
+                Command::new("version").about("Print Saltbox CLI version"),
+            ))
+            .subcommand(install_args(
+                Command::new("install")
+                    .about("Runs Ansible playbooks with specified tags")
+                    .long_about("Runs Ansible playbooks.\n\nTags select what runs."),
+            ))
+            .subcommand(Command::new("secret").about("Hidden").hide(true))
+    }
+
+    fn version_args(version: Command) -> Command {
+        version.arg(
+            Arg::new("json")
+                .long("json")
+                .action(ArgAction::SetTrue)
+                .help("Print machine-readable version information"),
+        )
+    }
+
+    fn install_args(install: Command) -> Command {
+        install
+            .arg(Arg::new("tags").value_name("tags").num_args(0..))
+            .arg(
+                Arg::new("skip-tags")
+                    .short('s')
+                    .long("skip-tags")
+                    .help("Tags to skip"),
+            )
+    }
+
+    /// [`sb`] with `version`'s and `install`'s arguments deferred until
+    /// clap builds them (`Command::defer`, what clap's derive does with
+    /// `#[command(defer = true)]`).
+    fn deferred() -> Command {
+        Command::new("sb")
+            .about("Saltbox CLI")
+            .arg(
+                Arg::new("color")
+                    .long("color")
+                    .global(true)
+                    .default_value("auto")
+                    .help("Controls when to use color"),
+            )
             .subcommand(
                 Command::new("version")
                     .about("Print Saltbox CLI version")
-                    .arg(
-                        Arg::new("json")
-                            .long("json")
-                            .action(ArgAction::SetTrue)
-                            .help("Print machine-readable version information"),
-                    ),
+                    .defer(version_args),
             )
             .subcommand(
                 Command::new("install")
                     .about("Runs Ansible playbooks with specified tags")
                     .long_about("Runs Ansible playbooks.\n\nTags select what runs.")
-                    .arg(Arg::new("tags").value_name("tags").num_args(0..))
-                    .arg(
-                        Arg::new("skip-tags")
-                            .short('s')
-                            .long("skip-tags")
-                            .help("Tags to skip"),
-                    ),
+                    .defer(install_args),
             )
             .subcommand(Command::new("secret").about("Hidden").hide(true))
+    }
+
+    /// A command whose arguments are deferred shows the help it would show
+    /// with them built at once: the parent's hints and the command's own
+    /// flags, through `apply` and `apply_to`, for `-h`, `--help` and `help`.
+    #[test]
+    fn deferred_arguments_read_as_built_ones() {
+        let lines: &[&[&str]] = &[
+            &["sb", "--help"],
+            &["sb", "-h"],
+            &["sb", "install", "--help"],
+            &["sb", "install", "-h"],
+            &["sb", "help", "install"],
+            &["sb", "version", "--help"],
+        ];
+        for line in lines {
+            assert_eq!(shown(deferred(), line), shown(sb(), line), "{line:?}");
+            let shown_to = |cmd: Command| {
+                let path: Vec<String> = line[1..]
+                    .iter()
+                    .filter(|word| !word.starts_with('-') && **word != "help")
+                    .map(ToString::to_string)
+                    .collect();
+                apply_to(cmd, &Theme::plain(), false, MAX_WIDTH, &path)
+                    .try_get_matches_from(*line)
+                    .expect_err("help is shown as an error")
+                    .to_string()
+            };
+            assert_eq!(shown_to(deferred()), shown_to(sb()), "{line:?}");
+        }
     }
 
     fn look(theme: &Theme, colour: bool, width: usize) -> Look<'_> {
