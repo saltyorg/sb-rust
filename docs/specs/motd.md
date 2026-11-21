@@ -231,7 +231,7 @@ mount points.
 | Uptime | `procfs::Uptime`, formatted as procps' `uptime -p` without `up ` (forms pinned per release, below) | `uptime -p` |
 | Load Averages | `procfs::LoadAverage`, two decimals, as `/proc/loadavg` prints them | `/proc/loadavg`, then `uptime` |
 | Processes | `procfs::process::all_processes()` counted | numeric `/proc` dirs, then `ps ax` |
-| CPU | `procfs::CpuInfo`: the model with ` N-Core…` stripped, sockets, cores and threads (`motd/info.go:644-783`) | `/proc/cpuinfo` |
+| CPU | `/proc/cpuinfo` read in one pass as `procfs::CpuInfo` reads it, keeping the five fields the line uses (*amended 2026-11-21, performance research round 5: `CpuInfo` keeps every field of every processor, 4 M instructions at a login on many threads*): the model with ` N-Core…` stripped, sockets, cores and threads (`motd/info.go:644-783`) | `/proc/cpuinfo` |
 | GPU | sysfs `/sys/bus/pci/devices/*/{class,vendor,device,revision}`, classes 0300, 0302 and 0380, names from the host's `/usr/share/misc/pci.ids` through sb's own parser (decision 2), sb-go's BMC exclusions (`motd/info.go:780-790`) | `lspci` |
 | Memory Usage | `procfs::Meminfo`: MemAvailable, or else Free+Cached+Buffers; sb-go's `xG used, free, cached, available, total` | `/proc/meminfo` |
 | Package Status | update-notifier's `updates-available` file, then `/usr/lib/update-notifier/apt-check --human-readable --no-esm-messages`, then `apt list --upgradable` (children, 5 s each; `motd/info.go:372-570`) | same |
@@ -657,7 +657,7 @@ Cargo.lock.
 | reqwest (rustls) through `sb_config::http::Http` | 0.13.5 | the thin HTTP clients (map policy 3) | https://docs.rs/reqwest/0.13.5/reqwest/ | yes, in sb |
 | serde, serde_json | 1.0.154 | every JSON API, loginctl's JSON | https://docs.rs/serde_json/1.0.154/serde_json/ | yes, in sb |
 | quick-xml | 0.42.0 | rTorrent's XML-RPC: write `methodCall`, read `methodResponse` (int, i4, i8, string, array, fault) | https://docs.rs/quick-xml/0.42.0/quick_xml/ | yes |
-| procfs (`default-features = false`) | 0.18.0 | meminfo, cpuinfo, loadavg, uptime, the process list, mountinfo; 23.7M downloads in 90 days | https://docs.rs/procfs/0.18.0/procfs/ | **no** |
+| procfs (`default-features = false`) | 0.18.0 | meminfo, loadavg, uptime, the process list, mountinfo (cpuinfo in the tests, the scan's reference); 23.7M downloads in 90 days | https://docs.rs/procfs/0.18.0/procfs/ | **no** |
 | rustix (`system`, `fs`) | 1.1.6 | `uname`, `statvfs` | https://docs.rs/rustix/1.1.6/rustix/system/fn.uname.html, https://docs.rs/rustix/1.1.6/rustix/fs/fn.statvfs.html | yes, in sb |
 | shlex | 2.0.1 | `--banner-file-toilet` args | https://docs.rs/shlex/2.0.1/shlex/fn.split.html | yes |
 | regex | 1.13.1 | `--share`'s candidates for IP addresses, each confirmed by `std::net::IpAddr`'s parser | https://docs.rs/regex/1.13.1/regex/ | yes, in sb |

@@ -4,7 +4,9 @@
 //! (<https://docs.rs/procfs/0.18.0/procfs/>): each `*_here` reads the
 //! host's file with procfs's `Current`, and the formatting takes procfs's
 //! types, which the tests read from fixtures with `FromRead`
-//! (<https://docs.rs/procfs/0.18.0/procfs/trait.FromRead.html>).
+//! (<https://docs.rs/procfs/0.18.0/procfs/trait.FromRead.html>). CPU
+//! reads /proc/cpuinfo's text in one pass instead (`Topology::scan`, its
+//! "why not procfs").
 
 use serde_json::json;
 
@@ -13,7 +15,7 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::time::Duration;
 
-use procfs::{CpuInfo, Current, LoadAverage, Meminfo, Uptime};
+use procfs::{Current, LoadAverage, Meminfo, Uptime};
 
 use crate::Paint;
 use crate::text::one_line;
@@ -411,45 +413,33 @@ pub fn processes_here(paint: &Paint) -> Out {
 /// distinct (socket, `core id`) pairs, else the threads; threads are the
 /// processors. Without a model name it is `Not available`.
 /// Its `--json` value `{model, sockets, cores, threads}`, the
-/// cores and threads per socket as the line counts them.
+/// cores and threads per socket as the line counts them. `info` is
+/// /proc/cpuinfo's text ([`Topology::scan`]).
 #[must_use]
-pub fn cpu_out(info: Option<&CpuInfo>, paint: &Paint) -> Out {
+pub fn cpu_out(info: Option<&[u8]>, paint: &Paint) -> Out {
     let Some(info) = info else {
         return Out::error(NOT_AVAILABLE.to_string());
     };
-    let field = |cpu: usize, key: &str| info.get_field(cpu, key);
-    let cpus = 0..info.num_cores();
-    let threads = cpus
-        .clone()
-        .filter(|&cpu| field(cpu, "processor").is_some())
-        .count();
-    // The ids as text, as sb-go counts them (procfs's `physical_id`
-    // would parse them).
-    let sockets = cpus
-        .clone()
-        .filter_map(|cpu| field(cpu, "physical id"))
-        .collect::<HashSet<_>>()
-        .len()
-        .max(1);
-    // The last one given wins, as sb-go's line scan keeps the last.
-    let model = cpus.clone().rev().find_map(|cpu| info.model_name(cpu));
-    let cores_per_socket = cpus
-        .clone()
-        .rev()
-        .find_map(|cpu| field(cpu, "cpu cores")?.parse::<i64>().ok())
+    let found = Topology::scan(info);
+    let threads = found.threads;
+    // The ids as text, as sb-go counts them.
+    let sockets = found.sockets.len().max(1);
+    let cores_per_socket = found
+        .cores
         .and_then(|cores| usize::try_from(cores).ok())
         .filter(|&cores| cores > 0);
     let cores = cores_per_socket.map_or_else(
         || {
-            let pairs = cpus
-                .filter_map(|cpu| Some((field(cpu, "physical id")?, field(cpu, "core id")?)))
-                .collect::<HashSet<_>>()
-                .len();
+            let pairs = found.pairs.len();
             if pairs == 0 { threads } else { pairs }
         },
         |per_socket| per_socket * sockets,
     );
-    let Some(model) = model.map(model_name).filter(|model| !model.is_empty()) else {
+    let Some(model) = found
+        .model
+        .map(model_name)
+        .filter(|model| !model.is_empty())
+    else {
         return Out::error(NOT_AVAILABLE.to_string());
     };
     // sb-go's one-socket and many-socket forms are the same with one
@@ -469,6 +459,117 @@ pub fn cpu_out(info: Option<&CpuInfo>, paint: &Paint) -> Out {
         line,
         json!({ "model": model, "sockets": sockets, "cores": cores, "threads": threads }),
     )
+}
+
+/// What the CPU line reads of /proc/cpuinfo, over its processors'
+/// blocks.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Topology<'a> {
+    /// The blocks with a `processor` field.
+    threads: usize,
+    /// The distinct `physical id`s.
+    sockets: HashSet<&'a str>,
+    /// The distinct (`physical id`, `core id`) pairs.
+    pairs: HashSet<(&'a str, &'a str)>,
+    /// The last block's `model name` that has one (sb-go's line scan
+    /// keeps the last).
+    model: Option<&'a str>,
+    /// The last block's `cpu cores` that reads as a number.
+    cores: Option<i64>,
+}
+
+/// One block's fields the line reads, each the block's last.
+#[derive(Debug, Default)]
+struct Block<'a> {
+    processor: bool,
+    physical: Option<&'a str>,
+    core: Option<&'a str>,
+    model: Option<&'a str>,
+    cores: Option<&'a str>,
+}
+
+impl<'a> Topology<'a> {
+    /// `text` read in one pass as procfs's `CpuInfo` reads it
+    /// (<https://docs.rs/procfs-core/0.18.0/src/procfs_core/cpuinfo.rs.html>):
+    /// lines as `BufRead::lines` gives them, one that isn't UTF-8
+    /// skipped; a block's fields from its first `processor` line on, each
+    /// `key: value` split at the first two colons and trimmed, the last
+    /// of a key kept; a block ending at an empty line. Why not procfs's
+    /// `CpuInfo`: it keeps every field of every processor in maps, then
+    /// compares them all to find the common ones, where the line needs
+    /// five: 0.8 M instructions at a login on 12 threads, 4 M and 0.5 ms
+    /// on many, before Services and Docker start (performance research,
+    /// round 5). A test holds the two to the same answers. Nor sysinfo
+    /// (in sb through sb-host): its `physical_core_count` is the host's
+    /// total, with no socket count and no per-socket `cpu cores`, which
+    /// sb-go's line counts by.
+    fn scan(text: &'a [u8]) -> Self {
+        let mut found = Self::default();
+        // procfs's `map`: `Some` at the start and after a field, taken
+        // at an empty line, so a second empty line ends no block.
+        let mut open = true;
+        let mut found_first = false;
+        let mut block = Block::default();
+        for raw in text.split_inclusive(|&byte| byte == b'\n') {
+            let line = match raw.strip_suffix(b"\n") {
+                Some(line) => line.strip_suffix(b"\r").unwrap_or(line),
+                None => raw,
+            };
+            let Ok(line) = std::str::from_utf8(line) else {
+                continue;
+            };
+            if line.is_empty() {
+                if open {
+                    found.add(&std::mem::take(&mut block));
+                    open = false;
+                    found_first = false;
+                }
+                continue;
+            }
+            let mut parts = line.split(':');
+            let key = parts.next().unwrap_or_default().trim();
+            if !found_first && key == "processor" {
+                found_first = true;
+            }
+            if !found_first {
+                continue;
+            }
+            let Some(value) = parts.next() else {
+                continue;
+            };
+            let value = value.trim();
+            open = true;
+            match key {
+                "processor" => block.processor = true,
+                "physical id" => block.physical = Some(value),
+                "core id" => block.core = Some(value),
+                "model name" => block.model = Some(value),
+                "cpu cores" => block.cores = Some(value),
+                _ => {}
+            }
+        }
+        if open {
+            found.add(&block);
+        }
+        found
+    }
+
+    /// One block's fields counted.
+    fn add(&mut self, block: &Block<'a>) {
+        self.threads += usize::from(block.processor);
+        if let Some(physical) = block.physical {
+            self.sockets.insert(physical);
+            if let Some(core) = block.core {
+                self.pairs.insert((physical, core));
+            }
+        }
+        if block.model.is_some() {
+            self.model = block.model;
+        }
+        if let Some(cores) = block.cores.and_then(|cores| cores.parse::<i64>().ok()) {
+            self.cores = Some(cores);
+        }
+    }
 }
 
 /// The model as sb-go shows it: everything from the first ` N-Core` on
@@ -515,7 +616,10 @@ fn core_tail(raw: &str) -> Option<usize> {
 /// CPU on this host.
 #[must_use]
 pub fn cpu_here(paint: &Paint) -> Out {
-    cpu_out(current::<CpuInfo>("cpuinfo").as_ref(), paint)
+    let text = std::fs::read("/proc/cpuinfo")
+        .inspect_err(|err| tracing::warn!(file = "cpuinfo", "not read: {err}"))
+        .ok();
+    cpu_out(text.as_deref(), paint)
 }
 
 /// Memory Usage: sb-go's `U used, F free, C cached, A available, T total`
@@ -601,7 +705,7 @@ mod tests {
         processes_out(count, paint).text
     }
 
-    fn cpu(info: Option<&CpuInfo>, paint: &Paint) -> String {
+    fn cpu(info: Option<&[u8]>, paint: &Paint) -> String {
         cpu_out(info, paint).text
     }
 
@@ -617,6 +721,14 @@ mod tests {
             .join("tests/fixtures")
             .join(name);
         T::from_file(&path).unwrap_or_else(|err| panic!("{name}: {err}"))
+    }
+
+    /// A fixture under `tests/fixtures`, as bytes.
+    fn text(name: &str) -> Vec<u8> {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures")
+            .join(name);
+        std::fs::read(&path).unwrap_or_else(|err| panic!("{name}: {err}"))
     }
 
     fn painted() -> (Paint, sb_cli_core::theme::Theme) {
@@ -799,7 +911,7 @@ mod tests {
     #[test]
     fn cpu_matches_sb_go_on_the_fixtures() {
         let plain = Paint::plain();
-        let shown = |name| cpu(Some(&fixture::<CpuInfo>(name)), &plain);
+        let shown = |name| cpu(Some(&text(name)), &plain);
         assert_eq!(
             shown("cpuinfo-smt"),
             "AMD Ryzen 5 3600 (6 cores, 12 threads)"
@@ -825,7 +937,7 @@ mod tests {
     fn cpu_counts_are_in_the_value_colour() {
         let (paint, _) = painted();
         assert_eq!(
-            cpu(Some(&fixture::<CpuInfo>("cpuinfo-smt")), &paint),
+            cpu(Some(&text("cpuinfo-smt")), &paint),
             format!(
                 "AMD Ryzen 5 3600 ({} cores, {} threads)",
                 paint.value("6"),
@@ -833,7 +945,7 @@ mod tests {
             )
         );
         assert_eq!(
-            cpu(Some(&fixture::<CpuInfo>("cpuinfo-vm")), &paint),
+            cpu(Some(&text("cpuinfo-vm")), &paint),
             format!("QEMU Virtual CPU version 2.5+ ({} cores)", paint.value("4"))
         );
     }
@@ -848,7 +960,7 @@ mod tests {
                 "processor\t: {n}\nmodel name\t: Chip \x1b[2J4-Core X\nphysical id\t: {socket}\n{extra}\n\n"
             )
         };
-        let read = |text: String| CpuInfo::from_read(text.as_bytes()).unwrap();
+        let read = String::into_bytes;
         let two = read(format!(
             "{}{}",
             block(0, "0", "cpu cores\t: 2"),
@@ -883,6 +995,95 @@ mod tests {
             block(1, "0", "cpu cores\t: 4\ncore id\t: 0")
         ));
         assert_eq!(cpu(Some(&given), &plain), "Chip 4-Core X (4 cores)");
+    }
+
+    /// The fields the CPU line read through procfs's `CpuInfo` before the
+    /// scan: its answer for each.
+    fn reference(info: &procfs::CpuInfo) -> Topology<'_> {
+        let field = |cpu: usize, key: &str| info.get_field(cpu, key);
+        let cpus = 0..info.num_cores();
+        Topology {
+            threads: cpus
+                .clone()
+                .filter(|&cpu| field(cpu, "processor").is_some())
+                .count(),
+            sockets: cpus
+                .clone()
+                .filter_map(|cpu| field(cpu, "physical id"))
+                .collect(),
+            pairs: cpus
+                .clone()
+                .filter_map(|cpu| Some((field(cpu, "physical id")?, field(cpu, "core id")?)))
+                .collect(),
+            model: cpus.clone().rev().find_map(|cpu| info.model_name(cpu)),
+            cores: cpus
+                .rev()
+                .find_map(|cpu| field(cpu, "cpu cores")?.parse::<i64>().ok()),
+        }
+    }
+
+    /// The scan reads what procfs's `CpuInfo` reads, on the fixtures and
+    /// on every text of up to four lines of the pieces that matter: a
+    /// `processor` line with and without its colon, the fields the line
+    /// reads (repeated, unreadable), other fields, empty and blank lines,
+    /// CRLF, a line that isn't UTF-8, with and without a last newline.
+    #[test]
+    fn the_scan_reads_what_procfs_reads() {
+        use procfs::FromRead as _;
+        let pieces: [&[u8]; 13] = [
+            b"processor\t: 0",
+            b"processor",
+            b"physical id\t: 0",
+            b"physical id : 1",
+            b"core id\t: 1",
+            b"model name\t: A 4-Core",
+            b"model name: B",
+            b"cpu cores\t: 2",
+            b"cpu cores\t: x",
+            b"flags\t: a:b",
+            b"",
+            b"  ",
+            b"core id\t: 2\r\xff",
+        ];
+        let mut texts: Vec<Vec<u8>> = [
+            "cpuinfo-smt",
+            "cpuinfo-two-sockets",
+            "cpuinfo-vm",
+            "cpuinfo-core-ids",
+            "cpuinfo-no-model",
+        ]
+        .map(text)
+        .to_vec();
+        let mut last: Vec<Vec<Vec<u8>>> = vec![Vec::new()];
+        for _ in 0..4 {
+            last = last
+                .iter()
+                .flat_map(|lines| {
+                    pieces.iter().map(move |piece| {
+                        let mut lines = lines.clone();
+                        lines.push(piece.to_vec());
+                        lines
+                    })
+                })
+                .collect();
+            for lines in &last {
+                let joined = lines.join(&b"\n"[..]);
+                texts.push([&joined[..], b"\n"].concat());
+                texts.push(lines.join(&b"\r\n"[..]));
+                texts.push(joined);
+            }
+        }
+        texts.push(b"\r".to_vec());
+        texts.push(Vec::new());
+        for text in &texts {
+            let procfs = procfs::CpuInfo::from_read(&text[..]).expect("procfs reads it");
+            assert_eq!(
+                Topology::scan(text),
+                reference(&procfs),
+                "{:?}",
+                String::from_utf8_lossy(text)
+            );
+        }
     }
 
     #[test]
@@ -1017,8 +1218,12 @@ mod tests {
             "{memory}"
         );
         assert_eq!(
+            Topology::scan(&std::fs::read("/proc/cpuinfo").unwrap()),
+            reference(&procfs::CpuInfo::current().unwrap())
+        );
+        assert_eq!(
             cpu_here(&plain).text,
-            cpu(Some(&CpuInfo::current().unwrap()), &plain)
+            cpu(Some(&std::fs::read("/proc/cpuinfo").unwrap()), &plain)
         );
         // procps' parts, each `N unit`, or the bare `up` of 4.0.4's
         // exact minute.
@@ -1191,10 +1396,7 @@ UBUNTU_CODENAME=noble\n";
             })
         );
         assert_eq!(
-            value(cpu_out(
-                Some(&fixture::<CpuInfo>("cpuinfo-two-sockets")),
-                &plain
-            )),
+            value(cpu_out(Some(&text("cpuinfo-two-sockets")), &plain)),
             json!({"model": "Intel(R) Xeon(R) CPU E5-2680 v4 @ 2.40GHz", "sockets": 2, "cores": 4, "threads": 8})
         );
         let load = LoadAverage::from_read(&b"0.07 1.50 12.34 2/1234 5678\n"[..]).unwrap();
