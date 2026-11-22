@@ -56,6 +56,11 @@ struct World {
     completion: tempfile::TempDir,
     /// The refresh is given an executable that isn't there, so it fails.
     broken_completion: std::cell::Cell<bool>,
+    /// The physical cores the tag listings see (none: the host's).
+    cores: std::cell::Cell<Option<usize>>,
+    /// The run is interrupted (Ctrl-C) once every one of these files is
+    /// there, or after 30 s.
+    ctrl_c_once: std::cell::RefCell<Vec<PathBuf>>,
 }
 
 impl World {
@@ -74,6 +79,8 @@ impl World {
             interrupt_at_confirm: std::cell::Cell::new(false),
             completion: completion_root(),
             broken_completion: std::cell::Cell::new(false),
+            cores: std::cell::Cell::new(None),
+            ctrl_c_once: std::cell::RefCell::new(Vec::new()),
         }
     }
 
@@ -112,6 +119,35 @@ impl World {
             .collect()
     }
 
+    /// The stand-in `ansible-playbook`, on [`World::cores`] physical cores.
+    fn ansible(&self) -> Ansible {
+        let ansible = Ansible::with_program(self.host.stand_ins().join("ansible-playbook"));
+        match self.cores.get() {
+            Some(cores) => {
+                ansible.with_listings_at_once(std::num::NonZeroUsize::new(cores).expect("cores"))
+            }
+            None => ansible,
+        }
+    }
+
+    /// The Ctrl-C [`World::ctrl_c_once`] asks for, on `shutdown`: pressed
+    /// once its files are there (30 s at most), by a task of its own.
+    fn ctrl_c(&self, shutdown: &Shutdown) {
+        let waited = self.ctrl_c_once.take();
+        if !waited.is_empty() {
+            let shutdown = shutdown.clone();
+            drop(tokio::spawn(async move {
+                let deadline = std::time::Instant::now() + Duration::from_secs(30);
+                while !waited.iter().all(|file| file.exists())
+                    && std::time::Instant::now() < deadline
+                {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                shutdown.signalled(2);
+            }));
+        }
+    }
+
     /// update on the world with `args`, `terminal` as term-ui's rule
     /// gives it, the questions answered by `replies` in order (none left:
     /// no terminal; each question's text recorded), self-update as
@@ -144,7 +180,7 @@ impl World {
         let paths = [self.sb.tree.root.path().to_path_buf()];
         let python = self.sb.tree.env();
         let apt = self.host.apt();
-        let ansible = Ansible::with_program(self.host.stand_ins().join("ansible-playbook"));
+        let ansible = self.ansible();
         let settings = self.settings();
         let completion_paths = Paths::under(self.completion.path());
         let executable = Ok(self
@@ -176,6 +212,7 @@ impl World {
         };
         let term = indicatif::InMemoryTerm::new(100, 400);
         let shutdown = self_update.map_or_else(Shutdown::new, |update| update.shutdown.clone());
+        self.ctrl_c(&shutdown);
         let asked = Arc::new(Mutex::new(Vec::new()));
         let record = Arc::clone(&asked);
         let mut replies = replies.iter().copied();
@@ -407,9 +444,10 @@ const PIPED: [&str; 4] = [
     "--skip-self-update",
 ];
 
-/// Without a terminal and with every flag, sb-go's order: apt; Saltbox
-/// reset to master, its runtime (deadsnakes, venv, fact) and its tags
-/// cache rebuilt; the config permissions; Sandbox reset and its tags; the
+/// Without a terminal and with every flag, sb-go's order but the tags:
+/// apt; Saltbox reset to master and its runtime (deadsnakes, venv,
+/// fact); the config permissions; Sandbox reset; then both tags caches
+/// rebuilt, top-level steps after Sandbox's (decision 46); the
 /// announcements; validate-config's checks, each file validated.
 #[tokio::test]
 async fn piped_with_every_flag_every_step_runs_in_order() {
@@ -436,12 +474,12 @@ async fn piped_with_every_flag_every_step_runs_in_order() {
             "Checking for old deadsnakes Python packages",
             "Ansible virtual environment ready",
             "saltbox.fact is ready",
-            "Updating Saltbox tags cache",
-            "Saltbox configuration permissions secured",
-            "Sandbox updated",
+            "├── ✓ Saltbox configuration permissions secured",
+            "├── ✓ Sandbox updated",
             "Sandbox: Currently on branch 'develop'",
             "Sandbox repository updated (master)",
-            "Updating Sandbox tags cache",
+            "├── ✓ Updating Saltbox tags cache",
+            "├── ✓ Updating Sandbox tags cache",
             "Checked for new announcements",
             "Saltbox configuration validated",
             "Validated accounts.yml",
@@ -1504,7 +1542,8 @@ async fn the_tags_show_only_from_an_old_entry_valid_for_the_commit_before_the_pu
 }
 
 /// A rebuild that fails after the pull (decisions 37 and 38): the run's
-/// error, the range only, no hint.
+/// error, the range only, no hint. Since decision 46 the rebuilds come
+/// after Sandbox's step, so Sandbox is pulled and named too.
 #[tokio::test]
 async fn a_failed_rebuild_shows_the_range_only_and_no_hint() {
     let _spawns = SPAWNS.lock().await;
@@ -1521,14 +1560,23 @@ async fn a_failed_rebuild_shows_the_range_only_and_no_hint() {
         .run(&flags, Err("piped".to_owned()), &[], None, &roomy())
         .await;
     assert!(ran.error.is_some(), "{}", ran.screen);
+    in_order(
+        &ran.screen,
+        &["├── ✓ Sandbox updated", "── ✗ Updating Saltbox tags cache"],
+    );
+    // Sandbox didn't move and its entry is valid: no rebuild is due.
     assert!(
-        ran.screen.contains("Updating Saltbox tags cache"),
+        !ran.screen.contains("Updating Sandbox tags cache"),
         "{}",
         ran.screen
     );
     assert_eq!(
         ran.lines,
-        format!("\nSaltbox  {saltbox} → {}\n", short(&world.saltbox()))
+        format!(
+            "\nSaltbox  {saltbox} → {}\nSandbox  already up to date ({})\n",
+            short(&world.saltbox()),
+            short(&world.sandbox())
+        )
     );
 }
 
@@ -1593,6 +1641,17 @@ async fn a_failure_after_saltboxs_pull_shows_what_moved_without_the_hint() {
     assert!(ran.error.is_some(), "{}", ran.screen);
     assert!(
         ran.screen.contains("error updating Sandbox"),
+        "{}",
+        ran.screen
+    );
+    // Saltbox's rebuild still runs after Sandbox's failed step, Sandbox's
+    // doesn't (decision 46).
+    in_order(
+        &ran.screen,
+        &["✗ Sandbox update", "── ✓ Updating Saltbox tags cache"],
+    );
+    assert!(
+        !ran.screen.contains("Updating Sandbox tags cache"),
         "{}",
         ran.screen
     );
@@ -1729,9 +1788,10 @@ async fn a_declined_local_changes_question_leaves_the_checkout_as_it_is() {
         &[
             "Saltbox updated",
             &format!("› Saltbox: Left as is, keeping {DIRTY} (your answer)"),
-            "Updating Saltbox tags cache",
             "Sandbox updated",
             "Sandbox repository updated (master)",
+            "├── ✓ Updating Saltbox tags cache",
+            "├── ✓ Updating Sandbox tags cache",
         ],
     );
     assert!(
@@ -1924,10 +1984,10 @@ async fn skip_git_leaves_both_checkouts_as_they_are() {
             "Updating apt package cache",
             "Saltbox updated",
             "Ansible virtual environment ready",
-            "Updating Saltbox tags cache",
             "Saltbox configuration permissions secured",
             "Sandbox updated",
-            "Updating Sandbox tags cache",
+            "├── ✓ Updating Saltbox tags cache",
+            "├── ✓ Updating Sandbox tags cache",
             update::NOT_COMPARED,
             &format!("› {}", update::SEE_THEM),
             "Saltbox configuration validated",
@@ -2069,4 +2129,213 @@ async fn a_checkout_git_cant_read_fails_its_own_step_untouched() {
         head
     );
     assert!(world.saltbox().join("upstream.txt").exists());
+}
+
+/// The stand-in `ansible-playbook` for the tag steps (decision 46): each
+/// run appends `start <dir> <Saltbox HEAD> <Sandbox HEAD>` to
+/// `<meet>/log` (<dir> the last part of its working directory), marks
+/// itself started, waits until two runs have started or `ticks` times
+/// 0.05 s have passed, appends `end <dir>`, then runs `then` (by default
+/// the harness's listing).
+fn meeting_stand_in(world: &World, meet: &Path, ticks: u32, then: &str) {
+    let head = |path: PathBuf| {
+        format!(
+            "$(GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null git -c safe.directory='*' \
+             -C '{}' rev-parse HEAD)",
+            path.display()
+        )
+    };
+    let meet = meet.display();
+    let script = format!(
+        "name=${{PWD##*/}}\n\
+         echo \"start $name {saltbox} {sandbox}\" >> '{meet}/log'\n\
+         : > '{meet}/'\"$name.started\"\n\
+         i=0\n\
+         while [ \"$i\" -lt {ticks} ]; do\n\
+           set -- '{meet}'/*.started\n\
+           [ $# -ge 2 ] && break\n\
+           sleep 0.05\n\
+           i=$((i + 1))\n\
+         done\n\
+         echo \"end $name\" >> '{meet}/log'\n\
+         {then}",
+        saltbox = head(world.saltbox()),
+        sandbox = head(world.sandbox()),
+    );
+    let _ = world.host.stand_in("ansible-playbook", &script);
+}
+
+/// The last part of a checkout's path, as the stand-in names it.
+fn dir_name(path: &Path) -> String {
+    path.file_name()
+        .expect("a name")
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// Both tag listings start only once both checkouts' git steps have
+/// ended (decision 46): each sees Saltbox's and Sandbox's new HEADs. On 2
+/// physical cores they run at once, on 1 in turn; the tree and what
+/// moved are the same either way.
+#[tokio::test]
+async fn the_tag_listings_start_after_both_pulls_at_once_on_two_cores() {
+    let _spawns = SPAWNS.lock().await;
+    for (cores, ticks) in [(2, 400), (1, 4)] {
+        let world = World::new("master", "master");
+        world.cores.set(Some(cores));
+        let meet = tempfile::tempdir().expect("meet");
+        meeting_stand_in(
+            &world,
+            meet.path(),
+            ticks,
+            &sb_ops::testing::list_tags_script(),
+        );
+        let (saltbox_before, sandbox_before) = (short(&world.saltbox()), short(&world.sandbox()));
+        upstream(&world);
+        let ran = world
+            .run(&args(&PIPED), Err("piped".to_owned()), &[], None, &roomy())
+            .await;
+        assert_eq!(ran.error, None, "{cores}: {}", ran.screen);
+        let git = |path: PathBuf| sb_ops::testing::git(&path, &["rev-parse", "HEAD"]);
+        let heads = format!("{} {}", git(world.saltbox()), git(world.sandbox()));
+        let (saltbox, sandbox) = (dir_name(&world.saltbox()), dir_name(&world.sandbox()));
+        let log = std::fs::read_to_string(meet.path().join("log")).expect("log");
+        let log: Vec<&str> = log.lines().collect();
+        let start = |name: &str| format!("start {name} {heads}");
+        let end = |name: &str| format!("end {name}");
+        if cores == 2 {
+            assert_eq!(log.len(), 4, "{log:?}");
+            let mut starts = log[..2].to_vec();
+            starts.sort_unstable();
+            let mut want = vec![start(&saltbox), start(&sandbox)];
+            want.sort_unstable();
+            assert_eq!(starts, want, "both at once, after both pulls");
+            assert!(
+                log[2..].iter().all(|line| line.starts_with("end ")),
+                "{log:?}"
+            );
+        } else {
+            assert_eq!(
+                log,
+                [
+                    start(&saltbox),
+                    end(&saltbox),
+                    start(&sandbox),
+                    end(&sandbox)
+                ],
+                "in turn, after both pulls"
+            );
+        }
+        in_order(
+            &ran.screen,
+            &[
+                "├── ✓ Saltbox updated",
+                "├── ✓ Sandbox updated",
+                "Sandbox repository updated (master)",
+                "├── ✓ Updating Saltbox tags cache",
+                "├── ✓ Updating Sandbox tags cache",
+                "Checked for new announcements",
+            ],
+        );
+        // Neither tag step is a sub-step any more.
+        assert!(
+            ran.screen
+                .lines()
+                .filter(|line| line.contains("tags cache"))
+                .all(|line| line.starts_with("├── ")),
+            "{}",
+            ran.screen
+        );
+        assert_eq!(
+            ran.lines,
+            format!(
+                "\nSaltbox  {saltbox_before} → {}\nSandbox  {sandbox_before} → {}\n\n{SALTBOX_HINT}",
+                short(&world.saltbox()),
+                short(&world.sandbox())
+            ),
+            "{cores}"
+        );
+    }
+}
+
+/// At once, a Saltbox listing that fails after Sandbox's has failed is
+/// still shown first, and the run fails; both pulls finished, so both
+/// ranges show, without tags or the hint (decisions 38 and 46).
+#[tokio::test]
+async fn at_once_saltboxs_tag_failure_comes_first() {
+    let _spawns = SPAWNS.lock().await;
+    let world = World::new("master", "master");
+    world.cores.set(Some(2));
+    let sandbox = dir_name(&world.sandbox());
+    let meet = tempfile::tempdir().expect("meet");
+    meeting_stand_in(
+        &world,
+        meet.path(),
+        400,
+        &format!(
+            "if [ \"$name\" = {sandbox} ]; then echo 'sandbox broke' >&2; exit 5; fi\n\
+             sleep 0.5; echo 'saltbox broke' >&2; exit 4"
+        ),
+    );
+    upstream(&world);
+    let ran = world
+        .run(&args(&PIPED), Err("piped".to_owned()), &[], None, &roomy())
+        .await;
+    assert!(ran.error.is_some(), "{}", ran.screen);
+    in_order(
+        &ran.screen,
+        &[
+            "├── ✓ Sandbox updated",
+            "✗ Updating Saltbox tags cache",
+            "saltbox broke",
+            "✗ Updating Sandbox tags cache",
+            "sandbox broke",
+        ],
+    );
+    assert!(ran.lines.contains("\nSaltbox  "), "{}", ran.lines);
+    assert!(ran.lines.contains("\nSandbox  "), "{}", ran.lines);
+    assert!(!ran.lines.contains("sb install"), "{}", ran.lines);
+}
+
+/// Ctrl-C while both listings run at once: both get SIGTERM and both are
+/// waited for before the run ends; the run is interrupted.
+#[tokio::test]
+async fn ctrl_c_during_both_tag_listings_stops_and_reaps_both() {
+    let _spawns = SPAWNS.lock().await;
+    let world = World::new("master", "master");
+    world.cores.set(Some(2));
+    let meet = tempfile::tempdir().expect("meet");
+    let dir = meet.path().display();
+    meeting_stand_in(
+        &world,
+        meet.path(),
+        0,
+        &format!(
+            "trap 'echo term > \"{dir}/$name.term\"; exit 143' TERM\n\
+             echo $$ > \"{dir}/$name.pid.tmp\" && mv \"{dir}/$name.pid.tmp\" \"{dir}/$name.pid\"\n\
+             while :; do sleep 0.05; done"
+        ),
+    );
+    let names = [dir_name(&world.saltbox()), dir_name(&world.sandbox())];
+    *world.ctrl_c_once.borrow_mut() = names
+        .iter()
+        .map(|name| meet.path().join(format!("{name}.pid")))
+        .collect();
+    upstream(&world);
+    let ran = world
+        .run(&args(&PIPED), Err("piped".to_owned()), &[], None, &roomy())
+        .await;
+    assert!(ran.error.is_some(), "{}", ran.screen);
+    assert!(ran.requested.is_some(), "{}", ran.screen);
+    for name in &names {
+        assert!(
+            meet.path().join(format!("{name}.term")).exists(),
+            "{name}'s listing got SIGTERM"
+        );
+        let pid = std::fs::read_to_string(meet.path().join(format!("{name}.pid"))).expect("pid");
+        assert!(
+            !Path::new(&format!("/proc/{}", pid.trim())).exists(),
+            "{name}'s listing is gone"
+        );
+    }
 }

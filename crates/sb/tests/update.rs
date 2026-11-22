@@ -178,10 +178,11 @@ fn update_is_shown_with_sb_gos_flags_and_migrations() {
         .success();
 }
 
-/// Piped with every flag, every step in sb-go's order: self-update off
-/// (a raw build), apt, Saltbox reset with its runtime and tags, the config
-/// permissions, Sandbox reset with its tags, the announcements the pull
-/// brought printed inline on stdout, validate-config's checks.
+/// Piped with every flag, every step in sb-go's order but the tags:
+/// self-update off (a raw build), apt, Saltbox reset with its runtime,
+/// the config permissions, Sandbox reset, both tags caches after it (ops
+/// spec, decision 46), the announcements the pull brought printed inline
+/// on stdout, validate-config's checks.
 #[test]
 fn piped_with_every_flag_every_step_runs_in_order() {
     if !root_gate::requested() {
@@ -209,10 +210,10 @@ fn piped_with_every_flag_every_step_runs_in_order() {
             "Saltbox repository updated (master)",
             "Ansible virtual environment ready",
             "saltbox.fact is ready",
-            "Updating Saltbox tags cache",
             "Saltbox configuration permissions secured",
             "Updating Sandbox",
             "Sandbox repository updated (master)",
+            "Updating Saltbox tags cache",
             "Updating Sandbox tags cache",
             "Displaying new announcements",
             "Validating Saltbox configuration",

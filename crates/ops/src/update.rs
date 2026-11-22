@@ -11,7 +11,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::Context as _;
-use sb_ansible::{Ansible, RunArgs, TagCache, Tags};
+use sb_ansible::{Ansible, RunArgs, StartedListing, TagCache, Tags};
 use sb_cli_core::cancel::Shutdown;
 use sb_cli_core::exit::{self, Exit};
 use sb_cli_core::theme;
@@ -446,9 +446,31 @@ async fn checkouts_onward(
             tags: &mut tags,
             pulled,
         };
-        checkout_step(steps, Checkout::Saltbox, saltbox, update, &mut cache).await?;
-        secure_step(steps, update.root).await?;
-        checkout_step(steps, Checkout::Sandbox, sandbox, update, &mut cache).await?;
+        let saltbox_due =
+            checkout_step(steps, Checkout::Saltbox, saltbox, update, &mut cache).await?;
+        let rest = async {
+            secure_step(steps, update.root).await?;
+            checkout_step(steps, Checkout::Sandbox, sandbox, update, &mut cache).await
+        }
+        .await;
+        // The tag caches after both checkouts' git steps (step 9a,
+        // decision 46): Saltbox's even when the permissions or Sandbox's
+        // step failed, Sandbox's only when its step succeeded; the run's
+        // error the first in the steps' order.
+        let (sandbox_due, rest) = match rest {
+            Ok(due) => (due, Ok(())),
+            Err(exit) => (None, Err(exit)),
+        };
+        let tagged = tag_steps(
+            steps,
+            &mut cache,
+            update.ansible,
+            shutdown,
+            [saltbox_due, sandbox_due],
+        )
+        .await;
+        rest?;
+        tagged?;
         if skip_git {
             // The step says so, its one notice where to see them
             // (decision 41): nothing is compared, so nothing is shown or
@@ -904,31 +926,159 @@ async fn apt_cache(runner: &mut Runner, apt: &Apt) -> Result<(), Exit> {
         .await
 }
 
-/// The tags cache the checkout steps rebuild, and what their pulls moved.
+/// The tags cache the tag steps rebuild, and what the checkouts' pulls
+/// moved.
 struct Cache<'a> {
     tags: &'a mut TagCache,
     pulled: &'a mut Vec<Moved>,
+}
+
+/// A checkout's tags rebuild, due once both checkouts' git steps have
+/// ended (step 9a, decision 46).
+#[derive(Debug)]
+struct Due {
+    checkout: Checkout,
+    playbooks: sb_ansible::Repo,
+    /// The HEAD its checkout step read after the pull, which the entry
+    /// records.
+    head: String,
+    /// Left as it is: rebuilt always, nothing compared (decision 41).
+    left: bool,
+    /// The old entry, when valid for the commit before the pull
+    /// (decision 37), read before any rebuild writes over it.
+    before: Option<Vec<String>>,
+    /// Its checkout's place in `pulled`.
+    at: usize,
+}
+
+/// Step 9a (decision 46): "Updating Saltbox tags cache", then "Updating
+/// Sandbox tags cache", each top-level step only when `dues` has it. With
+/// both due on 2 or more physical cores (ansible's `listings_at_once`),
+/// Sandbox's listing starts with Saltbox's (it stops with `shutdown`'s
+/// token, the run's) and runs alongside Saltbox's step; Sandbox's step
+/// waits for what is left of it. Each step runs whatever the other's
+/// result, and what a rebuild lists is compared with the old entry.
+///
+/// # Errors
+///
+/// The first failed step's quiet `Exit`, Saltbox's before Sandbox's.
+async fn tag_steps(
+    runner: &mut Runner,
+    cache: &mut Cache<'_>,
+    ansible: &Ansible,
+    shutdown: &Shutdown,
+    [saltbox, sandbox]: [Option<Due>; 2],
+) -> Result<(), Exit> {
+    let mut started = match (&saltbox, &sandbox) {
+        (Some(_), Some(due)) if ansible.listings_at_once() => Some(StartedListing::start(
+            ansible,
+            &due.playbooks,
+            due.head.clone(),
+            &shutdown.token(),
+        )),
+        _ => None,
+    };
+    let mut first = Ok(());
+    if let Some(due) = &saltbox {
+        let done = tag_step(runner, cache.tags, ansible, due, None, started.as_mut()).await;
+        first = first.and(compared(cache, due, done));
+    }
+    if let Some(due) = &sandbox {
+        let done = tag_step(runner, cache.tags, ansible, due, started.take(), None).await;
+        first = first.and(compared(cache, due, done));
+    }
+    first
+}
+
+/// One tag step, "Updating <Repo> tags cache": `started` waited for
+/// (Sandbox's, started at once), else `due`'s listing started under the
+/// step; `beside` (the other listing) runs alongside it. A step that
+/// doesn't start (after Ctrl-C) stops `started` and waits for it.
+///
+/// # Errors
+///
+/// The step's quiet `Exit`, its block shown.
+async fn tag_step(
+    runner: &mut Runner,
+    tags: &mut TagCache,
+    ansible: &Ansible,
+    due: &Due,
+    started: Option<StartedListing<'_>>,
+    beside: Option<&mut StartedListing<'_>>,
+) -> Result<Vec<String>, Exit> {
+    let label = sb_ansible::cache_label(due.playbooks.kind());
+    let mut waiting = started;
+    let done = runner
+        .step(Labels::new(label.clone(), label), async |step| {
+            let token = step.token();
+            let listing = waiting.take().unwrap_or_else(|| {
+                StartedListing::start(ansible, &due.playbooks, due.head.clone(), &token)
+            });
+            let recorded = tags.record_started(listing);
+            match beside {
+                Some(other) => other.alongside(recorded).await,
+                None => recorded.await,
+            }
+            .context("error running and caching ansible tags")
+        })
+        .await;
+    if let Some(started) = waiting {
+        started.stop().await;
+    }
+    done
+}
+
+/// A tag step's result: the new tags compared with `due`'s old entry, for
+/// what moved (decision 37), when it had one and wasn't left as it is.
+///
+/// # Errors
+///
+/// The step's quiet `Exit`.
+fn compared(cache: &mut Cache<'_>, due: &Due, done: Result<Vec<String>, Exit>) -> Result<(), Exit> {
+    let after = done?;
+    if due.left {
+        return Ok(());
+    }
+    let name = due.checkout.name();
+    if let Some(before) = &due.before {
+        let diff = TagDiff::between(due.checkout, before, &after);
+        tracing::info!(
+            repo = name,
+            added = %diff.added.join(", "),
+            removed = %diff.removed.join(", "),
+            "tags compared"
+        );
+        cache.pulled[due.at].tags = Some(diff);
+    } else {
+        tracing::info!(
+            repo = name,
+            reason = "no valid cache entry for the old commit",
+            "tags not compared"
+        );
+    }
+    Ok(())
 }
 
 /// "Updating <Repo>" (success "<Repo> updated"), sb-go's sub-steps: the
 /// branch notices, the Saltbox user from the Saltbox root's accounts.yml,
 /// the HEAD commit, the checkout fetched and reset to the resolved branch
 /// and owned by that user, the HEAD commit again (the pull recorded in
-/// `cache.pulled`, and in the run log), for Saltbox python-env's
-/// `reconcile_runtime` (deadsnakes, venv, fact, as `update-venv`), and
-/// the tags cache rebuilt when the commit moved or the cache has no tags
-/// for the checkout: the old entry, when valid for the HEAD before the
-/// pull (ansible's `fresh`), read before the rebuild writes over it, and
-/// the tags compared (ops spec, "What moved, and the closing hint"). A
-/// checkout that couldn't be opened fails here with its error (sb-go's
-/// `error updating <Repo>: inspect required directory ...`).
+/// `cache.pulled`, and in the run log), and for Saltbox python-env's
+/// `reconcile_runtime` (deadsnakes, venv, fact, as `update-venv`). Its
+/// tags rebuild, when the commit moved or the cache has no tags for the
+/// checkout, is due for step 9a ([`tag_steps`], decision 46), with the
+/// old entry when valid for the HEAD before the pull (ansible's
+/// `fresh`), read now, before the rebuild writes over it (ops spec,
+/// "What moved, and the closing hint"). A checkout that couldn't be
+/// opened fails here with its error (sb-go's `error updating <Repo>:
+/// inspect required directory ...`).
 async fn checkout_step(
     runner: &mut Runner,
     checkout: Checkout,
     plan: anyhow::Result<(Repo, Planned)>,
     update: &Update<'_>,
     cache: &mut Cache<'_>,
-) -> Result<(), Exit> {
+) -> Result<Option<Due>, Exit> {
     let name = checkout.name();
     let labels = Labels::new(format!("Updating {name}"), format!("{name} updated"))
         .failure(format!("{name} update"));
@@ -992,33 +1142,23 @@ async fn checkout_step(
                 .tags
                 .entry(&playbooks)
                 .is_some_and(|entry| !entry.tags.is_empty());
-            if matches!(planned.git, Git::Left(_)) {
-                let _tags =
-                    branch::tags(step, cache.tags, update.ansible, &playbooks, &repo).await?;
-            } else if old != new || !cached {
-                // The old entry only when valid for the commit before the
-                // pull (decision 37), read before the rebuild writes over it.
-                let before = cache.tags.fresh(&playbooks, &old);
-                let after =
-                    branch::tags(step, cache.tags, update.ansible, &playbooks, &repo).await?;
-                if let Some(before) = before {
-                    let diff = TagDiff::between(checkout, &before, &after);
-                    tracing::info!(
-                        repo = name,
-                        added = %diff.added.join(", "),
-                        removed = %diff.removed.join(", "),
-                        "tags compared"
-                    );
-                    cache.pulled[at].tags = Some(diff);
-                } else {
-                    tracing::info!(
-                        repo = name,
-                        reason = "no valid cache entry for the old commit",
-                        "tags not compared"
-                    );
-                }
+            let left = matches!(planned.git, Git::Left(_));
+            if !left && old == new && cached {
+                return Ok(None);
             }
-            Ok(())
+            // The old entry only when valid for the commit before the
+            // pull (decision 37), read before the rebuild writes over it.
+            let before = (!left)
+                .then(|| cache.tags.fresh(&playbooks, &old))
+                .flatten();
+            Ok(Some(Due {
+                checkout,
+                playbooks,
+                head: new,
+                left,
+                before,
+                at,
+            }))
         })
         .await
 }

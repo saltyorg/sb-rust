@@ -58,9 +58,10 @@ you could trip over.
   before listing: after roles were edited locally, or to time the
   rebuild (the run log has each step's time).
 - **Both tag caches are rebuilt at once** on 2 or more CPU cores, when
-  both need it: `sb list` and `sb install`'s tag check take the longer
-  of the two listings, not both one after the other (about 2.5 s
-  instead of 5 s). On 1 core they run one after the other, as before.
+  both need it: `sb list`, `sb install`'s tag check and `sb update` take
+  the longer of the two listings, not both one after the other (about
+  2.5 s instead of 5 s; `sb update` about 2.3 s quicker when both
+  checkouts moved). On 1 core they run one after the other, as before.
 - **`sb update --verify-venv`** (hidden while its cost is tried): checks
   every file of the Ansible virtual environment against its package's
   record, and the Python against a manifest sb writes when it installs
@@ -111,6 +112,11 @@ you could trip over.
   time in one column: `sb update` and `sb self-update` no longer draw a
   tree per phase. Their questions open on the alternate screen, and
   each answer is noted in the tree.
+- **`sb update` rebuilds the tag caches after both checkouts:**
+  "Updating Saltbox tags cache" and "Updating Sandbox tags cache" are
+  steps of their own after Sandbox's update, so Sandbox's tags are
+  listed with Saltbox's files already updated. A failed Saltbox listing
+  no longer stops the update before Sandbox is updated.
 - **The Ansible virtual environment's checks and last jobs are steps:**
   inspecting the active environment, validating a new one, cleaning up
   old environments and setting ownership are steps of their own in `sb
