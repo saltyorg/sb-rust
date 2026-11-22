@@ -1974,6 +1974,24 @@ mod tests {
         );
     }
 
+    /// Narrowed while it runs, past the width of its lines, the live
+    /// area is drawn again in place, as on a screen that narrow from the
+    /// start: the title and each step once. A reflowing terminal wraps
+    /// each line that no longer fits onto more rows, which the redraw
+    /// must move up over too.
+    #[tokio::test]
+    async fn a_narrowed_screen_shows_the_live_area_once() {
+        let (during, end) = resized_run(100, 40).await;
+        let (fresh_during, fresh_end) = resized_run(40, 40).await;
+        assert_eq!(during, fresh_during);
+        assert_eq!(end, fresh_end);
+        assert_eq!(
+            during[..3],
+            ["before 1", "before 2", "sb demo"],
+            "{during:#?}"
+        );
+    }
+
     fn screen() -> (InMemoryTerm, Options) {
         let term = InMemoryTerm::new(20, 100);
         let options = Options {

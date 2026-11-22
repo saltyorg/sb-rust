@@ -29,7 +29,30 @@
 //! last column for the wrap, and an erase there takes that column's
 //! character on xterm and VTE (Bubble Tea v1.3.4 `standard_renderer.go`,
 //! `flush`, erases only a line narrower than the screen for this reason).
-//! What indicatif draws, and where, stays its own. Why not another
+//! What indicatif draws, and where, stays its own.
+//!
+//! Narrowed past a line's width, a reflowing terminal still wraps that
+//! line onto more rows, which indicatif doesn't count: its redraw moves
+//! up one row a line (`bar_count`, its count at the width it drew at). So
+//! the first move up of a redraw after the screen narrowed also covers
+//! the rows the last draw's lines now take at the new width, and clears
+//! each of them before the redraw, as indicatif's own clear does (only
+//! then: a clear before the rows are drawn again is what the live area
+//! otherwise never does, as it blinks). Why not one erase to the
+//! screen's end: from the screen's top-left corner tmux takes it as a
+//! clear and keeps the old screen in its history (measured, tmux 3.2a),
+//! and after the last row it could take that row's last character, as
+//! above. The count is UNVERIFIED but for tmux 3.2a, and
+//! leaves out a wide character pushed to the next row at the wrap
+//! (indicatif's own count, `wrapped_metrics`, is private), so after such
+//! a narrowing a row can stay behind. A terminal that doesn't rewrap
+//! (xterm, `PuTTY`, the Linux console, by their documentation) cuts those
+//! lines instead, so there the redraw starts that many rows higher, over
+//! the lines above the area: which a terminal does can't be asked without
+//! reading its replies from the input, and most rewrap (the maintainer's
+//! does). No dependency counts rows for a resize either: Bubble Tea's
+//! inline renderer redraws from the rows it last wrote (v2.1.0
+//! `cursed_renderer.go`, `resize`). Why not another
 //! progress crate or ratatui's inline viewport: the runner's live area is
 //! indicatif's (its module doc), and the viewport is clamped to the
 //! screen's height, which the tree's own collapse already handles
@@ -71,6 +94,24 @@ struct Row {
     /// The row's padding was left out: the next text starts on a row of
     /// its own.
     ended: bool,
+    /// A draw is under way: written to since the last flush.
+    drawing: bool,
+    /// The widths of the lines of the draw under way.
+    lines: Vec<usize>,
+    /// The last draw's lines' widths.
+    drawn: Vec<usize>,
+}
+
+impl Row {
+    /// The rows the last `lines` lines of the last draw take at `width`
+    /// beyond one each: none while it is as wide as they were drawn at
+    /// or wider (a line is never wider than the width it was drawn at).
+    fn rewrapped(&self, lines: usize, width: usize) -> usize {
+        let last = &self.drawn[self.drawn.len().saturating_sub(lines)..];
+        last.iter()
+            .map(|&w| w.max(1).div_ceil(width.max(1)) - 1)
+            .sum()
+    }
 }
 
 impl<T: TermLike> Rows<T> {
@@ -104,9 +145,35 @@ impl<T: TermLike> TermLike for Rows<T> {
         self.term.height()
     }
 
+    /// The first move of a draw goes up over the area's rows: indicatif's
+    /// count, `n + 1` lines, and the rows they rewrapped onto since a
+    /// narrowing, which are then cleared before it is drawn again (the
+    /// module doc).
     fn move_cursor_up(&self, n: usize) -> io::Result<()> {
         self.moved();
-        self.term.move_cursor_up(n)
+        let mut row = self.row();
+        let first = !std::mem::replace(&mut row.drawing, true);
+        let extra = if first {
+            row.rewrapped(n + 1, usize::from(self.term.width()))
+        } else {
+            0
+        };
+        drop(row);
+        let up = n + extra;
+        self.term.move_cursor_up(up)?;
+        if extra > 0 {
+            // Each row cleared and the cursor back at the top, as
+            // indicatif's own clear does (`draw_to_term` without
+            // `move_cursor`).
+            for i in 0..=up {
+                self.term.clear_line()?;
+                if i < up {
+                    self.term.move_cursor_down(1)?;
+                }
+            }
+            self.term.move_cursor_up(up)?;
+        }
+        Ok(())
     }
 
     fn move_cursor_down(&self, n: usize) -> io::Result<()> {
@@ -140,7 +207,10 @@ impl<T: TermLike> TermLike for Rows<T> {
         let mut row = self.row();
         let padding =
             s.bytes().all(|b| b == b' ') && row.width > 0 && row.column + s.len() == row.width;
+        row.drawing = true;
         if padding {
+            let width = row.column;
+            row.lines.push(width);
             row.column = 0;
             row.ended = true;
             drop(row);
@@ -165,7 +235,12 @@ impl<T: TermLike> TermLike for Rows<T> {
         self.term.clear_line()
     }
 
+    /// A draw's end: its lines' widths kept for the next.
     fn flush(&self) -> io::Result<()> {
+        let mut row = self.row();
+        row.drawn = std::mem::take(&mut row.lines);
+        row.drawing = false;
+        drop(row);
         self.term.flush()
     }
 }
@@ -257,6 +332,41 @@ mod tests {
         rows.write_str("next").expect("next");
         rows.write_str(&" ".repeat(6)).expect("padding");
         assert_eq!(rows.term.take(), "ten chars!\r\nnext\x1b[K");
+    }
+
+    /// indicatif's draw of `lines` on `rows`, as `draw_to_term` makes it:
+    /// up over the last draw's `up + 1` lines, each line and its padding.
+    fn draw(rows: &Rows<Screen>, up: usize, lines: &[&str]) {
+        rows.move_cursor_up(up).expect("up");
+        rows.write_str("\r").expect("cr");
+        let width = usize::from(rows.width());
+        for line in lines {
+            rows.write_str(line).expect("line");
+            rows.write_str(&" ".repeat(width - line.len()))
+                .expect("padding");
+        }
+        rows.flush().expect("flush");
+    }
+
+    /// Narrowed, the next draw moves up over the rows the last one's
+    /// lines were rewrapped onto too, and clears them before it draws;
+    /// widened, it moves up one row a line, as indicatif counts.
+    #[test]
+    fn a_draw_after_a_narrowing_covers_the_rewrapped_rows() {
+        let screen = Screen::new(40);
+        screen.write("above\n");
+        let rows = Rows::new(screen.clone());
+        draw(
+            &rows,
+            0,
+            &["a line thirty columns wide....", "two", "three"],
+        );
+        screen.resize(12);
+        draw(&rows, 2, &["one", "two"]);
+        assert_eq!(screen.rows(), ["above", "one", "two"]);
+        screen.resize(30);
+        draw(&rows, 1, &["one", "two", "three"]);
+        assert_eq!(screen.rows(), ["above", "one", "two", "three"]);
     }
 
     /// Spaces that don't end the row are text; after a cursor move the
