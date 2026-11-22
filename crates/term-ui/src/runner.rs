@@ -29,6 +29,7 @@ use tokio::task::JoinSet;
 use tracing::Instrument;
 
 use crate::child::ChildFailure;
+use crate::rows::Rows;
 use crate::style::paint;
 use crate::text::DisplayText;
 use crate::tree::{Draw, Status, Tree};
@@ -286,7 +287,7 @@ impl Clock {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum Size {
     Stderr,
     #[cfg(any(test, feature = "testing"))]
@@ -294,11 +295,14 @@ enum Size {
         rows: usize,
         width: usize,
     },
+    /// A reflowing screen's size, read at each redraw as stderr's is.
+    #[cfg(test)]
+    Reflowing(crate::reflow::Screen),
 }
 
 impl Size {
     /// The screen's rows and width: the terminal's, else 24 x 80.
-    fn get(self) -> (usize, usize) {
+    fn get(&self) -> (usize, usize) {
         match self {
             Size::Stderr => console::Term::stderr()
                 .size_checked()
@@ -306,7 +310,12 @@ impl Size {
                     (usize::from(rows), usize::from(cols))
                 }),
             #[cfg(any(test, feature = "testing"))]
-            Size::Fixed { rows, width } => (rows, width),
+            Size::Fixed { rows, width } => (*rows, *width),
+            #[cfg(test)]
+            Size::Reflowing(screen) => (
+                usize::from(indicatif::TermLike::height(screen)),
+                usize::from(screen.width()),
+            ),
         }
     }
 }
@@ -541,10 +550,12 @@ impl Runner {
                 // `ProgressDrawTarget::stderr`), so live follows it: a
                 // hidden target would swallow every line.
                 let target = ProgressDrawTarget::stderr();
+                // The live target (`draw_target`, a `TermLike` one) has
+                // no such check of its own, so this one stays.
                 let mode = if target.is_hidden() {
                     Mode::Plain
                 } else {
-                    Mode::Live(Area::new(target))
+                    Mode::Live(Area::new(draw_target(&Target::Stderr)))
                 };
                 let terminal = console::Term::stderr().is_term();
                 (
@@ -1676,10 +1687,23 @@ impl From<&String> for Line {
 /// in-memory screen's with no refresh limit (see [`Runner::start`]).
 fn draw_target(target: &Target) -> ProgressDrawTarget {
     match target {
-        Target::Stderr => ProgressDrawTarget::stderr(),
+        // `ProgressDrawTarget::stderr`'s terminal and refresh limit
+        // (<https://docs.rs/indicatif/0.18.6/indicatif/struct.ProgressDrawTarget.html#method.stderr>),
+        // its rows ended by line ends ([`Rows`]).
+        Target::Stderr => ProgressDrawTarget::term_like_with_hz(
+            Box::new(Rows::new(console::Term::buffered_stderr())),
+            20,
+        ),
         #[cfg(any(test, feature = "testing"))]
-        Target::InMemory { term, .. } => ProgressDrawTarget::term_like(Box::new(term.clone())),
+        Target::InMemory { term, .. } => live_target(term.clone()),
     }
+}
+
+/// The tests' live area on `term`, each row ended by a line end
+/// ([`Rows`]) as on stderr, with no refresh limit (see [`Runner::start`]).
+#[cfg(any(test, feature = "testing"))]
+fn live_target(term: impl indicatif::TermLike + 'static) -> ProgressDrawTarget {
+    ProgressDrawTarget::term_like(Box::new(Rows::new(term)))
 }
 
 /// Move the spinner every [`FRAME`], skipping missed ticks
@@ -1870,6 +1894,83 @@ mod tests {
         assert_eq!(
             shown,
             format!("Line {{ text: \"token {WITHHELD} end\", shown: false, .. }}")
+        );
+    }
+
+    /// A runner whose live area is on a reflowing screen `width` wide
+    /// (`crate::reflow`), under `before`, which is already on it: the
+    /// in-memory screen's runner with its live area moved there, the
+    /// screen's width read at each redraw, as stderr's is.
+    fn on_reflowing(width: u16, before: &str) -> (crate::reflow::Screen, Runner) {
+        let reflowing = crate::reflow::Screen::new(width);
+        reflowing.write(before);
+        let (_, options) = screen();
+        let run = Runner::start("sb demo", &Shutdown::new(), None, options);
+        {
+            let mut state = lock(&run.shared);
+            state.mode = Mode::Live(Area::new(live_target(reflowing.clone())));
+            state.size = Size::Reflowing(reflowing.clone());
+            state.redraw();
+        }
+        (reflowing, run)
+    }
+
+    /// The screen's rows, the spinner's frame masked.
+    fn shown(screen: &crate::reflow::Screen) -> Vec<String> {
+        screen
+            .rows()
+            .into_iter()
+            .map(|row| {
+                row.chars()
+                    .map(|c| {
+                        if ('\u{2800}'..='\u{28ff}').contains(&c) {
+                            '*'
+                        } else {
+                            c
+                        }
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// A step with a notice, the screen resized from `from` to `to`
+    /// columns, another notice; the screen mid-step and at the end. With
+    /// `from == to`, the same run on a screen of one width throughout.
+    async fn resized_run(from: u16, to: u16) -> (Vec<String>, Vec<String>) {
+        let (reflowing, mut run) = on_reflowing(from, "before 1\nbefore 2\n");
+        let mut during = Vec::new();
+        run.step(
+            Labels::new("Checking settings.yml", "settings.yml checked"),
+            async |step| {
+                step.info("first notice");
+                reflowing.resize(to);
+                step.info("second notice");
+                during = shown(&reflowing);
+                Ok(())
+            },
+        )
+        .await
+        .expect("step");
+        run.finish();
+        (during, shown(&reflowing))
+    }
+
+    /// Widened while it runs, the live area is drawn again in place at
+    /// the new width, as on a screen that wide from the start: the lines
+    /// above it are kept, and no row holds two of its lines (indicatif
+    /// pads each line to the width, so the next one starts by the
+    /// terminal's wrap; a reflowing terminal joined them when it widened).
+    #[tokio::test]
+    async fn a_widened_screen_gets_the_live_area_in_place() {
+        let (during, end) = resized_run(60, 100).await;
+        let (fresh_during, fresh_end) = resized_run(100, 100).await;
+        assert_eq!(during, fresh_during);
+        assert_eq!(end, fresh_end);
+        assert_eq!(
+            during[..3],
+            ["before 1", "before 2", "sb demo"],
+            "{during:#?}"
         );
     }
 

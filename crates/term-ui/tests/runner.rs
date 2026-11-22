@@ -37,7 +37,10 @@ fn on_a_terminal_env(args: &str, term: &str, no_color: Option<&str>) -> Output {
 }
 
 /// Every way a terminal can be told to erase part of the screen.
-const ERASES: [&str; 5] = ["\x1b[2K", "\x1b[K", "\x1b[0K", "\x1b[1K", "\x1b[J"];
+const ERASES: [&str; 5] = ["\x1b[2K", ROW_END, "\x1b[0K", "\x1b[1K", "\x1b[J"];
+
+/// The erase from the cursor to the row's end that ends a live row.
+const ROW_END: &str = "\x1b[K";
 
 /// Plain output on a terminal: start and end lines, no cursor movement.
 fn assert_plain_on_a_terminal(out: &Output) {
@@ -64,7 +67,11 @@ fn a_dumb_terminal_gets_plain_output() {
 }
 
 /// Live on a terminal: no line is erased while running, only in the final
-/// clear after the last tree line (the measured no-blink technique).
+/// clear after the last tree line (the measured no-blink technique). A
+/// row's end is erased after its text instead of padded with spaces
+/// (`Rows`, so a terminal that rewraps on a resize keeps the rows
+/// apart): that erases only what the text didn't draw over, never a row
+/// before it is drawn, so it is the one erase allowed.
 #[test]
 fn nothing_is_erased_while_running() {
     let out = on_a_terminal("");
@@ -75,9 +82,17 @@ fn nothing_is_erased_while_running() {
         .expect("the last step's line");
     let erases_before: usize = ERASES
         .iter()
+        .filter(|&&e| e != ROW_END)
         .map(|e| text[..last_line].matches(e).count())
         .sum();
     assert_eq!(erases_before, 0);
+    // A row's end is erased only after its text: never where a row
+    // starts, before it is drawn.
+    assert!(text[..last_line].contains(ROW_END), "{text:?}");
+    assert!(
+        !text[..last_line].contains(&format!("\r{ROW_END}")),
+        "{text:?}"
+    );
     // Live, no plain-mode end line is written beside the tree (live
     // lines start with their branch).
     assert!(!text.contains("\n✓ accounts.yml read"), "{text:?}");

@@ -4,6 +4,9 @@
 mod child;
 mod heading;
 mod prompt;
+#[cfg(test)]
+mod reflow;
+mod rows;
 mod runner;
 pub mod style;
 mod table;

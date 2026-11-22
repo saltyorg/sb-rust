@@ -43,6 +43,9 @@ tempfile.workspace = true
 fastrand.workspace = true
 indicatif = { workspace = true, features = ["in_memory"] }
 tokio = { workspace = true, features = ["macros", "test-util"] }
+# The reflowing screen of the live area's resize tests (src/reflow.rs);
+# already under indicatif's in-memory screen.
+vt100.workspace = true
 
 [lints]
 workspace = true
