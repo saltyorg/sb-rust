@@ -29,6 +29,11 @@ you could trip over.
   logs`, as Saltbox's docs use.
 - **`sb fact`'s editor**, a settings page with search, a changes panel
   and Copy (clipboard through OSC 52).
+- **`sb fact get <app> <instance> <key>`** prints one fact's value alone
+  on stdout, so `TOKEN=$(sb fact get plex plex token)` works, and
+  **`sb fact list`** lists the apps, instances and keys (never values).
+  `--json` on both. They work while `sb fact` is open, and Tab completes
+  the names. sb-go's `sb fact` took no arguments.
 - **`sb edit` validates the file you edited** and offers to edit it again.
 - **validate-config checks providers.yml** (the DNS providers' credentials)
   after hetzner_vlan.yml, against `schema/providers.schema.yml` once

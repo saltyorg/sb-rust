@@ -1,7 +1,10 @@
 //! `sb fact` through the binary (tui spec, "Editors", `sb fact`; module
 //! build M54): the refusal without a terminal, the open errors before
 //! the screen, the page on a PTY over fixture fact files, `q` and Ctrl-C,
-//! an edit saved, and the run log without a fact's value. Every test has its own Saltbox
+//! an edit saved, and the run log without a fact's value; `sb fact get`
+//! and `sb fact list` (tui spec, "`sb fact get` and `sb fact list`"):
+//! every exit case, the exact bytes to a pipe, a terminal's escaping,
+//! `--json`, `$(…)`, no lock and no value in the run log. Every test has its own Saltbox
 //! root, whose inventory points `server_appdata_path` at its own facts
 //! directory; none reads a real one.
 
@@ -104,6 +107,8 @@ struct Pty {
     parser: vt100::Parser,
     /// Whether the alternate screen was ever entered.
     drew: bool,
+    /// Every byte sb wrote to the terminal.
+    raw: Vec<u8>,
 }
 
 impl Pty {
@@ -114,6 +119,11 @@ impl Pty {
     /// [`Pty::spawn`] with sb started by `/bin/sh` as `exec sb fact
     /// <redirect>`, so one of its streams is something other than the PTY.
     fn spawn_with(world: &World, redirect: Option<&str>) -> Self {
+        Self::spawn_args(world, redirect, &[])
+    }
+
+    /// [`Pty::spawn_with`] with `args` after `sb fact`.
+    fn spawn_args(world: &World, redirect: Option<&str>, args: &[&str]) -> Self {
         let pair = native_pty_system()
             .openpty(PtySize {
                 rows: 30,
@@ -135,6 +145,7 @@ impl Pty {
             }
         };
         cmd.args(base.get_args());
+        cmd.args(args);
         cmd.env("TERM", "xterm-256color");
         cmd.env("NO_COLOR", "1");
         for (key, value) in base.get_envs() {
@@ -163,10 +174,12 @@ impl Pty {
             output,
             parser: vt100::Parser::new(30, 100, 0),
             drew: false,
+            raw: Vec::new(),
         }
     }
 
     fn process(&mut self, bytes: &[u8]) {
+        self.raw.extend_from_slice(bytes);
         self.parser.process(bytes);
         self.drew |= self.parser.screen().alternate_screen();
     }
@@ -632,4 +645,352 @@ fn a_bracketed_paste_goes_into_the_edit_box_whole() {
     pty.send(b"d");
     assert_eq!(pty.exit().exit_code(), 0, "{}", pty.contents());
     pty.assert_restored();
+}
+
+/// `sb fact <args>` in `world`, its output.
+fn run(world: &World, args: &[&str]) -> std::process::Output {
+    world.sb().args(args).output().expect("run sb")
+}
+
+/// A run that found its fact: exit 0, `stdout` exactly, nothing on stderr.
+fn assert_prints(world: &World, args: &[&str], stdout: &[u8]) {
+    let output = run(world, args);
+    assert_eq!(output.status.code(), Some(0), "{args:?}: {output:?}");
+    assert_eq!(output.stdout, stdout, "{args:?}: {output:?}");
+    assert!(output.stderr.is_empty(), "{args:?}: {output:?}");
+}
+
+/// `get` to a pipe: the value alone and a newline, exactly, in the three-
+/// and the two-word form, a multi-line value joined by newlines, and a
+/// value's control characters as they are.
+#[test]
+fn get_prints_the_exact_value_to_a_pipe() {
+    if !root_gate::requested() {
+        return;
+    }
+    let world = World::new();
+    world.write("esc.ini", "[esc]\nv = a\x1b]0;t\x07b \u{9b}2J\n");
+    let secret = format!("{SECRET}\n");
+    assert_prints(
+        &world,
+        &["get", "komodo", "komodo", "database_password"],
+        secret.as_bytes(),
+    );
+    assert_prints(
+        &world,
+        &["get", "komodo", "database_password"],
+        secret.as_bytes(),
+    );
+    assert_prints(
+        &world,
+        &["get", "homepage", "homepage", "motd"],
+        b"first line\nsecond line\n",
+    );
+    assert_prints(
+        &world,
+        &["get", "plex", "plex2", "claim_token"],
+        b"claim-FAKE1\n",
+    );
+    assert_prints(
+        &world,
+        &["get", "esc", "v"],
+        "a\x1b]0;t\x07b \u{9b}2J\n".as_bytes(),
+    );
+}
+
+/// `--json`: the names and the value on one line, lossless, every control
+/// character escaped.
+#[test]
+fn get_json_is_one_lossless_line() {
+    if !root_gate::requested() {
+        return;
+    }
+    let world = World::new();
+    world.write("esc.ini", "[esc]\nv = a\x1b]0;t\x07b\n");
+    assert_prints(
+        &world,
+        &["get", "homepage", "motd", "--json"],
+        b"{\"app\":\"homepage\",\"instance\":\"homepage\",\"key\":\"motd\",\"value\":\"first line\\nsecond line\"}\n",
+    );
+    assert_prints(
+        &world,
+        &["get", "--json", "esc", "esc", "v"],
+        b"{\"app\":\"esc\",\"instance\":\"esc\",\"key\":\"v\",\"value\":\"a\\u001b]0;t\\u0007b\"}\n",
+    );
+}
+
+/// `$(sb fact get …)` captures the value and nothing else.
+#[test]
+fn command_substitution_captures_only_the_value() {
+    if !root_gate::requested() {
+        return;
+    }
+    let world = World::new();
+    let base = world.sb();
+    let mut sh = Command::new("/bin/sh");
+    sh.args([
+        "-c",
+        "v=$(\"$0\" fact get komodo komodo database_password); printf '[%s]' \"$v\"",
+    ])
+    .arg(base.get_program());
+    for (key, value) in base.get_envs() {
+        match value {
+            Some(value) => sh.env(key, value),
+            None => sh.env_remove(key),
+        };
+    }
+    let output = sh.output().expect("run sh");
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        format!("[{SECRET}]")
+    );
+    assert!(output.stderr.is_empty(), "{output:?}");
+}
+
+/// To a terminal the value is drawn through term-ui's `DisplayText`: the
+/// title sequence, the bell and the 8-bit CSI with its parameters never
+/// reach the terminal, the text round them does.
+#[test]
+fn to_a_terminal_control_characters_are_left_out() {
+    if !root_gate::requested() {
+        return;
+    }
+    let world = World::new();
+    world.write("esc.ini", "[esc]\nv = a\x1b]0;pwned\x07b\u{9b}2Jc\n");
+    let mut pty = Pty::spawn_args(&world, None, &["get", "esc", "esc", "v"]);
+    let status = pty.exit();
+    assert_eq!(status.exit_code(), 0, "{}", pty.contents());
+    let raw = String::from_utf8_lossy(&pty.raw).into_owned();
+    assert!(raw.starts_with("abc\r\n"), "{raw:?}");
+    assert!(!raw.contains("2J"), "{raw:?}");
+    assert!(!raw.contains('\x1b'), "{raw:?}");
+    assert!(!raw.contains('\x07'), "{raw:?}");
+    assert!(!raw.contains('\u{9b}'), "{raw:?}");
+    assert!(!raw.contains("pwned"), "{raw:?}");
+}
+
+/// Every miss exits 1 with its own text, names only: never the value.
+#[test]
+fn every_miss_exits_1_with_its_text() {
+    if !root_gate::requested() {
+        return;
+    }
+    let world = World::new();
+    world.write("empty.ini", "[empty]\nk =\n");
+    world.write("bare.ini", "[DEFAULT]\nk = v\n");
+    let cases: &[(&[&str], &str)] = &[
+        (
+            &["get", "komodoo", "komodo", "database_password"],
+            "no facts for app 'komodoo'; run sb fact list to see them",
+        ),
+        (&["get", "bare", "k"], "app 'bare' has no instances"),
+        (
+            &["get", "plex", "plex3", "claim_token"],
+            "app 'plex' has no instance 'plex3'; instances: plex, plex2",
+        ),
+        (
+            &["get", "plex", "claim_token"],
+            "app 'plex' has 2 instances; name one: plex, plex2",
+        ),
+        (
+            &["get", "komodo", "komodo", "database_pasword"],
+            "komodo/komodo has no fact 'database_pasword'; facts: database_password",
+        ),
+        (&["get", "empty", "k"], "empty/empty k is empty"),
+        (&["get", "empty", "k", "--json"], "empty/empty k is empty"),
+        (
+            &["get", "plex", "a\x1bb", "claim_token"],
+            "app 'plex' has no instance 'a\\u{1b}b'",
+        ),
+        (
+            &["list", "komodoo"],
+            "no facts for app 'komodoo'; run sb fact list to see them",
+        ),
+        (
+            &["list", "plex", "plex3"],
+            "app 'plex' has no instance 'plex3'; instances: plex, plex2",
+        ),
+    ];
+    for (args, text) in cases {
+        let output = run(&world, args);
+        assert_eq!(output.status.code(), Some(1), "{args:?}: {output:?}");
+        assert!(output.stdout.is_empty(), "{args:?}: {output:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(text), "{args:?}: {stderr}");
+        assert!(!stderr.contains(SECRET), "{args:?}: {stderr}");
+    }
+}
+
+/// A missing, symlinked or unreadable store: exit 1 with the facts
+/// layer's own text.
+#[test]
+fn a_missing_or_symlinked_store_is_refused() {
+    if !root_gate::requested() {
+        return;
+    }
+    let refused = |world: &World, args: &[&str], text: &str| {
+        let output = run(world, args);
+        assert_eq!(output.status.code(), Some(1), "{args:?}: {output:?}");
+        assert!(output.stdout.is_empty(), "{args:?}: {output:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(text), "{args:?}: {stderr}");
+    };
+    let directory = "facts directory must be an existing directory without symlinks";
+    let empty = World::empty();
+    refused(&empty, &["get", "komodo", "database_password"], directory);
+    refused(&empty, &["list"], directory);
+    // The facts directory a symlink to a real one.
+    let linked = World::empty();
+    let real = linked.dir.path().join("real");
+    std::fs::create_dir(&real).expect("real");
+    std::fs::write(real.join("komodo.ini"), format!("[komodo]\nk = {SECRET}\n")).expect("file");
+    std::os::unix::fs::symlink(&real, linked.facts()).expect("symlink");
+    refused(&linked, &["get", "komodo", "k"], directory);
+    refused(&linked, &["list"], directory);
+    // One file a symlink.
+    let world = World::new();
+    std::os::unix::fs::symlink(
+        world.facts().join("komodo.ini"),
+        world.facts().join("link.ini"),
+    )
+    .expect("symlink");
+    refused(
+        &world,
+        &["get", "link", "komodo", "database_password"],
+        "catalog link: facts file link.ini must not be a symlink",
+    );
+    refused(
+        &world,
+        &["list"],
+        "catalog link: facts file link.ini must not be a symlink",
+    );
+    // A file that doesn't parse, for list, naming it.
+    let world = World::new();
+    world.write("sonarr.ini", "[sonarr]\nport = 1\rx\n");
+    refused(&world, &["list"], "catalog sonarr:");
+    refused(&world, &["get", "sonarr", "port"], "catalog sonarr:");
+}
+
+/// Bad arguments are clap's usage error, exit 2.
+#[test]
+fn bad_arguments_exit_2() {
+    let world = World::new();
+    for args in [
+        &["get"][..],
+        &["get", "komodo"],
+        &["get", "a", "b", "c", "d"],
+        &["list", "a", "b", "c"],
+        &["get", "--nope", "a", "b"],
+    ] {
+        let output = run(&world, args);
+        assert_eq!(output.status.code(), Some(2), "{args:?}: {output:?}");
+        assert!(output.stdout.is_empty(), "{args:?}: {output:?}");
+    }
+}
+
+/// `list`: `<app> <instance> <key>` lines, sorted, narrowed by the words
+/// given; `--json` the same names; never a value.
+#[test]
+fn list_prints_the_names_sorted_and_never_a_value() {
+    if !root_gate::requested() {
+        return;
+    }
+    let world = World::new();
+    assert_prints(
+        &world,
+        &["list"],
+        b"homepage homepage motd\nhomepage homepage title\nkomodo komodo database_password\nplex plex claim_token\nplex plex2 claim_token\n",
+    );
+    assert_prints(
+        &world,
+        &["list", "plex"],
+        b"plex plex claim_token\nplex plex2 claim_token\n",
+    );
+    assert_prints(
+        &world,
+        &["list", "plex", "plex2"],
+        b"plex plex2 claim_token\n",
+    );
+    assert_prints(
+        &world,
+        &["list", "komodo", "--json"],
+        b"[{\"app\":\"komodo\",\"instance\":\"komodo\",\"key\":\"database_password\"}]\n",
+    );
+    let output = run(&world, &["list", "--json"]);
+    assert!(
+        !String::from_utf8_lossy(&output.stdout).contains(SECRET),
+        "{output:?}"
+    );
+}
+
+/// The editor's lock held (an open `sb fact`, sb's or sb-go's) and
+/// Saltbox's role lock held: get and list still read, and take no lock.
+#[test]
+fn get_and_list_work_while_the_editor_is_open() {
+    if !root_gate::requested() {
+        return;
+    }
+    let world = World::new();
+    let editor = std::fs::File::create(world.facts().join(".fact-editor.lock")).expect("lock");
+    rustix::fs::flock(&editor, rustix::fs::FlockOperation::LockExclusive).expect("flock");
+    let role = std::fs::File::create(world.facts().join("komodo.ini.lock")).expect("lock");
+    rustix::fs::flock(&role, rustix::fs::FlockOperation::LockExclusive).expect("flock");
+    let secret = format!("{SECRET}\n");
+    assert_prints(
+        &world,
+        &["get", "komodo", "database_password"],
+        secret.as_bytes(),
+    );
+    let output = run(&world, &["list", "komodo"]);
+    assert!(output.status.success(), "{output:?}");
+}
+
+/// The run log names the command, the app, instance and key and the
+/// outcome, and never holds the value: found, as JSON, listed, missed.
+#[test]
+fn the_run_log_never_holds_the_value() {
+    if !root_gate::requested() {
+        return;
+    }
+    let world = World::new();
+    for args in [
+        &["get", "komodo", "komodo", "database_password"][..],
+        &["get", "komodo", "database_password", "--json"],
+        &["get", "komodo", "komodo", "nope"],
+        &["list"],
+        &["list", "komodo", "--json"],
+    ] {
+        let output = run(&world, args);
+        assert!(output.status.code().is_some(), "{args:?}: {output:?}");
+    }
+    let log = world.log();
+    for text in [
+        "command=\"fact get\"",
+        "command=\"fact list\"",
+        "fact lookup app=komodo instance=komodo key=database_password",
+        "fact found",
+        "outcome=\"failed\"",
+        "facts listed",
+    ] {
+        assert!(log.contains(text), "{text}: {log}");
+    }
+    assert!(!log.contains(SECRET), "{log}");
+}
+
+/// `list` to a terminal: each line through `DisplayText`, every line
+/// ending in a newline, the last one too, with stderr elsewhere (cli-core
+/// would end an open line on a terminal's stderr and hide it). The
+/// dialect refuses control characters in names, so the lines are as
+/// they are.
+#[test]
+fn list_to_a_terminal_ends_every_line() {
+    if !root_gate::requested() {
+        return;
+    }
+    let world = World::new();
+    let mut pty = Pty::spawn_args(&world, Some("2>/dev/null"), &["list", "plex"]);
+    assert_eq!(pty.exit().exit_code(), 0, "{}", pty.contents());
+    let raw = String::from_utf8_lossy(&pty.raw).into_owned();
+    assert_eq!(raw, "plex plex claim_token\r\nplex plex2 claim_token\r\n");
 }

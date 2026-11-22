@@ -1440,7 +1440,8 @@ sb fact list [<app> [<instance>]] [--json]    # names only, never values
   to 1 MiB; `DEFAULT` is hidden. It takes **no editor lock and no
   `<role>.ini.lock`**, so it works while `sb fact` is open and while
   Saltbox runs (Saltbox writes with `os.replace`, so one read is
-  consistent). `get` reads only `<app>.ini`; `list` reads the files it
+  consistent; a file replaced while it is read is read again once).
+  `get` reads only `<app>.ini`; `list` reads the files it
   lists, and one bad file fails it, naming it, as the editor's open
   does. An app name holding `/` or NUL names no file.
 - **Output of `get`:** the value alone and `\n` on stdout, continuation

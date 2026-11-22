@@ -250,32 +250,12 @@ impl Session {
             Err(err) => return Err(SessionError::EditorLock(FileError::io(EDITOR_LOCK, err))),
         }
         let mut roles = BTreeMap::new();
-        let mut entries =
-            rustix::fs::Dir::read_from(&dir).map_err(|err| SessionError::List(err.into()))?;
-        while let Some(entry) = entries.read() {
-            let entry = entry.map_err(|err| SessionError::List(err.into()))?;
-            let bytes = entry.file_name().to_bytes();
-            let Some(role) = bytes.strip_suffix(b".ini") else {
-                continue;
-            };
-            let role = std::str::from_utf8(role).map_err(|_| {
-                let name = String::from_utf8_lossy(bytes).into_owned();
-                SessionError::Role {
-                    role: name.clone(),
-                    cause: FileError::Name(name),
-                }
-            })?;
-            if role.is_empty() {
-                return Err(SessionError::Role {
-                    role: ".ini".to_owned(),
-                    cause: FileError::EmptyName,
-                });
-            }
-            let state = read_role(&dir, role).map_err(|cause| SessionError::Role {
-                role: role.to_owned(),
+        for role in role_names(&dir)? {
+            let state = read_role(&dir, &role).map_err(|cause| SessionError::Role {
+                role: role.clone(),
                 cause,
             })?;
-            roles.insert(role.to_owned(), state);
+            roles.insert(role, state);
         }
         tracing::info!(roles = roles.len(), "fact editor session opened");
         Ok(Self {
@@ -341,9 +321,45 @@ impl Session {
     }
 }
 
+/// The roles in the pinned directory `dir`: each `<role>.ini` name
+/// without its suffix, sorted. One `readdir`; no file is opened.
+///
+/// # Errors
+///
+/// [`SessionError::List`] when the directory can't be read, and
+/// [`SessionError::Role`] for a name that isn't UTF-8 or is `.ini` alone.
+pub(super) fn role_names(dir: &OwnedFd) -> Result<Vec<String>, SessionError> {
+    let mut names = Vec::new();
+    let mut entries =
+        rustix::fs::Dir::read_from(dir).map_err(|err| SessionError::List(err.into()))?;
+    while let Some(entry) = entries.read() {
+        let entry = entry.map_err(|err| SessionError::List(err.into()))?;
+        let bytes = entry.file_name().to_bytes();
+        let Some(role) = bytes.strip_suffix(b".ini") else {
+            continue;
+        };
+        let role = std::str::from_utf8(role).map_err(|_| {
+            let name = String::from_utf8_lossy(bytes).into_owned();
+            SessionError::Role {
+                role: name.clone(),
+                cause: FileError::Name(name),
+            }
+        })?;
+        if role.is_empty() {
+            return Err(SessionError::Role {
+                role: ".ini".to_owned(),
+                cause: FileError::EmptyName,
+            });
+        }
+        names.push(role.to_owned());
+    }
+    names.sort();
+    Ok(names)
+}
+
 /// `path` opened from `/` one component at a time, each with
 /// `O_NOFOLLOW|O_DIRECTORY`, so a symlink anywhere is refused.
-fn open_directory(path: &Path) -> io::Result<OwnedFd> {
+pub(super) fn open_directory(path: &Path) -> io::Result<OwnedFd> {
     if !path.is_absolute() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,

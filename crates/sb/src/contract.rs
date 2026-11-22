@@ -41,7 +41,9 @@ const SB_GO_TREE: &str = include_str!("../tests/fixtures/sb-go-command-tree.tsv"
 /// channels", difference 12), `sb edit motd` and `sb edit providers`
 /// (tui spec, Difference 38), and `--discard-local` on `update`, `setup`
 /// and the branch commands with `update`'s hidden `--skip-git` (ops
-/// decisions 40 to 42, differences 65 and 66).
+/// decisions 40 to 42, differences 65 and 66), and `sb fact get` and
+/// `sb fact list` with their `--json` (tui spec, decisions 43 to 46,
+/// difference 40; sb-go's `sb fact` takes no arguments).
 const EXTENSIONS: &[&str] = &[
     "flag\tsb\tglobal\tcolor",
     "flag\tsb docker ps\tlocal\tjson",
@@ -70,6 +72,10 @@ const EXTENSIONS: &[&str] = &[
     "flag\tsb setup\tglobal\tdiscard-local",
     "flag\tsb update\tglobal\tdiscard-local",
     "flag\tsb update\tglobal\tskip-git",
+    "command\tsb fact get",
+    "flag\tsb fact get\tlocal\tjson",
+    "command\tsb fact list",
+    "flag\tsb fact list\tlocal\tjson",
 ];
 
 /// sb-go's lines sb words differently on purpose, with sb's line for each:

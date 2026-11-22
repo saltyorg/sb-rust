@@ -7,6 +7,7 @@
 //! (ADR-001): every use of it is in this crate.
 
 mod describe;
+pub mod facts;
 pub mod install;
 mod reply;
 pub mod tags;

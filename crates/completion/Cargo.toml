@@ -17,6 +17,9 @@ clap_complete = { version = "=4.6.11", features = ["unstable-dynamic"] }
 sb-cli-core.workspace = true
 # The tag cache's reader (`TagCache::load`, `cached_tags`).
 sb-ansible.workspace = true
+# The facts store's read-only reader (`facts::read::Store`), for the
+# fact completers (completion spec, decision 15).
+sb-config.workspace = true
 # The earlier words unquoted as the shell passes them (bash and zsh pass
 # them as typed).
 shlex.workspace = true

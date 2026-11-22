@@ -105,9 +105,8 @@ enum Command {
     Update(sb_ops::update::UpdateArgs),
     #[command(flatten)]
     Edit(EditGroup),
-    /// Manage Saltbox configuration facts
-    #[command(long_about = fact::ABOUT)]
-    Fact,
+    #[command(flatten)]
+    Fact(FactGroup),
     /// Display system information
     // No verbose mode (motd decision 9): sb-go's `-v` only hidden, with a notice (`verbose`).
     #[command(long_about = motd::ABOUT)]
@@ -204,9 +203,9 @@ enum Command {
 // `Command`, the group's own arguments and subcommands would wait for its
 // build. For docker alone clap's nested form (`#[command(subcommand)]
 // Docker(DockerCommand)`) would do; edit's own flag and the optional
-// subcommands of completion and announcements need the enum, so the four
-// stay alike. The four carry no doc comment: clap would apply it to `sb`
-// itself.
+// subcommands of completion, announcements and fact need the enum, so the
+// five stay alike. The five carry no doc comment: clap would apply it to
+// `sb` itself.
 #[cfg_attr(test, derive(Debug))]
 #[derive(Subcommand)]
 enum DockerGroup {
@@ -279,6 +278,64 @@ enum AnnouncementsGroup {
     Announcements {
         #[command(subcommand)]
         command: Option<AnnouncementsCommand>,
+    },
+}
+
+// `sb fact`, the one variant of an enum without `defer` (`DockerGroup`).
+#[cfg_attr(test, derive(Debug))]
+#[derive(Subcommand)]
+enum FactGroup {
+    /// Manage Saltbox configuration facts
+    // Alone: the editor (M54). `get` and `list` are sb's own (tui spec,
+    // difference 40; sb-go's `sb fact` takes no arguments). No `help`
+    // subcommand, as `sb edit` has none.
+    #[command(long_about = fact::ABOUT, disable_help_subcommand = true)]
+    Fact {
+        /// None: the editor.
+        #[command(subcommand)]
+        command: Option<FactCommand>,
+    },
+}
+
+// `sb fact`'s subcommands (tui spec, "`sb fact get` and `sb fact list`").
+// Each positional completes from the facts store (completion spec,
+// decision 15) through the derive's `add`
+// (<https://docs.rs/clap_complete/4.6.11/clap_complete/engine/struct.ArgValueCompleter.html>);
+// their ids are sb-completion's `facts::APP`, `INSTANCE` and `KEY`.
+#[cfg_attr(test, derive(Debug))]
+#[derive(Subcommand, Clone)]
+// Their seven arguments and the completers on them wait for their build
+// (`Command`).
+#[command(defer = true)]
+enum FactCommand {
+    /// Print one fact's value
+    #[command(long_about = fact::GET_ABOUT)]
+    Get {
+        /// The app: its facts file, Saltbox's role
+        #[arg(add = sb_completion::facts::apps())]
+        app: String,
+        /// The instance; the fact, when the app has one instance
+        #[arg(add = sb_completion::facts::instances(Cli::command))]
+        instance: String,
+        /// The fact
+        #[arg(add = sb_completion::facts::keys(Cli::command))]
+        key: Option<String>,
+        /// Print the names and the value as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// List the facts' names, never their values
+    #[command(long_about = fact::LIST_ABOUT)]
+    List {
+        /// Only this app's facts
+        #[arg(add = sb_completion::facts::apps())]
+        app: Option<String>,
+        /// Only this instance's facts
+        #[arg(add = sb_completion::facts::instances(Cli::command))]
+        instance: Option<String>,
+        /// Print the names as JSON
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -613,7 +670,11 @@ impl Command {
                 Some(EditCommand::Motd) => "edit motd",
                 Some(EditCommand::Providers) => "edit providers",
             },
-            Command::Fact => "fact",
+            Command::Fact(FactGroup::Fact { command }) => match command {
+                None => "fact",
+                Some(FactCommand::Get { .. }) => "fact get",
+                Some(FactCommand::List { .. }) => "fact list",
+            },
             Command::Motd(_) => "motd",
             Command::SelfUpdate { .. } => "self-update",
             Command::Logs => "logs",
@@ -677,7 +738,9 @@ impl Command {
             | Command::Docker(_)
             | Command::ValidateConfig { .. }
             | Command::Edit(_)
-            | Command::Fact
+            | Command::Fact(FactGroup::Fact {
+                command: None | Some(FactCommand::Get { .. } | FactCommand::List { .. }),
+            })
             | Command::Motd(_)
             | Command::Logs
             | Command::Diag
@@ -729,7 +792,9 @@ impl Command {
             | Command::BranchSandbox { .. }
             | Command::Update(_)
             | Command::Edit(_)
-            | Command::Fact
+            | Command::Fact(FactGroup::Fact {
+                command: None | Some(FactCommand::Get { .. } | FactCommand::List { .. }),
+            })
             | Command::Motd(_)
             | Command::SelfUpdate { .. }
             | Command::Logs
@@ -1449,7 +1514,7 @@ fn run(command: &Command, shutdown: &Shutdown, log: Option<&RunLog>) -> anyhow::
             Some(command) => edit::edit(command.file(), no_edit_again, shutdown, log)?,
             None => edit::pick(no_edit_again, shutdown, log)?,
         },
-        Command::Fact => fact::fact(shutdown)?,
+        Command::Fact(FactGroup::Fact { ref command }) => run_fact(command.as_ref(), shutdown)?,
         Command::Motd(ref args) => motd::motd(args, shutdown, log)?,
         Command::Gha => gha::gha(shutdown, log)?,
         Command::Setup(ref args) => setup::setup(args, shutdown, log)?,
@@ -1522,6 +1587,25 @@ fn run(command: &Command, shutdown: &Shutdown, log: Option<&RunLog>) -> anyhow::
         }
     }
     Ok(())
+}
+
+/// `sb fact`: the editor alone, else `get` or `list` (tui spec, "`sb fact
+/// get` and `sb fact list`").
+fn run_fact(command: Option<&FactCommand>, shutdown: &Shutdown) -> anyhow::Result<()> {
+    match command {
+        None => fact::fact(shutdown),
+        Some(FactCommand::Get {
+            app,
+            instance,
+            key,
+            json,
+        }) => fact::get(app, instance, key.as_deref(), *json),
+        Some(FactCommand::List {
+            app,
+            instance,
+            json,
+        }) => fact::list(app.as_deref(), instance.as_deref(), *json),
+    }
 }
 
 /// Which controller command runs, with its ignored names.
@@ -2651,12 +2735,70 @@ mod tests {
         assert_eq!(EditCommand::Inventory.file(), edit::File::Inventory);
     }
 
-    /// `fact` needs root (its files are root's to change) and logs under
-    /// its name.
+    /// `fact`, `fact get` and `fact list` need root (its files are root's
+    /// to change; one rule for every command: tui decision 46), take no
+    /// run lock and log under their names, never their arguments.
     #[test]
     fn fact_needs_root_and_logs_its_name() {
-        assert!(Command::Fact.needs_root());
-        assert_eq!(Command::Fact.name(), "fact");
+        let fact = |command| Command::Fact(FactGroup::Fact { command });
+        let get = fact(Some(FactCommand::Get {
+            app: "plex".into(),
+            instance: "plex".into(),
+            key: Some("token".into()),
+            json: false,
+        }));
+        let list = fact(Some(FactCommand::List {
+            app: Some("plex".into()),
+            instance: None,
+            json: true,
+        }));
+        for (command, name) in [(fact(None), "fact"), (get, "fact get"), (list, "fact list")] {
+            assert!(command.needs_root(), "{name}");
+            assert!(!command.takes_run_lock(), "{name}");
+            assert_eq!(command.name(), name);
+        }
+    }
+
+    /// `fact get` takes two or three words and `fact list` none to two;
+    /// a fourth word, or `list`'s third, is a usage error (exit 2).
+    #[test]
+    fn fact_subcommands_take_their_words() {
+        let parse = |args: &[&str]| Cli::try_parse_from(args).map(|cli| cli.command);
+        match parse(&["sb", "fact", "get", "plex", "token"]).expect("parses") {
+            Command::Fact(FactGroup::Fact {
+                command:
+                    Some(FactCommand::Get {
+                        app,
+                        instance,
+                        key,
+                        json,
+                    }),
+            }) => assert_eq!(
+                (app.as_str(), instance.as_str(), key, json),
+                ("plex", "token", None, false)
+            ),
+            other => panic!("{other:?}"),
+        }
+        match parse(&["sb", "fact", "list", "--json"]).expect("parses") {
+            Command::Fact(FactGroup::Fact {
+                command:
+                    Some(FactCommand::List {
+                        app,
+                        instance,
+                        json,
+                    }),
+            }) => assert_eq!((app, instance, json), (None, None, true)),
+            other => panic!("{other:?}"),
+        }
+        for args in [
+            &["sb", "fact", "get", "plex"][..],
+            &["sb", "fact", "get", "a", "b", "c", "d"],
+            &["sb", "fact", "list", "a", "b", "c"],
+            &["sb", "fact", "nope"],
+        ] {
+            let err = parse(args).expect_err("refused");
+            assert_eq!(err.exit_code(), 2, "{args:?}: {err}");
+        }
     }
 
     /// `motd` needs root and logs under its name (motd decision 20).

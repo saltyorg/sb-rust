@@ -30,13 +30,9 @@ pub fn completer(command: fn() -> clap::Command) -> ArgValueCompleter {
         let Some(current) = current.to_str() else {
             return Vec::new();
         };
-        let index = std::env::var("_CLAP_COMPLETE_INDEX")
-            .ok()
-            .and_then(|index| index.parse().ok());
-        let words = earlier_words(std::env::args_os(), index);
-        if split_off_value(&words) {
+        let Some(words) = request_words() else {
             return Vec::new();
-        }
+        };
         let earlier = earlier_tags(command, &words);
         let root = config::saltbox_dir(std::env::var_os("SB_SALTBOX_DIR"));
         let appdata = config::appdata_path(&config::inventory_path(&root));
@@ -58,6 +54,17 @@ const GROUP: &str = "tags";
 /// about 3,000 instructions a tag.
 fn candidate(tag: String) -> CompletionCandidate {
     CompletionCandidate::new(tag).tag(Some(GROUP.into()))
+}
+
+/// This request's earlier words ([`earlier_words`] of sb's own arguments,
+/// up to `_CLAP_COMPLETE_INDEX`); `None` when the word being completed is
+/// a value bash split off ([`split_off_value`]), which gets no candidates.
+pub(crate) fn request_words() -> Option<Vec<OsString>> {
+    let index = std::env::var("_CLAP_COMPLETE_INDEX")
+        .ok()
+        .and_then(|index| index.parse().ok());
+    let words = earlier_words(std::env::args_os(), index);
+    (!split_off_value(&words)).then_some(words)
 }
 
 /// The words of the command line before the one being completed: the
@@ -101,15 +108,29 @@ fn earlier_tags(command: fn() -> clap::Command, words: &[OsString]) -> Vec<Strin
     if words.len() <= 2 {
         return Vec::new();
     }
-    let words = rejoined(words);
-    let words = words.iter().map(|word| unquoted(word));
-    let Ok(matches) = command().ignore_errors(true).try_get_matches_from(words) else {
-        return Vec::new();
-    };
-    matches
-        .subcommand_matches(INSTALL)
+    parsed(command, words)
+        .as_ref()
+        .and_then(|matches| matches.subcommand_matches(INSTALL))
         .and_then(|install| install.try_get_many::<String>(TAGS).ok().flatten())
         .map_or_default(|tags| tags.cloned().collect())
+}
+
+/// `words` (sb and its arguments) parsed by `command` as the real parse
+/// reads them, each `=` joined again ([`rejoined`]) and each word
+/// unquoted ([`unquoted`]), errors ignored
+/// (<https://docs.rs/clap/4.6.7/clap/struct.Command.html#method.ignore_errors>);
+/// `None` when even that parse fails. The tag completer and the fact
+/// completers (`facts`) read the earlier words through it.
+pub(crate) fn parsed(
+    command: fn() -> clap::Command,
+    words: &[OsString],
+) -> Option<clap::ArgMatches> {
+    let words = rejoined(words);
+    let words = words.iter().map(|word| unquoted(word));
+    command()
+        .ignore_errors(true)
+        .try_get_matches_from(words)
+        .ok()
 }
 
 /// `words` with each `=` joined to the words round it again: bash splits

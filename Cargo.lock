@@ -3550,6 +3550,7 @@ dependencies = [
  "regex",
  "sb-ansible",
  "sb-cli-core",
+ "sb-config",
  "sb-exec",
  "sb-term-ui",
  "shlex",

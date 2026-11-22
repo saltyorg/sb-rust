@@ -85,8 +85,9 @@ deny = [
     # sb-journal's).
     { crate = "sb-repo", wrappers = ["sb-ops", "sb-repo", "sb-ansible"] },
     # config: sb validate-config's schemas and checks, used by the binary,
-    # and its facts half, which the fact editor shows (tui spec, editors).
-    { crate = "sb-config", wrappers = ["sb", "sb-motd", "sb-ops", "sb-tui"] },
+    # and its facts half, which the fact editor shows (tui spec, editors)
+    # and completion reads for `sb fact get` (completion decision 15).
+    { crate = "sb-config", wrappers = ["sb", "sb-motd", "sb-ops", "sb-tui", "sb-completion"] },
     # tui: sb's full-screen screens (the log picker and viewer, the
     # editors) over docker, host, config, term-ui and cli-core, used by the binary
     # (tui spec, "Gate bookkeeping"), and by ops for the announcements'

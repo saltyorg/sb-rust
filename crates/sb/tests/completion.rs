@@ -823,3 +823,160 @@ fn a_symlink_name_gets_its_own_file() {
         .expect("sb's file");
     assert!(own.contains(&sb.display().to_string()), "{own}");
 }
+
+/// A fact value in [`facts_root`]'s store: never a candidate.
+const FACT_SECRET: &str = "not-a-real-token";
+
+/// A Saltbox root whose inventory puts the facts store under it: plex
+/// with two instances (one key with a space), teslamate, and a file
+/// whose name has a space; every directory 0755 and every file 0640, as
+/// Saltbox leaves them (completion spec, decision 15).
+fn facts_root() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let mode = |path: &Path, mode| {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).expect("chmod");
+    };
+    let inventory = dir.path().join("inventories/host_vars");
+    std::fs::create_dir_all(&inventory).expect("inventory");
+    let facts = dir.path().join("appdata/saltbox");
+    std::fs::create_dir_all(&facts).expect("facts");
+    for path in [
+        dir.path(),
+        &dir.path().join("inventories"),
+        &inventory,
+        &dir.path().join("appdata"),
+        &facts,
+    ] {
+        mode(path, 0o755);
+    }
+    std::fs::write(
+        inventory.join("localhost.yml"),
+        format!(
+            "server_appdata_path: {}\n",
+            dir.path().join("appdata").display()
+        ),
+    )
+    .expect("inventory");
+    mode(&inventory.join("localhost.yml"), 0o644);
+    for (name, text) in [
+        (
+            "plex.ini",
+            format!(
+                "[plex]\ntoken = {FACT_SECRET}\nclient_identifier = c\nwith space = v\n\n[plex-4k]\ntoken = t\n"
+            ),
+        ),
+        (
+            "teslamate.ini",
+            "[teslamate]\npostgres_password = p\n".to_owned(),
+        ),
+        ("odd name.ini", "[odd]\nk = v\n".to_owned()),
+    ] {
+        std::fs::write(facts.join(name), text).expect("fact file");
+        mode(&facts.join(name), 0o640);
+    }
+    dir
+}
+
+/// The values of a reply's candidates, flags left out: the text before a
+/// description (fish's tab, zsh's colon, bash's two spaces).
+fn values(reply: &str) -> Vec<String> {
+    reply
+        .lines()
+        .map(|line| {
+            line.split(['\t', ':'])
+                .next()
+                .unwrap_or_default()
+                .split("  ")
+                .next()
+                .unwrap_or_default()
+                .to_owned()
+        })
+        .filter(|value| !value.starts_with('-'))
+        .collect()
+}
+
+/// `sb fact get` and `sb fact list` complete apps, instances and keys from
+/// the store in each shell (completion spec, decision 15): the app and the
+/// instance read from the earlier words, flags and their values skipped,
+/// names with whitespace left out, nothing for an unknown app, and never
+/// a value.
+#[test]
+fn fact_names_complete_in_every_shell() {
+    let root = facts_root();
+    let cases: &[(&[&str], &[&str])] = &[
+        (&["fact", "get", ""], &["plex", "teslamate"]),
+        (&["fact", "get", "p"], &["plex"]),
+        (&["fact", "get", "plex", ""], &["plex", "plex-4k"]),
+        (
+            &["fact", "get", "plex", "plex", ""],
+            &["client_identifier", "token"],
+        ),
+        (&["fact", "get", "plex", "plex", "t"], &["token"]),
+        (
+            &[
+                "--color", "never", "fact", "get", "--json", "plex", "plex-4k", "",
+            ],
+            &["token"],
+        ),
+        (&["fact", "list", ""], &["plex", "teslamate"]),
+        (&["fact", "list", "plex", ""], &["plex", "plex-4k"]),
+        (&["fact", "get", "plexx", ""], &[]),
+        (&["fact", "get", "plex", "nope", ""], &[]),
+    ];
+    for shell in ["bash", "zsh", "fish"] {
+        for (words, expected) in cases {
+            let text = reply(shell, root.path(), words, words.len());
+            assert_eq!(values(&text), *expected, "{shell} {words:?}: {text:?}");
+            assert!(!text.contains(FACT_SECRET), "{shell} {words:?}: {text:?}");
+            // zsh's stub passes no word for an empty one at the end.
+            if shell == "zsh" && words.last() == Some(&"") {
+                let typed = &words[..words.len() - 1];
+                let text = reply(shell, root.path(), typed, words.len());
+                assert_eq!(values(&text), *expected, "{shell} {typed:?}: {text:?}");
+            }
+        }
+    }
+}
+
+/// A fact request as `nobody`: the directory lists, so the apps come, but
+/// the 0640 files don't open, so no instance does; sudo is never called
+/// and nothing is logged (completion spec, decision 15: as the calling
+/// user).
+#[test]
+fn fact_completion_runs_as_the_calling_user() {
+    if !root_gate::requested() {
+        return;
+    }
+    let root = facts_root();
+    let parent = tempfile::tempdir().expect("temp dir");
+    std::fs::set_permissions(parent.path(), std::fs::Permissions::from_mode(0o777)).expect("chmod");
+    let log_dir = parent.path().join("logs");
+    let sudo = "#!/bin/sh\necho 'sudo was called' >&2\nexit 42\n";
+    let saltbox_dir = root.path().display().to_string();
+    let env = [
+        ("SB_COMPLETE", "fish"),
+        ("SB_SALTBOX_DIR", saltbox_dir.as_str()),
+    ];
+    for (words, expected) in [
+        (&["--", "sb", "fact", "get", ""][..], "plex\nteslamate\n"),
+        (&["--", "sb", "fact", "get", "plex", "p"], ""),
+    ] {
+        let sudo_dir = tempfile::tempdir().expect("temp dir");
+        let (_, output) = nobody::sb_as_nobody(words, &log_dir, sudo_dir.path(), sudo, &env);
+        assert!(output.status.success(), "{output:?}");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert_eq!(
+            values(&stdout).concat(),
+            expected.replace('\n', ""),
+            "{words:?}: {output:?}"
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr
+                .lines()
+                .all(|line| line.starts_with("LLVM Profile Error")),
+            "{output:?}"
+        );
+    }
+    assert!(!log_dir.exists(), "an unprivileged run logged");
+}
