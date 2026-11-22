@@ -13,7 +13,6 @@ mod common;
 mod root_gate;
 
 use std::io::{Read as _, Write as _};
-use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::mpsc;
@@ -79,12 +78,10 @@ impl Files {
         .expect("inventory");
         // A playbook stand-in that would mark any run.
         let playbook = dir.path().join("ansible-playbook");
-        std::fs::write(
+        sb_cli_core::testing::write_program(
             &playbook,
             format!("#!/bin/sh\ntouch '{}'\n", dir.path().join("ran").display()),
-        )
-        .expect("stand-in");
-        std::fs::set_permissions(&playbook, std::fs::Permissions::from_mode(0o755)).expect("mode");
+        );
         Self { dir }
     }
 
@@ -739,15 +736,13 @@ impl Files {
     /// exits `code`.
     fn recording_playbook(&self, code: i32) {
         let playbook = self.path("ansible-playbook");
-        std::fs::write(
+        sb_cli_core::testing::write_program(
             &playbook,
             format!(
                 "#!/bin/sh\necho \"$PWD $*\" >> '{}'\nexit {code}\n",
                 self.path("record").display()
             ),
-        )
-        .expect("stand-in");
-        std::fs::set_permissions(&playbook, std::fs::Permissions::from_mode(0o755)).expect("mode");
+        );
     }
 
     fn recorded(&self) -> String {

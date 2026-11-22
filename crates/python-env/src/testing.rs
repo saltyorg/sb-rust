@@ -1,9 +1,9 @@
 //! Stand-in programs and a Saltbox tree on a temporary root, for
 //! sb-python-env's tests and sb's end-to-end tests (python-env spec,
 //! Testing Strategy; the `testing` feature, never in a release build).
-//! The stand-ins are shell scripts, as sb-host's and sb-repo's; a test
-//! that writes one and runs it guards against ETXTBSY as theirs do (a
-//! lock held from writing it until its run is over).
+//! The stand-ins are shell scripts, as sb-host's and sb-repo's, written
+//! by a child so that running one never fails with ETXTBSY
+//! (`sb_cli_core::testing::write_program`).
 
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
@@ -134,8 +134,7 @@ pub fn fact_binary(version: &str) -> Vec<u8> {
 pub fn stand_in(dir: &Path, name: &str, script: &str) -> PathBuf {
     let path = dir.join(name);
     std::fs::create_dir_all(dir).expect("stand-in dir");
-    std::fs::write(&path, format!("#!/bin/sh\n{script}\n")).expect("write stand-in");
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    sb_cli_core::testing::write_program(&path, format!("#!/bin/sh\n{script}\n"));
     path
 }
 
@@ -559,8 +558,7 @@ exit 0"#;
     pub fn fact(&self, body: &[u8]) {
         let path = &self.layout.fact;
         std::fs::create_dir_all(path.parent().expect("parent")).expect("facts dir");
-        std::fs::write(path, body).expect("fact");
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        sb_cli_core::testing::write_program(path, body);
     }
 
     /// The layout's fact as a script running `script` (after recording its

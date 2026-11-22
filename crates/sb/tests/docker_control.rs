@@ -50,12 +50,10 @@ impl World {
         let bin = dir.path().join("bin");
         std::fs::create_dir(&bin).expect("bin");
         let program = bin.join("systemctl");
-        std::fs::write(
+        sb_cli_core::testing::write_program(
             &program,
             format!("#!/bin/sh\n[ \"$1 $2\" = 'is-active {UNIT}' ] || exit 9\n{script}\n"),
-        )
-        .expect("systemctl");
-        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        );
         std::fs::write(dir.path().join("unit.service"), "").expect("unit");
         std::fs::create_dir(dir.path().join("logs")).expect("logs");
         Self { dir }

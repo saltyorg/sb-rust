@@ -789,8 +789,6 @@ async fn detect_virt(program: &Path, token: &CancellationToken) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::os::unix::fs::PermissionsExt as _;
-
     use sb_cli_core::theme::Theme;
 
     use super::*;
@@ -1296,12 +1294,10 @@ Region               Saxony"
     /// A stand-in program printing `answer` and exiting `code`.
     fn stand_in(dir: &Path, name: &str, answer: &str, code: i32) -> PathBuf {
         let path = dir.join(name);
-        std::fs::write(
+        sb_cli_core::testing::write_program(
             &path,
             format!("#!/bin/sh\nprintf '{answer}'\nexit {code}\n"),
-        )
-        .expect("write");
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("mode");
+        );
         path
     }
 

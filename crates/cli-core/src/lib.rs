@@ -16,5 +16,7 @@ pub mod root;
 pub mod run_lock;
 pub mod spawn;
 pub mod tail;
+#[cfg(feature = "testing")]
+pub mod testing;
 pub mod theme;
 pub mod tls;

@@ -141,8 +141,7 @@ impl World {
     /// The fake editor installed in `bin` as `name`.
     fn stub(&self, name: &str) {
         let path = self.bin().join(name);
-        std::fs::write(&path, FAKE).expect("stub");
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        sb_cli_core::testing::write_program(&path, FAKE);
     }
 
     /// `sb edit <sub>` in this world, with no editor variables, `PATH`
@@ -282,8 +281,7 @@ fn the_fallback_list_is_tried_in_order() {
     let broken = World::new();
     broken.stub("vi");
     let unrunnable = broken.bin().join("editor");
-    std::fs::write(&unrunnable, "").expect("empty");
-    std::fs::set_permissions(&unrunnable, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    sb_cli_core::testing::write_program(&unrunnable, "");
     let output = broken.sb("settings").output().expect("run sb");
     assert_eq!(output.status.code(), Some(1));
     assert!(

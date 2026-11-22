@@ -1466,8 +1466,7 @@ mod tests {
     }
 
     fn executable(path: &Path) {
-        std::fs::write(path, "#!/bin/sh\n").expect("write");
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        sb_cli_core::testing::write_program(path, "#!/bin/sh\n");
     }
 
     /// sb-go's `TestDiscoverCommands`: regular executables named

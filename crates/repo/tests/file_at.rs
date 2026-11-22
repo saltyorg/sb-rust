@@ -159,30 +159,12 @@ async fn a_directory_at_the_path_is_no_file() {
 }
 
 /// A git at `path` that runs `then` (shell) when its arguments match the
-/// shell pattern `when`, and the host's git otherwise. It is written by a
-/// child (`sh`, fed on stdin), so no thread of this process holds a write
-/// descriptor to it that another test's spawned child could inherit and
-/// make its exec fail with ETXTBSY; each stand-in has its own path.
+/// shell pattern `when`, and the host's git otherwise; each stand-in has
+/// its own path. Written by a child, so no other test's fork makes its
+/// exec fail with ETXTBSY (`write_program`).
 fn git_that(path: &Path, when: &str, then: &str) -> std::path::PathBuf {
-    use std::io::Write as _;
     let script = format!("#!/bin/sh\ncase \"$*\" in\n  {when}) {then} ;;\nesac\nexec git \"$@\"\n");
-    let mut child = Command::new("sh")
-        .args(["-c", "cat > \"$1\" && chmod 755 \"$1\"", "sh"])
-        .arg(path)
-        .stdin(std::process::Stdio::piped())
-        .spawn()
-        .expect("sh");
-    child
-        .stdin
-        .take()
-        .expect("stdin")
-        .write_all(script.as_bytes())
-        .expect("script");
-    assert!(
-        child.wait().expect("wait").success(),
-        "writing {}",
-        path.display()
-    );
+    sb_cli_core::testing::write_program(path, script);
     path.to_path_buf()
 }
 

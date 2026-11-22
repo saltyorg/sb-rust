@@ -32,8 +32,9 @@ tokio-util.workspace = true
 # sb-journal's tests take its own `testing`).
 sb-repo = { workspace = true, features = ["testing"] }
 sb-term-ui = { workspace = true, features = ["testing"] }
-# The runner's shutdown, and its in-memory screen.
-sb-cli-core.workspace = true
+# The runner's shutdown, and its in-memory screen; stand-in programs
+# written by a child (`testing::write_program`).
+sb-cli-core = { workspace = true, features = ["testing"] }
 indicatif.workspace = true
 tokio = { workspace = true, features = ["macros", "sync"] }
 tempfile.workspace = true

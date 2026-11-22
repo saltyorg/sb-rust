@@ -61,7 +61,7 @@ fn setup_on(channel: Channel, tag: &str, body: &[u8], answer: Answer) -> Setup {
     fake.script(&path, answer);
     let dir = tempfile::tempdir().expect("dir");
     let sb = dir.path().join("sb");
-    std::fs::copy(assert_cmd::cargo::cargo_bin("sb"), &sb).expect("copy sb");
+    sb_cli_core::testing::copy_program(&assert_cmd::cargo::cargo_bin("sb"), &sb);
     let bases = dir.path().join("bases.json");
     fake.write_bases(&bases).expect("bases");
     Setup {

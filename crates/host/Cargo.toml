@@ -58,7 +58,9 @@ sb-journal = { workspace = true, features = ["testing"] }
 tokio = { workspace = true, features = ["macros", "sync"] }
 # apt's steps drawn to memory, and the runner's shutdown for Ctrl-C.
 sb-term-ui = { workspace = true, features = ["testing"] }
-sb-cli-core.workspace = true
+# The runner's shutdown; stand-in programs written by a child
+# (`testing::write_program`).
+sb-cli-core = { workspace = true, features = ["testing"] }
 indicatif.workspace = true
 # The run log test's capture.
 tracing-subscriber.workspace = true

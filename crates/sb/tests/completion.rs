@@ -625,7 +625,13 @@ fn install_root(shells: &[&str]) -> tempfile::TempDir {
     let write = |path: &str, text: &str, mode: u32| {
         let path = root.path().join(path);
         std::fs::create_dir_all(path.parent().expect("parent")).expect("dirs");
-        std::fs::write(&path, text).expect("write");
+        // An executable is written by a child: ETXTBSY otherwise
+        // (`sb_cli_core::testing::write_program`).
+        if mode & 0o111 == 0 {
+            std::fs::write(&path, text).expect("write");
+        } else {
+            sb_cli_core::testing::write_program(&path, text);
+        }
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).expect("chmod");
     };
     let zsh_dir = root.path().join("usr/local/share/zsh/site-functions");

@@ -56,8 +56,10 @@ features = [
 # depend on it directly (`wrappers`), from the capability map's
 # "Depends on" column. Added with each crate.
 deny = [
-    # cli-core: every module builds on it.
-    { crate = "sb-cli-core", wrappers = ["sb", "sb-ops", "sb-term-ui", "sb-docker", "sb-config", "sb-exec", "sb-tui", "sb-release", "sb-repo", "sb-host", "sb-motd", "sb-ansible", "sb-python-env", "sb-completion"] },
+    # cli-core: every module builds on it. Its own name is its self
+    # dev-dependency, which turns `testing` on for its tests (as
+    # sb-journal's).
+    { crate = "sb-cli-core", wrappers = ["sb-cli-core", "sb", "sb-ops", "sb-term-ui", "sb-docker", "sb-config", "sb-exec", "sb-tui", "sb-release", "sb-repo", "sb-host", "sb-motd", "sb-ansible", "sb-python-env", "sb-completion"] },
     # term-ui: the inline output layer; docker and config draw through it
     # with their crates; host's apt streams into its steps.
     { crate = "sb-term-ui", wrappers = ["sb", "sb-ops", "sb-docker", "sb-config", "sb-exec", "sb-tui", "sb-release", "sb-repo", "sb-host", "sb-motd", "sb-ansible", "sb-python-env", "sb-completion"] },

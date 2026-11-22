@@ -760,8 +760,7 @@ mod tests {
             args = dir.join("args").display(),
             home = dir.join("home").display(),
         );
-        std::fs::write(&path, script).expect("write");
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("mode");
+        sb_cli_core::testing::write_program(&path, script);
         path
     }
 
@@ -858,8 +857,7 @@ mod tests {
             let script = format!(
                 "#!/bin/sh\ncat <<'EOF'\n{stdout}\nEOF\ncat >&2 <<'EOF'\n{stderr}\nEOF\nexit {code}\n"
             );
-            std::fs::write(&path, script).expect("write");
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("mode");
+            sb_cli_core::testing::write_program(&path, script);
             path
         };
         let failed = program("failed", "", error, 2);

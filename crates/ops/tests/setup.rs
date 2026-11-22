@@ -7,7 +7,6 @@
 //! the fetch over an existing checkout included, is
 //! crates/sb/tests/setup.rs.
 
-use std::os::unix::fs::PermissionsExt as _;
 use std::path::Path;
 
 use sb_cli_core::cancel::Shutdown;
@@ -61,8 +60,7 @@ impl World {
         let completion = tempfile::tempdir().expect("completion root");
         let sb = completion.path().join("opt/sb/sb");
         std::fs::create_dir_all(sb.parent().expect("parent")).expect("dirs");
-        std::fs::write(&sb, "#!/bin/sh\n").expect("sb");
-        std::fs::set_permissions(&sb, std::fs::Permissions::from_mode(0o755)).expect("mode");
+        sb_cli_core::testing::write_program(&sb, "#!/bin/sh\n");
         Self {
             host,
             tree,

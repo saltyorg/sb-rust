@@ -20,7 +20,6 @@ mod processes;
 mod root_gate;
 
 use std::io::Read;
-use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -88,14 +87,12 @@ impl World {
         let bin = dir.path().join("bin");
         std::fs::create_dir(&bin).expect("bin");
         let program = bin.join("systemctl");
-        std::fs::write(
+        sb_cli_core::testing::write_program(
             &program,
             format!(
                 "#!/bin/sh\n[ \"$1 $2\" = 'is-active {UNIT}' ] || exit 9\n: > \"$(dirname \"$0\")/../ran\"\n{script}\n"
             ),
-        )
-        .expect("systemctl");
-        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        );
         std::fs::write(dir.path().join("unit.service"), "").expect("unit");
         std::fs::create_dir(dir.path().join("logs")).expect("logs");
         Self { dir }

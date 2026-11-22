@@ -47,6 +47,8 @@ anyhow.workspace = true
 testing = []
 
 [dev-dependencies]
+# Stand-in programs written by a child (`testing::write_program`).
+sb-cli-core = { workspace = true, features = ["testing"] }
 # The refresh's steps on a runner drawing to memory.
 sb-term-ui = { workspace = true, features = ["testing"] }
 indicatif.workspace = true

@@ -12,7 +12,6 @@ mod common;
 mod processes;
 mod root_gate;
 
-use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::ExitStatusExt;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -42,15 +41,13 @@ impl World {
         let bin = dir.path().join("bin");
         std::fs::create_dir(&bin).expect("bin");
         let program = bin.join("systemctl");
-        std::fs::write(
+        sb_cli_core::testing::write_program(
             &program,
             format!(
                 "#!/bin/sh\n[ \"$1 $2\" = 'is-active {UNIT}' ] || exit 9\n\
                  here=\"$(dirname \"$0\")/..\"\necho $$ > \"$here/systemctl.pid\"\n{script}\n"
             ),
-        )
-        .expect("systemctl");
-        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        );
         std::fs::write(dir.path().join("unit.service"), "").expect("unit");
         std::fs::create_dir(dir.path().join("logs")).expect("logs");
         Self { dir }
@@ -163,14 +160,12 @@ fn a_real_hangup_logs_the_ending_and_leaves_no_child() {
     let fake = FakeController::start().expect("fake");
     let program = common::sb().get_program().to_string_lossy().into_owned();
     let wrapper = world.file("run.sh");
-    std::fs::write(
+    sb_cli_core::testing::write_program(
         &wrapper,
         "#!/bin/sh\ntrap : HUP\n\
          sh -c 'echo $$ > \"$1\"; exec \"$0\" docker start' \"$SB\" \"$DIR/sb.pid\"\n\
          echo \"EXIT=$?\" > \"$DIR/exit\"\n",
-    )
-    .expect("wrapper");
-    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    );
     // The session leader is `script`'s non-interactive `sh`: the kernel
     // hangs it up, and as it dies of it the kernel sends SIGHUP once to
     // the foreground group, the wrapper's and sb's (a single hangup; an

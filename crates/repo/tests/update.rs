@@ -3,7 +3,6 @@
 //! and a single-branch clone of it, the shape setup makes. Nothing here
 //! touches a Saltbox checkout or the network (`file://` remotes only).
 
-use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -225,16 +224,14 @@ static SPAWNS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 /// children through `GIT_CONFIG_PARAMETERS`).
 fn recording_git(dir: &Path) -> PathBuf {
     let path = dir.join("git");
-    std::fs::write(
+    sb_cli_core::testing::write_program(
         &path,
         format!(
             "#!/bin/sh\nprintf '%s %s\\n' \"$LC_ALL\" \"$GIT_TERMINAL_PROMPT\" >> '{}'\n\
              exec git -c protocol.file.allow=always \"$@\"\n",
             dir.join("env.log").display()
         ),
-    )
-    .expect("write");
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    );
     path
 }
 
@@ -242,16 +239,14 @@ fn recording_git(dir: &Path) -> PathBuf {
 /// the real git allowing `file://` submodules, as [`recording_git`].
 fn arguments_git(dir: &Path) -> PathBuf {
     let path = dir.join("git");
-    std::fs::write(
+    sb_cli_core::testing::write_program(
         &path,
         format!(
             "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\n\
              exec git -c protocol.file.allow=always \"$@\"\n",
             dir.join("args.log").display()
         ),
-    )
-    .expect("write");
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    );
     path
 }
 
@@ -337,31 +332,6 @@ async fn a_git_that_cant_start_is_named_by_each_read() {
     assert!(fetch.to_string().contains("/nonexistent/git"), "{fetch}");
 }
 
-/// `script` written to `path`, executable, by a child (`sh`, fed on
-/// stdin): no thread of this process holds a write descriptor to it that
-/// another test's spawned child could inherit and make its exec fail with
-/// ETXTBSY (other tests here spawn git without `SPAWNS`).
-fn written_by_a_child(path: &Path, script: &str) {
-    use std::io::Write as _;
-    let mut child = std::process::Command::new("sh")
-        .args(["-c", "cat > \"$1\" && chmod 755 \"$1\"", "sh"])
-        .arg(path)
-        .stdin(std::process::Stdio::piped())
-        .spawn()
-        .expect("sh");
-    child
-        .stdin
-        .take()
-        .expect("stdin")
-        .write_all(script.as_bytes())
-        .expect("script");
-    assert!(
-        child.wait().expect("wait").success(),
-        "writing {}",
-        path.display()
-    );
-}
-
 /// `git config --get-all` failing other than "unset" (exit 1), as a
 /// config file git can't read does (exit 3), is the read's error with
 /// git's words, and nothing is added.
@@ -371,7 +341,7 @@ async fn a_failed_refspec_read_adds_nothing() {
     let fixture = Fixture::new();
     let bin = tempfile::tempdir().expect("bin");
     let path = bin.path().join("git-bad-config");
-    written_by_a_child(
+    sb_cli_core::testing::write_program(
         &path,
         "#!/bin/sh\nif [ \"$1 $2\" = 'config --get-all' ]; then echo 'fatal: bad config line 1' >&2; exit 3; fi\n\
          exec git \"$@\"\n",
@@ -843,7 +813,7 @@ const ASKED: &str =
 fn flaky_git(dir: &Path, first: &str, retry: &str) -> PathBuf {
     let path = dir.join("git");
     let log = dir.join("calls.log");
-    std::fs::write(
+    sb_cli_core::testing::write_program(
         &path,
         format!(
             "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{log}'\n\
@@ -852,9 +822,7 @@ fn flaky_git(dir: &Path, first: &str, retry: &str) -> PathBuf {
              exec git \"$@\"\n",
             log = log.display(),
         ),
-    )
-    .expect("write");
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    );
     path
 }
 
@@ -953,15 +921,13 @@ async fn ssh_never_waits_on_a_terminal() {
     // A stand-in ssh that records what decides whether ssh may prompt,
     // then fails as ssh does (255).
     let ssh = bin.path().join("ssh");
-    std::fs::write(
+    sb_cli_core::testing::write_program(
         &ssh,
         format!(
             "#!/bin/sh\nprintf '%s %s\\n' \"$SSH_ASKPASS\" \"$SSH_ASKPASS_REQUIRE\" > '{}'\nexit 255\n",
             bin.path().join("ssh.log").display()
         ),
-    )
-    .expect("write");
-    std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    );
     git(
         &fixture.checkout,
         &[
@@ -1433,15 +1399,13 @@ async fn clone_names_a_destination_it_cannot_use() {
 /// and which runs the real git otherwise.
 fn failing_git(dir: &Path, subcommand: &str) -> PathBuf {
     let path = dir.join("git");
-    std::fs::write(
+    sb_cli_core::testing::write_program(
         &path,
         format!(
             "#!/bin/sh\nif [ \"$1\" = {subcommand} ]; then echo 'fatal: refused' >&2; exit 1; fi\n\
              exec git \"$@\"\n"
         ),
-    )
-    .expect("write");
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    );
     path
 }
 
@@ -1497,7 +1461,7 @@ async fn a_clone_asked_for_credentials_is_retried_with_its_values() {
     let bin = tempfile::tempdir().expect("bin");
     let program = bin.path().join("git");
     let log = bin.path().join("calls.log");
-    std::fs::write(
+    sb_cli_core::testing::write_program(
         &program,
         format!(
             "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{log}'\n\
@@ -1505,9 +1469,7 @@ async fn a_clone_asked_for_credentials_is_retried_with_its_values() {
              exec git \"$@\"\n",
             log = log.display(),
         ),
-    )
-    .expect("write");
-    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    );
     let path = fixture.dir.path().join("sandbox");
     let (repo, ran) = clone(&program, &path, &fixture.url(), "master").await;
     assert_eq!(ran.error, None, "{}", ran.screen);

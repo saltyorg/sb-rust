@@ -9,9 +9,9 @@
 //! bare repository standing in for Saltbox's ([`Remote`]). Nothing
 //! reaches the host: every path the pieces take is one of the root's,
 //! given to them as an argument. The stand-ins are
-//! shell scripts, as sb-host's and sb-python-env's; a test that writes one
-//! and runs it guards against ETXTBSY as theirs do (a lock held from
-//! writing it until its run is over). bench's network fakes are
+//! shell scripts, as sb-host's and sb-python-env's, written by a child so
+//! that running one never fails with ETXTBSY
+//! (`sb_cli_core::testing::write_program`). bench's network fakes are
 //! [`network`]'s.
 
 pub mod network;
@@ -168,16 +168,14 @@ impl Host {
         let path = dir.join(name);
         let calls = self.path("calls.log").display().to_string();
         let failing = self.path("fail").join(name).display().to_string();
-        std::fs::write(
+        sb_cli_core::testing::write_program(
             &path,
             format!(
                 "#!/bin/sh\necho \"{name} $*\" >> '{calls}'\n\
                  [ -e '{failing}' ] && {{ echo '{name} failed (stand-in)' >&2; exit 1; }}\n\
                  {script}\n"
             ),
-        )
-        .expect("write stand-in");
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        );
         path
     }
 
@@ -490,9 +488,10 @@ pub const LIST_TAGS: &str = "playbook: saltbox.yml
 pub fn ansible_playbook(dir: &Path) -> PathBuf {
     let path = dir.join("ansible-playbook");
     std::fs::create_dir_all(dir).expect("stand-in dir");
-    std::fs::write(&path, format!("#!/bin/sh\ncat <<'LIST'\n{LIST_TAGS}LIST\n"))
-        .expect("write the stand-in");
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    sb_cli_core::testing::write_program(
+        &path,
+        format!("#!/bin/sh\ncat <<'LIST'\n{LIST_TAGS}LIST\n"),
+    );
     path
 }
 

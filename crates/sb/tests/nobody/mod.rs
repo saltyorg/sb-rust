@@ -27,8 +27,7 @@ pub fn sb_as_nobody(
 ) -> (u32, Output) {
     std::fs::set_permissions(sudo_dir, std::fs::Permissions::from_mode(0o755)).expect("chmod dir");
     let sudo = sudo_dir.join("sudo");
-    std::fs::write(&sudo, sudo_script).expect("fake sudo");
-    std::fs::set_permissions(&sudo, std::fs::Permissions::from_mode(0o755)).expect("chmod sudo");
+    sb_cli_core::testing::write_program(&sudo, sudo_script);
     let as_nobody = || {
         let mut cmd = Command::new("setpriv");
         cmd.args(["--reuid=65534", "--regid=65534", "--clear-groups"]);

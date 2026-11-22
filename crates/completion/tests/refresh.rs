@@ -17,7 +17,13 @@ static SPAWNS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn write(path: &Path, text: &str, mode: u32) {
     std::fs::create_dir_all(path.parent().expect("parent")).expect("dirs");
-    std::fs::write(path, text).expect("write");
+    // An executable is written by a child: ETXTBSY otherwise
+    // (`sb_cli_core::testing::write_program`).
+    if mode & 0o111 == 0 {
+        std::fs::write(path, text).expect("write");
+    } else {
+        sb_cli_core::testing::write_program(path, text);
+    }
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).expect("chmod");
 }
 

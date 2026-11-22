@@ -53,6 +53,8 @@ tempfile = { workspace = true, optional = true }
 form_urlencoded = { workspace = true, optional = true }
 
 [dev-dependencies]
+# Stand-in programs written by a child (`testing::write_program`).
+sb-cli-core = { workspace = true, features = ["testing"] }
 sb-term-ui = { workspace = true, features = ["testing"] }
 indicatif.workspace = true
 form_urlencoded.workspace = true

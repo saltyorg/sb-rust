@@ -402,23 +402,20 @@ impl Controller {
 pub(crate) static SPAWNS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// A stand-in `systemctl` in `dir` running `script` (sh): it checks its
-/// arguments are sb-go's, then leaves `ran` behind. Callers hold
-/// `SPAWNS` from writing it until its run is over, so no other test's
-/// fork holds its write descriptor when it runs (ETXTBSY).
+/// arguments are sb-go's, then leaves `ran` behind. Written by a child,
+/// so no other test's fork holds its write descriptor when it runs
+/// (ETXTBSY: `sb_cli_core::testing::write_program`).
 #[cfg(test)]
 pub(crate) fn systemctl(dir: &std::path::Path, script: &str) -> PathBuf {
-    use std::os::unix::fs::PermissionsExt as _;
     let path = dir.join("systemctl");
     let ran = dir.join("ran");
-    std::fs::write(
+    sb_cli_core::testing::write_program(
         &path,
         format!(
             "#!/bin/sh\n[ \"$1 $2\" = 'is-active {}' ] || exit 9\n: > '{}'\n{script}\n",
             UNIT,
             ran.display(),
         ),
-    )
-    .expect("write");
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    );
     path
 }

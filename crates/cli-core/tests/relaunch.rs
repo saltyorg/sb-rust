@@ -28,13 +28,10 @@ fn relaunch_execs_sudo_with_the_same_arguments() {
     let dir = tempfile::tempdir().expect("temp dir");
     let record = dir.path().join("args");
     let sudo = dir.path().join("sudo");
-    std::fs::write(
+    sb_cli_core::testing::write_program(
         &sudo,
         "#!/bin/sh\nprintf '%s\\n' \"$@\" \"SB_RELAUNCHED=$SB_RELAUNCHED\" > \"$SB_RELAUNCH_CHILD\"\nexit 7\n",
-    )
-    .expect("fake sudo");
-    std::fs::set_permissions(&sudo, std::os::unix::fs::PermissionsExt::from_mode(0o755))
-        .expect("chmod");
+    );
     let path = format!(
         "{}:{}",
         dir.path().display(),

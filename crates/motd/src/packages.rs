@@ -299,7 +299,6 @@ fn from_apt_list(output: &str, paint: &Paint) -> Option<String> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use std::os::unix::fs::PermissionsExt;
 
     /// Tests that write a stand-in script or start a child hold this from
     /// writing it until the run is over, so no other test's fork holds
@@ -318,10 +317,10 @@ pub(crate) mod tests {
         }
     }
 
-    /// A stand-in program at `path` running `body` under sh.
+    /// A stand-in program at `path` running `body` under sh, written by a
+    /// child (ETXTBSY otherwise: `sb_cli_core::testing::write_program`).
     pub(crate) fn stand_in(path: &Path, body: &str) {
-        std::fs::write(path, format!("#!/bin/sh\n{body}\n")).unwrap();
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        sb_cli_core::testing::write_program(path, format!("#!/bin/sh\n{body}\n"));
     }
 
     fn painted() -> Paint {

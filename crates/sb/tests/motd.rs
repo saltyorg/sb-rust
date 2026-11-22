@@ -186,19 +186,16 @@ fn nothing_selected_is_sb_gos_error() {
 /// a stand-in first on `PATH`.
 #[test]
 fn share_masks_the_last_login_source() {
-    use std::os::unix::fs::PermissionsExt as _;
     if !root_gate::requested() {
         return;
     }
     let logs = temp();
     let tools = temp();
     let last = tools.path().join("last");
-    std::fs::write(
+    sb_cli_core::testing::write_program(
         &last,
         "#!/bin/sh\necho 'sbuser   pts/0        192.0.2.9        Sat Nov 14 23:10   still logged in'\n",
-    )
-    .expect("stand-in");
-    std::fs::set_permissions(&last, std::fs::Permissions::from_mode(0o755)).expect("mode");
+    );
     let path = tools.path().display().to_string();
     let out = motd(&["--login", "--share"], logs.path(), &[("PATH", &path)]);
     assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
@@ -484,12 +481,10 @@ fn an_invalid_motd_yml_shows_the_config_line() {
 /// boxes its own, then its stdin between `#` lines. Without `boxes`, only
 /// toilet is there; with neither, the directory is empty.
 fn stand_ins(toilet: bool, boxes: bool) -> tempfile::TempDir {
-    use std::os::unix::fs::PermissionsExt as _;
     let dir = temp();
     let write = |name: &str, body: &str| {
         let path = dir.path().join(name);
-        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).expect("stand-in");
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("mode");
+        sb_cli_core::testing::write_program(&path, format!("#!/bin/sh\n{body}\n"));
     };
     if toilet {
         write("toilet", r#"echo "toilet $*""#);

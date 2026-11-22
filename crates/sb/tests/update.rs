@@ -264,18 +264,13 @@ fn sigint_during_the_saltbox_fetch_ends_sb_by_the_signal() {
     let world = World::new("develop", "develop");
     let marker = world.dir.path().join("fetch-started");
     let pack = world.dir.path().join("upload-pack");
-    std::fs::write(
+    sb_cli_core::testing::write_program(
         &pack,
         format!(
             "#!/bin/sh\ntouch '{}'\nsleep 60\nexec git-upload-pack \"$@\"\n",
             marker.display()
         ),
-    )
-    .expect("upload-pack");
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(&pack, std::fs::Permissions::from_mode(0o755)).expect("chmod");
-    }
+    );
     let before = sb_ops::testing::git(&world.saltbox(), &["rev-parse", "HEAD"]);
     let sandbox_before = sb_ops::testing::git(&world.sandbox(), &["rev-parse", "HEAD"]);
     let sb = test_build();

@@ -16,7 +16,7 @@ publish.workspace = true
 # for sb-ops' tests and sb's end-to-end tests: built into the sb that
 # `cargo test` runs (dev-dependency features unify), never into a release
 # or production build, where bench asks the real services.
-testing = ["sb-host/testing", "sb-python-env/testing", "sb-config/testing", "dep:axum", "dep:futures-util", "sb-release/testing", "tokio/net", "tokio/rt", "tokio/sync"]
+testing = ["sb-cli-core/testing", "sb-host/testing", "sb-python-env/testing", "sb-config/testing", "dep:axum", "dep:futures-util", "sb-release/testing", "tokio/net", "tokio/rt", "tokio/sync"]
 
 [dependencies]
 sb-cli-core.workspace = true

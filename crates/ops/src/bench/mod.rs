@@ -1279,13 +1279,11 @@ mod tests {
 
     #[tokio::test]
     async fn an_interrupted_node_ends_the_run_and_removes_the_directory() {
-        use std::os::unix::fs::PermissionsExt as _;
         let _spawns = super::SPAWNS.lock().await;
         let parent = tempfile::tempdir().expect("dir");
         let dir = tempfile::tempdir_in(parent.path()).expect("private");
         let program = dir.path().join("speedtest");
-        std::fs::write(&program, "#!/bin/sh\nsleep 30\n").expect("write");
-        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).expect("mode");
+        sb_cli_core::testing::write_program(&program, "#!/bin/sh\nsleep 30\n");
         let prepared = speedtest::Prepared::of(dir, program);
         let shutdown = Shutdown::new();
         let mut runner = Runner::start("sb test", &shutdown, None, Options::default());
@@ -2021,13 +2019,11 @@ mod tests {
     /// being tested `interrupted`, the nodes after it muted.
     #[tokio::test]
     async fn ctrl_c_during_a_node_leaves_the_nodes_on_the_screen() {
-        use std::os::unix::fs::PermissionsExt as _;
         let _spawns = super::SPAWNS.lock().await;
         let parent = tempfile::tempdir().expect("dir");
         let dir = tempfile::tempdir_in(parent.path()).expect("private");
         let program = dir.path().join("speedtest");
-        std::fs::write(&program, "#!/bin/sh\nsleep 30\n").expect("write");
-        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).expect("mode");
+        sb_cli_core::testing::write_program(&program, "#!/bin/sh\nsleep 30\n");
         let prepared = speedtest::Prepared::of(dir, program);
         let screen = sb_term_ui::Screen::new(30, 80);
         let shutdown = Shutdown::new();

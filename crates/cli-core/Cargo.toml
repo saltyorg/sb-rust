@@ -47,10 +47,14 @@ anstream.workspace = true
 
 [features]
 # The run lock's directory under a test's (`run_lock::DIR_VAR`), for sb's
-# tests; never in a release build.
+# tests, and the crates' tests' stand-in programs (`testing`); never in a
+# release build.
 testing = []
 
 [dev-dependencies]
+# Itself with `testing`, for its tests' stand-in sudo (as sb-repo's
+# tests take its own `testing`).
+sb-cli-core = { workspace = true, features = ["testing"] }
 tempfile.workspace = true
 
 [lints]

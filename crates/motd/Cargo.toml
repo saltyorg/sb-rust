@@ -70,6 +70,8 @@ tokio-util.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+# Stand-in programs written by a child (`testing::write_program`).
+sb-cli-core = { workspace = true, features = ["testing"] }
 # Docker's fake Engine API and Traefik's fake server (motd spec, Testing).
 sb-docker = { workspace = true, features = ["testing"] }
 sb-config = { workspace = true, features = ["testing"] }

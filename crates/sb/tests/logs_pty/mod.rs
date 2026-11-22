@@ -4,7 +4,6 @@
 //! (portable-pty), its screen parsed through vt100 as it arrives.
 
 use std::io::{Read, Write};
-use std::os::unix::fs::PermissionsExt as _;
 use std::path::PathBuf;
 use std::process::Output;
 use std::sync::{OnceLock, mpsc};
@@ -58,9 +57,10 @@ impl World {
         std::fs::create_dir(&bin).expect("bin");
         let program = bin.join("systemctl");
         let world = dir.path().display().to_string();
-        std::fs::write(&program, format!("#!/bin/sh\nWORLD='{world}'\n{script}"))
-            .expect("systemctl");
-        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        sb_cli_core::testing::write_program(
+            &program,
+            format!("#!/bin/sh\nWORLD='{world}'\n{script}"),
+        );
         std::fs::create_dir(dir.path().join("journal")).expect("journal");
         std::fs::create_dir(dir.path().join("logs")).expect("logs");
         Self {

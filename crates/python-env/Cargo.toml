@@ -13,7 +13,7 @@ publish.workspace = true
 # sb-python-env's tests and sb's end-to-end tests: built into the sb that `cargo test` runs (resolver 3
 # unifies dev-dependency features only for test builds), never into a
 # release or production build.
-testing = ["dep:sha2", "sb-host/testing", "sb-release/testing"]
+testing = ["dep:sha2", "sb-cli-core/testing", "sb-host/testing", "sb-release/testing"]
 
 [dependencies]
 # Every uv, Python, entry-point and git child (python-env spec,

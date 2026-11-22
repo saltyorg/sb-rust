@@ -3532,6 +3532,7 @@ dependencies = [
  "rustls",
  "saphyr",
  "saphyr-parser",
+ "sb-cli-core",
  "serde",
  "serde_json",
  "signal-hook 0.4.5",

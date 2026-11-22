@@ -313,8 +313,7 @@ fn completion_root() -> tempfile::TempDir {
     let dir = tempfile::tempdir().expect("completion root");
     let sb = dir.path().join("opt/sb/sb");
     std::fs::create_dir_all(sb.parent().expect("parent")).expect("dirs");
-    std::fs::write(&sb, "#!/bin/sh\n").expect("sb");
-    std::fs::set_permissions(&sb, std::fs::Permissions::from_mode(0o755)).expect("mode");
+    sb_cli_core::testing::write_program(&sb, "#!/bin/sh\n");
     dir
 }
 
@@ -784,8 +783,7 @@ async fn the_completion_refresh_writes_each_installed_shells_file() {
     ] {
         let path = root.join(path);
         std::fs::create_dir_all(path.parent().expect("parent")).expect("dirs");
-        std::fs::write(&path, text).expect("write");
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("mode");
+        sb_cli_core::testing::write_program(&path, text);
     }
     let ran = world
         .run(&args(&PIPED), Err("piped".to_owned()), &[], None, &roomy())
@@ -2379,7 +2377,7 @@ fn meeting_fetches(world: &World, meet: &Path, ticks: u32) {
     let saltbox_remote = world.sb.saltbox_remote.url.trim_start_matches("file://");
     let dir = meet.display();
     let script = meet.join("upload-pack");
-    std::fs::write(
+    sb_cli_core::testing::write_program(
         &script,
         format!(
             "#!/bin/sh
@@ -2396,9 +2394,7 @@ fn meeting_fetches(world: &World, meet: &Path, ticks: u32) {
              exec git-upload-pack \"$@\"
 "
         ),
-    )
-    .expect("the wrapper");
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    );
     for checkout in [world.saltbox(), world.sandbox()] {
         let _ = sb_ops::testing::git(
             &checkout,
@@ -2576,7 +2572,7 @@ async fn ctrl_c_during_both_fetches_stops_both() {
     let saltbox_remote = world.sb.saltbox_remote.url.trim_start_matches("file://");
     let dir = meet.path().display();
     let script = meet.path().join("upload-pack");
-    std::fs::write(
+    sb_cli_core::testing::write_program(
         &script,
         format!(
             "#!/bin/sh\n\
@@ -2585,9 +2581,7 @@ async fn ctrl_c_during_both_fetches_stops_both() {
              : > '{dir}/'\"$name.started\"\n\
              while :; do sleep 0.05; done\n"
         ),
-    )
-    .expect("the wrapper");
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    );
     for checkout in [world.saltbox(), world.sandbox()] {
         let _ = sb_ops::testing::git(
             &checkout,
@@ -2632,16 +2626,14 @@ async fn ctrl_c_after_saltboxs_pull_still_names_it() {
     let meet = tempfile::tempdir().expect("meet");
     let dir = meet.path().display();
     let script = meet.path().join("upload-pack");
-    std::fs::write(
+    sb_cli_core::testing::write_program(
         &script,
         format!(
             "#!/bin/sh\n\
              : > '{dir}/sandbox.started'\n\
              while :; do sleep 0.05; done\n"
         ),
-    )
-    .expect("the wrapper");
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    );
     let _ = sb_ops::testing::git(
         &world.sandbox(),
         &[
