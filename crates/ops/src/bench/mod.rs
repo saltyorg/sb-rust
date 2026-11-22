@@ -154,8 +154,21 @@ fn rows() -> Table {
     Table::ruled(Vec::<String>::new()).min_width(0, LABEL)
 }
 
-/// Where the sections go: stdout, fitted to its terminal or, piped, to
-/// [`PIPED_WIDTH`], and in colour as its choice says, as term-ui's
+/// Stdout's terminal width, or [`PIPED_WIDTH`] when it isn't a
+/// terminal: what [`Out::stdout`] reads as each section is written. Read
+/// then, not once at the start: a run takes minutes, and a terminal
+/// resized meanwhile (made full screen) gets its later sections at its
+/// new width, as `sb list` reads its width after its steps
+/// (crates/sb/src/ansible.rs). Each read is `TIOCGWINSZ` on stdout
+/// (term-ui's `stdout_width`, console's `Term::size_checked`,
+/// <https://docs.rs/console/0.16.6/console/struct.Term.html#method.size_checked>).
+fn stdout_or_piped() -> usize {
+    sb_term_ui::stdout_width().unwrap_or(PIPED_WIDTH)
+}
+
+/// Where the sections go: stdout, each section fitted to its terminal's
+/// width when it is written ([`stdout_or_piped`]) or, piped, to [`PIPED_WIDTH`],
+/// and in colour as its choice says, as term-ui's
 /// `Table::print` does; or a test's buffer. Why not `Table::print`: it
 /// writes to stdout only and keeps a piped table's natural width, and
 /// the sections' order is tested on a buffer; this is `print`'s three
@@ -165,7 +178,8 @@ pub struct Out<W> {
     writer: W,
     theme: Theme,
     colour: bool,
-    width: Option<usize>,
+    /// The width a section is laid out at, read as it is written.
+    width: fn() -> usize,
     /// How many sections are written: a blank line goes before every
     /// heading but the first.
     sections: usize,
@@ -173,7 +187,7 @@ pub struct Out<W> {
 
 impl Out<sb_cli_core::tail::Tracked<io::Stdout>> {
     /// Stdout, as [`Table::print`] writes it but at [`PIPED_WIDTH`] when
-    /// it isn't a terminal.
+    /// it isn't a terminal, its width read at each section.
     #[must_use]
     pub fn stdout() -> Self {
         Out::new(
@@ -181,16 +195,15 @@ impl Out<sb_cli_core::tail::Tracked<io::Stdout>> {
             sb_cli_core::tail::Tracked::stdout(io::stdout()),
             theme::current().clone(),
             sb_term_ui::colour_on(sb_term_ui::Stream::Stdout),
-            Some(sb_term_ui::stdout_width().unwrap_or(PIPED_WIDTH)),
+            stdout_or_piped,
         )
     }
 }
 
 impl<W: Write> Out<W> {
     /// Sections written to `writer` in `theme`, coloured when `colour` is
-    /// on, fitted to `width` (natural width with none, the rules then
-    /// [`PIPED_WIDTH`] long).
-    fn new(writer: W, theme: Theme, colour: bool, width: Option<usize>) -> Self {
+    /// on, each fitted to the width `width` gives when it is written.
+    fn new(writer: W, theme: Theme, colour: bool, width: fn() -> usize) -> Self {
         Self {
             writer,
             theme,
@@ -206,11 +219,6 @@ impl<W: Write> Out<W> {
         self.writer
     }
 
-    /// The rules' width.
-    fn rule_width(&self) -> usize {
-        self.width.unwrap_or(PIPED_WIDTH)
-    }
-
     /// A section: a blank line unless it is the first, its heading, then
     /// its rows.
     ///
@@ -220,8 +228,9 @@ impl<W: Write> Out<W> {
     fn section(&mut self, heading: &Heading, table: &Table) -> anyhow::Result<()> {
         let gap = if self.sections == 0 { "" } else { "\n" };
         self.sections += 1;
-        let heading = heading.render(&self.theme, self.colour, self.rule_width());
-        let table = table.render(&self.theme, self.colour, self.width);
+        let width = (self.width)();
+        let heading = heading.render(&self.theme, self.colour, width);
+        let table = table.render(&self.theme, self.colour, Some(width));
         writeln!(self.writer, "{gap}{heading}{table}").map_err(output_error)?;
         Ok(())
     }
@@ -233,11 +242,12 @@ impl<W: Write> Out<W> {
     ///
     /// The writer failing.
     fn footer(&mut self, finished: &str, timestamp: &str) -> anyhow::Result<()> {
-        let rule = sb_term_ui::rule(&self.theme, Role::Muted, self.colour, self.rule_width());
+        let width = (self.width)();
+        let rule = sb_term_ui::rule(&self.theme, Role::Muted, self.colour, width);
         let mut table = rows();
         table.row([label("Finished in"), Cell::new(finished)]);
         table.row([label("Timestamp"), Cell::new(timestamp)]);
-        let table = table.render(&self.theme, self.colour, self.width);
+        let table = table.render(&self.theme, self.colour, Some(width));
         writeln!(self.writer, "\n{rule}\n{table}").map_err(output_error)?;
         Ok(())
     }
@@ -510,9 +520,44 @@ mod tests {
     }
 
     async fn output(bench: &Bench, shutdown: &Shutdown) -> (anyhow::Result<()>, String) {
-        let mut out = Out::new(Vec::new(), Theme::plain(), false, None);
+        let mut out = Out::new(Vec::new(), Theme::plain(), false, width_now);
         let result = run(bench, shutdown, None, &mut out).await;
         (result, String::from_utf8(out.into_inner()).expect("utf-8"))
+    }
+
+    std::thread_local! {
+        /// The terminal's width as this test thread sets it, which
+        /// [`width_now`] reads.
+        static WIDTH: std::cell::Cell<usize> = const { std::cell::Cell::new(PIPED_WIDTH) };
+    }
+
+    fn width_now() -> usize {
+        WIDTH.get()
+    }
+
+    /// Each section takes the width it is written at, rules and tables:
+    /// a terminal widened during the run (full screen, after the start)
+    /// gets its later sections across its new width, as `sb list`'s
+    /// headings, which read the width after the steps.
+    #[test]
+    fn each_section_takes_the_width_it_is_written_at() {
+        WIDTH.set(40);
+        let mut out = Out::new(Vec::new(), Theme::plain(), false, width_now);
+        let disk = disk::Outcome::Runs(vec![Some(800.0)]);
+        out.section(&heading("Disk write"), &disk::table(&disk))
+            .expect("first");
+        WIDTH.set(90);
+        out.section(&heading("Disk write"), &disk::table(&disk))
+            .expect("second");
+        WIDTH.set(120);
+        out.footer("1 sec", "now").expect("footer");
+        let text = String::from_utf8(out.into_inner()).expect("utf-8");
+        let rules: Vec<usize> = text
+            .lines()
+            .filter(|line| !line.is_empty() && line.chars().all(|c| c == '-'))
+            .map(str::len)
+            .collect();
+        assert_eq!(rules, [40, 90, 120], "{text}");
     }
 
     #[test]
@@ -973,7 +1018,8 @@ mod tests {
     /// with the network or without (the example's offline run: its own
     /// disk rates and Speedtest unavailable).
     fn example(network: bool, theme: Theme, colour: bool, width: usize) -> String {
-        let mut out = Out::new(Vec::new(), theme, colour, Some(width));
+        WIDTH.set(width);
+        let mut out = Out::new(Vec::new(), theme, colour, width_now);
         out.section(&heading("System"), &system::table(&example_facts(network)))
             .expect("system");
         let rates = if network {
