@@ -1,0 +1,22 @@
+---
+source: crates/ops/src/bench/mod.rs
+expression: "live.text(&frame(width, *interrupted), &Theme::plain(), example_layout(width))"
+---
+System
+--------------------------------------------------------------
+CPU Model            Example CPU 16-Core Processor
+CPU Cores            16 @ 3000.000 MHz
+CPU Cache            1024 KB
+AES-NI               ✓ Enabled
+VM-x/AMD-V           ✓ Enabled
+Total Disk           4.0 TiB (1.5 TiB Used)
+Total RAM            100.0 GiB (25.0 GiB Used)
+Total Swap           4.0 GiB (1.0 GiB Used)
+System Uptime        12 days, 3 hours, 30 mins
+Load Average         0.50, 0.40, 0.30
+OS                   Ubuntu 24.04.5 LTS
+Arch                 x86_64 (64 Bit)
+Kernel               6.8.0-90-generic
+TCP Congestion Ctrl  bbr
+Virtualization       Dedicated
+IPv4/IPv6            ⠋ checking

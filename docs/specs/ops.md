@@ -487,7 +487,21 @@ and run as code except the digest-pinned Ookla Speedtest.
 (`Reading system information`, `Disk write test (n/3)`, `Preparing
 Speedtest`, `Speedtest: <node>`), each shown only while it runs (term-ui's
 transient steps), so a run that succeeds leaves only the results; a
-section without steps starts no runner. **Results:** three sections on stdout, each printed when
+section without steps starts no runner. *Amended 2026-11-22 (decision
+46):* on a terminal the runner draws the section in progress instead of
+its steps (term-ui's live block), in the layout it is printed in,
+filling in as its results arrive: System's rows read on the host at
+once, with one `IPv4/IPv6` row reading `checking` while the network is
+asked; Disk write's runs cell by cell (`running`); a `Preparing` row
+while the Speedtest is downloaded (`downloading Ookla Speedtest`), then
+its nodes row by row (`testing`), the nodes still to run listed muted.
+The cell being measured shows term-ui's spinner and its word in the
+Accent role, right-aligned as its value will be. A section leaves the
+live part when it ends and is printed on stdout as before, so the
+finished output is byte for byte what it was. On Ctrl-C the finished
+sections stay printed, and the section in progress stays on the screen
+with `interrupted` in Warn in the cell being measured. Plain (stderr not
+a terminal) and piped output are unchanged. **Results:** three sections on stdout, each printed when
 its section ends, then the total time and a timestamp. No `clear`. On a
 terminal the sections fit its width; when stdout isn't a terminal they
 lay out as at 80 columns, their cells wrapped as on a terminal that
@@ -2373,6 +2387,31 @@ the real services.
       phases, not beside Sandbox's, so the venv probes' cores rule
       still sees an idle host; the same tree on every host, in turn on
       1 core.
+47. **bench's report is live as results arrive** (the maintainer,
+    2026-11-22, from the bench-live research, prototype A' with the
+    "option 4" policy; term-ui decision 15): the section in progress
+    is drawn live in its printed layout ("`sb bench`", Progress), and
+    each section is printed on stdout when it ends, as before. bench
+    keeps a runner step per measurement, so the run log, cancellation
+    and Ctrl-C are as they were. `system::gather` is split into the
+    host's facts (`gather_local`: the files, df, zpool and
+    systemd-detect-virt) and the network checks after them
+    (`with_network`), inside the one `Reading system information` step,
+    so the local rows show before the network rows (up to 4 s each).
+    A live section is laid out as it will print, its rule as long as
+    the report's ("Layout": two columns past the widest line); System's
+    is drawn in the layout known before its network rows, with its
+    pending row in their place, which is the printed one unless a
+    network row turns out the widest (the maintainer, 2026-11-22: each
+    section's heading is drawn at that same length).
+    Why not the whole report live until the end (the research's "hold"
+    policy): a terminal made shorter than the live report leaves a stale
+    copy in its scrollback, which no inline technique can erase. Decided: the words in the cell being measured (`checking`,
+    `running`, `downloading Ookla Speedtest`, `testing`), the later disk
+    runs and `Average` shown with empty values until measured, the
+    nodes still to run listed muted, and nothing drawn before the
+    host's facts are read (well under a second on a host whose mounts
+    answer).
 
 ## Known limits
 

@@ -1,0 +1,8 @@
+---
+source: crates/ops/src/bench/mod.rs
+expression: "live.text(&frame(width, *interrupted), &Theme::plain(), example_layout(width))"
+---
+
+Speedtest
+--------------------------------------------------------------
+Preparing            ⠋ downloading Ookla Speedtest

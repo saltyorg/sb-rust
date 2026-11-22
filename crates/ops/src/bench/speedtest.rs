@@ -365,30 +365,79 @@ pub fn table(outcome: &Outcome) -> Table {
             table
         }
         Outcome::Nodes(nodes) => {
-            let mut table = Table::ruled(["Node", "Upload", "Download", "Latency"])
-                .min_width(0, super::LABEL)
-                .right_align(1)
-                .min_width(1, super::RATE)
-                .right_align(2)
-                .min_width(2, super::RATE)
-                .right_align(3)
-                .min_width(3, LATENCY);
+            let mut table = nodes_table();
             for (node, measured) in nodes {
-                let failed =
-                    |text: &str| [Cell::new(node.name), Cell::new(text).role(Role::Problem)];
-                match measured {
-                    Measured::Speeds {
-                        upload,
-                        download,
-                        latency,
-                    } => table.row([node.name, upload, download, latency].map(Cell::new)),
-                    Measured::Failed => table.row(failed("Test failed")),
-                    Measured::Unparsed => table.row(failed("Failed to parse results")),
-                }
+                table.row(node_row(node, measured));
             }
             table
         }
     }
+}
+
+/// The nodes' table: `Node`, `Upload`, `Download` and `Latency` under
+/// muted headings, the figures right-aligned in columns 14, 14 and 11
+/// wide.
+fn nodes_table() -> Table {
+    Table::ruled(["Node", "Upload", "Download", "Latency"])
+        .min_width(0, super::LABEL)
+        .right_align(1)
+        .min_width(1, super::RATE)
+        .right_align(2)
+        .min_width(2, super::RATE)
+        .right_align(3)
+        .min_width(3, LATENCY)
+}
+
+/// A node's row: its name and figures, or its failure in Problem in the
+/// Upload column.
+fn node_row(node: &Node, measured: &Measured) -> Vec<Cell> {
+    let failed = |text: &str| vec![Cell::new(node.name), Cell::new(text).role(Role::Problem)];
+    match measured {
+        Measured::Speeds {
+            upload,
+            download,
+            latency,
+        } => [node.name, upload, download, latency]
+            .map(Cell::new)
+            .to_vec(),
+        Measured::Failed => failed("Test failed"),
+        Measured::Unparsed => failed("Failed to parse results"),
+    }
+}
+
+/// The section's heading while its nodes run: the node count they will
+/// have when they all ran.
+#[must_use]
+pub fn live_heading() -> Heading {
+    super::heading("Speedtest").hint(format!("  {} nodes", NODES.len()), Role::Muted)
+}
+
+/// The section while the Speedtest is downloaded (ops spec, "`sb
+/// bench`", Progress): one `Preparing` row, `preparing` its value.
+#[must_use]
+pub fn preparing_table(preparing: Cell) -> Table {
+    let mut table = super::rows();
+    table.row([label("Preparing"), preparing]);
+    table
+}
+
+/// The section while its nodes run: the nodes measured so far (`done`,
+/// in [`NODES`]' order) as [`table`] shows them, `testing` in the next
+/// node's Upload cell, the nodes after it listed by name, muted.
+#[must_use]
+pub fn live_table(done: &[Measured], testing: Cell) -> Table {
+    let mut table = nodes_table();
+    let mut testing = Some(testing);
+    for (n, node) in NODES.iter().enumerate() {
+        match done.get(n) {
+            Some(measured) => table.row(node_row(node, measured)),
+            None => match testing.take() {
+                Some(cell) => table.row([Cell::new(node.name), cell]),
+                None => table.row([Cell::new(node.name).role(Role::Muted)]),
+            },
+        }
+    }
+    table
 }
 
 /// The Latency column's width, its gap included: `270.00 ms` and two

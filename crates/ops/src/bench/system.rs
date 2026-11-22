@@ -393,6 +393,20 @@ fn enabled(on: bool) -> Cell {
 /// without swap, as the script did.
 #[must_use]
 pub fn table(facts: &Facts) -> Table {
+    table_with(facts, None)
+}
+
+/// The section while the network is asked (ops spec, "`sb bench`",
+/// Progress): the host's rows as [`table`] shows them, then one
+/// `IPv4/IPv6` row with `pending` as its value in place of the network's
+/// rows.
+#[must_use]
+pub fn live_table(facts: &Facts, pending: Cell) -> Table {
+    table_with(facts, Some(pending))
+}
+
+/// The System rows, the network's or the one pending row.
+fn table_with(facts: &Facts, pending: Option<Cell>) -> Table {
     let mut table = super::rows();
     let model = if facts.cpu.model.is_empty() {
         "CPU model not detected"
@@ -442,7 +456,9 @@ pub fn table(facts: &Facts) -> Table {
     table.row(row("Kernel", shown(facts.kernel.clone())));
     table.row(row("TCP Congestion Ctrl", shown(facts.congestion.clone())));
     table.row(row("Virtualization", facts.virtualization.as_str()));
-    if facts.ca_missing {
+    if let Some(pending) = pending {
+        table.row([label("IPv4/IPv6"), pending]);
+    } else if facts.ca_missing {
         table.row(network::missing_ca_row());
     } else {
         for row in network::rows(facts.online, &facts.isp) {
@@ -495,28 +511,56 @@ impl Default for Sources {
     }
 }
 
-/// This host's [`Facts`]: the files and sysinfo on the blocking pool;
-/// icanhazip and ipinfo at `endpoints` (none: no request, offline and no
-/// ISP);
+/// This host's [`Facts`]: [`gather_local`], then [`with_network`].
+///
+/// # Errors
+///
+/// As [`gather_local`] and [`with_network`].
+pub async fn gather(
+    sources: &Sources,
+    endpoints: Option<&Endpoints>,
+    token: &CancellationToken,
+) -> anyhow::Result<Facts> {
+    with_network(gather_local(sources, token).await?, endpoints, token).await
+}
+
+/// This host's [`Facts`] but the network's, which bench shows at once
+/// (ops spec, decision 47): the files and sysinfo on the blocking pool;
 /// the mounts there within `disks_limit` (cli-core's `spawn::blocking`,
-/// which keeps the run's span); then `zpool`
-/// and `systemd-detect-virt` through exec within 5 s each. A value that
-/// can't be read is logged and shown blank.
+/// which keeps the run's span); then `zpool` and `systemd-detect-virt`
+/// through exec within 5 s each. A value that can't be read is logged and
+/// shown blank.
 ///
 /// # Errors
 ///
 /// When `/proc/meminfo` can't be read, `token` was cancelled
 /// (`interrupted`; a hung mount's thread is left behind, as motd's), or a
 /// blocking task panicked.
-pub async fn gather(
-    sources: &Sources,
-    endpoints: Option<&Endpoints>,
-    token: &CancellationToken,
-) -> anyhow::Result<Facts> {
+pub async fn gather_local(sources: &Sources, token: &CancellationToken) -> anyhow::Result<Facts> {
     let files = sources.clone();
     let mut facts = sb_cli_core::spawn::blocking(move || read_host(&files)).await??;
     let df = df_usage(sources.disks, sources.disks_limit, token).await;
     let pools = zpools(&sources.zpool, token).await;
+    facts.disk = df.map(|df| df.plus(facts.swap).plus(pools));
+    facts.virtualization = detect_virt(&sources.detect_virt, token).await;
+    if token.is_cancelled() {
+        anyhow::bail!("interrupted");
+    }
+    Ok(facts)
+}
+
+/// `facts` with the network's rows: icanhazip and ipinfo at `endpoints`
+/// at once (none: no request, offline and no ISP), or the missing CA
+/// bundle when no client could be built.
+///
+/// # Errors
+///
+/// When `token` was cancelled (`interrupted`).
+pub async fn with_network(
+    mut facts: Facts,
+    endpoints: Option<&Endpoints>,
+    token: &CancellationToken,
+) -> anyhow::Result<Facts> {
     if let Some(endpoints) = endpoints {
         match tokio::join!(
             network::online(endpoints, token),
@@ -526,8 +570,6 @@ pub async fn gather(
             _ => facts.ca_missing = true,
         }
     }
-    facts.disk = df.map(|df| df.plus(facts.swap).plus(pools));
-    facts.virtualization = detect_virt(&sources.detect_virt, token).await;
     if token.is_cancelled() {
         anyhow::bail!("interrupted");
     }
@@ -1346,6 +1388,44 @@ Region               Saxony"
             "{text}"
         );
         assert!(!text.contains("ADDRESS"), "{text}");
+    }
+
+    /// The host's facts come first, with no request; the network's rows
+    /// are added after them (ops spec, decision 47: bench shows the
+    /// local rows while the network is asked).
+    #[tokio::test]
+    async fn the_local_facts_come_before_the_network() {
+        let _spawns = crate::bench::SPAWNS.lock().await;
+        let dir = tempfile::tempdir().expect("dir");
+        let fake = crate::testing::NetworkFake::start("ADDRESS\n", r#"{"org":"AS1 Example"}"#)
+            .expect("fake");
+        let endpoints = fake.endpoints();
+        let token = CancellationToken::new();
+        let local = gather_local(&sources(dir.path()), &token)
+            .await
+            .expect("local");
+        assert_eq!(local.virtualization, "KVM");
+        assert_eq!(local.online, Online::default());
+        assert_eq!(local.isp, Isp::default());
+        assert_eq!(fake.seen().len(), 0, "no request yet");
+        let facts = with_network(local.clone(), Some(&endpoints), &token)
+            .await
+            .expect("network");
+        assert_eq!(facts.online, Online { v4: true, v6: true });
+        assert_eq!(facts.isp.org.as_deref(), Some("AS1 Example"));
+        assert_eq!(
+            Facts {
+                online: local.online,
+                isp: local.isp.clone(),
+                ..facts.clone()
+            },
+            local
+        );
+        token.cancel();
+        let err = with_network(local, None, &token)
+            .await
+            .expect_err("cancelled");
+        assert_eq!(err.to_string(), "interrupted");
     }
 
     #[tokio::test]

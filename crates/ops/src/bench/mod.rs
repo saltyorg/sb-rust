@@ -1,8 +1,10 @@
 //! `sb bench` (ops spec, "`sb bench`"; decision 11): this server's system
 //! and its disk measured in Rust, in sb's own output. Progress is
 //! term-ui's runner on stderr, one transient step per measurement, so a
-//! run that succeeds leaves only the results; each section goes to
-//! stdout when it ends (the runner done first, so the two never draw over
+//! run that succeeds leaves only the results; on a terminal the runner
+//! draws the section in progress, as results arrive, in place of its
+//! steps (term-ui's live block; decision 47). Each section goes to stdout
+//! when it ends (through `Runner::suspend`, so the two never draw over
 //! each other), then the total time and a timestamp. The sections follow
 //! sb-go's bench.sh (`cmd/bench_script.sh`): System (with the network
 //! rows), Disk write, Speedtest. They are drawn in the "ruled" layout
@@ -23,6 +25,7 @@ pub(crate) static SPAWNS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new
 
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use sb_cli_core::cancel::Shutdown;
@@ -30,7 +33,7 @@ use sb_cli_core::exit::output_error;
 use sb_cli_core::log::RunLog;
 use sb_cli_core::theme::{self, Role, Theme};
 use sb_host::DiskError;
-use sb_term_ui::{Cell, Heading, Labels, Options, Runner, Table};
+use sb_term_ui::{Block, BlockFrame, Cell, Heading, Labels, Options, Runner, Table};
 
 use disk::{Outcome, RunError, Size};
 use network::Endpoints;
@@ -65,6 +68,10 @@ pub struct Bench {
     sources: system::Sources,
     endpoints: Option<Endpoints>,
     speedtest: Result<Speedtest, String>,
+    /// Where the live block draws in sb-ops' own tests: a vt100 screen,
+    /// always live (term-ui's `testing` feature); stderr without.
+    #[cfg(test)]
+    screen: Option<sb_term_ui::Screen>,
 }
 
 impl Bench {
@@ -93,8 +100,163 @@ impl Bench {
             sources: system::Sources::default(),
             endpoints,
             speedtest,
+            #[cfg(test)]
+            screen: None,
         }
     }
+
+    /// `block` on the test screen, when the bench has one.
+    #[cfg(test)]
+    fn on_screen(&self, block: Block) -> Block {
+        match &self.screen {
+            Some(screen) => block.on(screen.clone()),
+            None => block,
+        }
+    }
+}
+
+/// The live block of a section's runner: `live`'s text at each frame.
+fn block(live: &Shared) -> Block {
+    let shown = Arc::clone(live);
+    Block::new(move |frame| {
+        let shown = lock(&shown);
+        shown.section.text(frame, theme::current(), shown.layout)
+    })
+}
+
+/// The section in progress, as the live block draws it (ops spec, "`sb
+/// bench`", Progress): what its measurements found so far.
+#[derive(Debug, Default)]
+enum Live {
+    /// Nothing to draw: before the host's facts are read, or between
+    /// sections.
+    #[default]
+    Nothing,
+    /// The host's facts, the network being asked.
+    System(Box<system::Facts>),
+    /// The disk runs measured so far, the next one running.
+    Disk(Vec<Option<f64>>),
+    /// The Speedtest being downloaded.
+    Preparing,
+    /// The nodes measured so far, the next one being tested.
+    Nodes(Vec<speedtest::Measured>),
+}
+
+/// What the live block draws: the section in progress, in the report's
+/// layout as far as it is known ([`Out::layout_of`], then
+/// [`Out::lay_out`]'s), so it is drawn as it will print.
+#[derive(Debug, Default)]
+struct LiveState {
+    section: Live,
+    layout: Layout,
+}
+
+/// The live state, shared by a section's steps and its block.
+type Shared = Arc<Mutex<LiveState>>;
+
+fn lock(live: &Mutex<LiveState>) -> MutexGuard<'_, LiveState> {
+    // The state is whole between calls, so a poisoned lock is usable.
+    live.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+impl Live {
+    /// The section's text at `frame`, as [`Out::section`] writes it in
+    /// `layout` at the frame's width, a blank line before every section
+    /// but System; empty for [`Live::Nothing`].
+    fn text(&self, frame: &BlockFrame, theme: &Theme, layout: Layout) -> String {
+        let measuring = |word: &str| measuring(frame, word);
+        let (gap, heading, table) = match self {
+            Live::Nothing => return String::new(),
+            Live::System(facts) => (
+                "",
+                heading("System"),
+                system::live_table(facts, measuring("checking")),
+            ),
+            Live::Disk(runs) => (
+                "\n",
+                heading("Disk write"),
+                disk::live_table(runs, measuring("running")),
+            ),
+            Live::Preparing => (
+                "\n",
+                heading("Speedtest"),
+                speedtest::preparing_table(measuring("downloading Ookla Speedtest")),
+            ),
+            Live::Nodes(done) => (
+                "\n",
+                speedtest::live_heading(),
+                speedtest::live_table(done, measuring("testing")),
+            ),
+        };
+        let fit = match self {
+            Live::Nodes(_) => Fit::Terminal,
+            Live::Nothing | Live::System(_) | Live::Disk(_) | Live::Preparing => Fit::Rules,
+        };
+        let section = section(
+            theme,
+            frame.colour,
+            frame.width,
+            layout,
+            &heading,
+            &table,
+            fit,
+        );
+        format!("{gap}{section}")
+    }
+}
+
+/// The pending network row's value while System's layout is worked out:
+/// as wide as the cell drawn there.
+const PENDING: &str = "⠋ checking";
+
+/// The cell being measured: term-ui's spinner and `word` in the Accent
+/// role, or, once a signal interrupted the run, `interrupted` in Warn.
+fn measuring(frame: &BlockFrame, word: &str) -> Cell {
+    if frame.interrupted {
+        Cell::new("interrupted").role(Role::Warn)
+    } else {
+        Cell::new(format!("{} {word}", frame.spinner)).role(Role::Accent)
+    }
+}
+
+/// Set the live section.
+fn show(live: &Mutex<LiveState>, now: Live) {
+    lock(live).section = now;
+}
+
+/// Set the layout the live section is drawn in.
+fn lay(live: &Mutex<LiveState>, layout: Layout) {
+    lock(live).layout = layout;
+}
+
+/// A section's heading and rows, as [`Out::section`] writes them (its
+/// blank line before and its line end after aside), on a terminal
+/// `width` wide in `layout`.
+fn section(
+    theme: &Theme,
+    colour: bool,
+    width: usize,
+    layout: Layout,
+    heading: &Heading,
+    table: &Table,
+    fit: Fit,
+) -> String {
+    let heading = heading.render(theme, colour, layout.rule_len(width));
+    let table = table.render(theme, colour, Some(layout.table_width(width, fit)));
+    format!("{heading}{table}")
+}
+
+/// Print a finished section with `print` (which writes on stdout) above
+/// the live block, which then draws nothing until the next section.
+fn print_section(
+    runner: &mut Runner,
+    live: &Mutex<LiveState>,
+    print: impl FnOnce() -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
+    runner.suspend(|| {
+        show(live, Live::Nothing);
+        print()
+    })
 }
 
 /// The network endpoints and the Speedtest pin: the real ones.
@@ -230,6 +392,31 @@ fn timestamp() -> String {
         .to_string()
 }
 
+/// The report's layout at a terminal's width ([`Out::lay_out`]): where
+/// its rules end and what width its tables take, from its widest line;
+/// shared with the live block, so a live section is drawn as it prints.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Layout {
+    /// The report's widest line, once known.
+    widest: Option<usize>,
+}
+
+impl Layout {
+    /// The rules' length at a terminal `width` wide ([`Out::rule_len`]).
+    fn rule_len(self, width: usize) -> usize {
+        self.widest
+            .map_or(width, |widest| (widest + RULE_PAST).min(width))
+    }
+
+    /// A table's width at a terminal `width` wide ([`Out::table_width`]).
+    fn table_width(self, width: usize, fit: Fit) -> usize {
+        match (fit, self.widest) {
+            (Fit::Rules, Some(widest)) => widest.min(width),
+            _ => width,
+        }
+    }
+}
+
 /// Stdout's terminal width, or [`PIPED_WIDTH`] when it isn't a
 /// terminal: what [`Out::stdout`] reads as each section is written. Read
 /// then, not once at the start: a run takes minutes, and a terminal
@@ -298,19 +485,34 @@ impl<W: Write> Out<W> {
     /// sections print as they end, so the rules' one length has to be
     /// known at the first.
     fn lay_out(&mut self, tables: &[&Table]) {
+        self.widest = self.layout_of(tables).widest;
+    }
+
+    /// The layout [`Out::lay_out`] would fix from `tables`, at the width
+    /// a section would be written at now: the live block's for System,
+    /// before its network rows are known.
+    fn layout_of(&self, tables: &[&Table]) -> Layout {
         let (theme, width) = (&self.theme, (self.width)());
-        self.widest = tables
-            .iter()
-            .map(|table| shown_width(table, theme, width))
-            .max();
+        Layout {
+            widest: tables
+                .iter()
+                .map(|table| shown_width(table, theme, width))
+                .max(),
+        }
+    }
+
+    /// The layout fixed by [`Out::lay_out`], none before.
+    fn layout(&self) -> Layout {
+        Layout {
+            widest: self.widest,
+        }
     }
 
     /// The rules' length at a terminal `width` wide: [`RULE_PAST`]
     /// columns past the report's widest line, never past the terminal;
     /// the terminal's width before [`Out::lay_out`].
     fn rule_len(&self, width: usize) -> usize {
-        self.widest
-            .map_or(width, |widest| (widest + RULE_PAST).min(width))
+        self.layout().rule_len(width)
     }
 
     /// The width a table is laid out at on a terminal `width` wide:
@@ -321,10 +523,7 @@ impl<W: Write> Out<W> {
     /// `Failed to parse results` widens its Upload column, and the table
     /// then runs past the rules).
     fn table_width(&self, width: usize, fit: Fit) -> usize {
-        match (fit, self.widest) {
-            (Fit::Rules, Some(widest)) => widest.min(width),
-            _ => width,
-        }
+        self.layout().table_width(width, fit)
     }
 
     /// The writer, the sections written to it.
@@ -342,10 +541,16 @@ impl<W: Write> Out<W> {
     fn section(&mut self, heading: &Heading, table: &Table, fit: Fit) -> anyhow::Result<()> {
         let gap = if self.sections == 0 { "" } else { "\n" };
         self.sections += 1;
-        let width = (self.width)();
-        let heading = heading.render(&self.theme, self.colour, self.rule_len(width));
-        let table = table.render(&self.theme, self.colour, Some(self.table_width(width, fit)));
-        writeln!(self.writer, "{gap}{heading}{table}").map_err(output_error)?;
+        let section = section(
+            &self.theme,
+            self.colour,
+            (self.width)(),
+            self.layout(),
+            heading,
+            table,
+            fit,
+        );
+        writeln!(self.writer, "{gap}{section}").map_err(output_error)?;
         Ok(())
     }
 
@@ -402,45 +607,77 @@ pub async fn run<W: Write>(
     out: &mut Out<W>,
 ) -> anyhow::Result<()> {
     let started = Instant::now();
-    let mut runner = Runner::start("sb bench", shutdown, log, Options::default());
+    let live: Shared = Arc::default();
+    // A section's runner, `sb bench`'s title, drawing `live` in place of
+    // its steps on a terminal.
+    let start = |live: &Shared| {
+        let block = block(live);
+        #[cfg(test)]
+        let block = bench.on_screen(block);
+        Runner::start_block("sb bench", shutdown, log, Options::default(), block)
+    };
+    let unavailable = bench.speedtest.as_ref().err().map(String::as_str);
+    let [disk, speedtest, footer] = later_tables(unavailable, &timestamp());
+    let mut runner = start(&live);
     let facts = runner
         .step(
             Labels::new("Reading system information", "Read system information").transient(),
             async |step| {
-                system::gather(&bench.sources, bench.endpoints.as_ref(), &step.token()).await
+                let token = step.token();
+                let local = system::gather_local(&bench.sources, &token).await?;
+                // The layout as far as it is known before the network
+                // rows: the one `lay_out` fixes once they are.
+                let pending = system::live_table(&local, Cell::new(PENDING));
+                lay(
+                    &live,
+                    out.layout_of(&[&pending, &disk, &speedtest, &footer]),
+                );
+                show(&live, Live::System(Box::new(local.clone())));
+                system::with_network(local, bench.endpoints.as_ref(), &token).await
             },
         )
-        .await;
-    runner.finish();
-    let system = system::table(&facts?);
-    let unavailable = bench.speedtest.as_ref().err().map(String::as_str);
-    let [disk, speedtest, footer] = later_tables(unavailable, &timestamp());
+        .await?;
+    let system = system::table(&facts);
     out.lay_out(&[&system, &disk, &speedtest, &footer]);
-    out.section(&heading("System"), &system, Fit::Rules)?;
-
-    let mut runner = Runner::start("sb bench", shutdown, log, Options::default());
-    let outcome = disk_test(&mut runner, bench, shutdown).await;
+    print_section(&mut runner, &live, || {
+        out.section(&heading("System"), &system, Fit::Rules)
+    })?;
     runner.finish();
-    out.section(&heading("Disk write"), &disk::table(&outcome?), Fit::Rules)?;
+    lay(&live, out.layout());
+
+    show(&live, Live::Disk(Vec::new()));
+    let mut runner = start(&live);
+    let outcome = disk_test(&mut runner, bench, shutdown, &live).await?;
+    print_section(&mut runner, &live, || {
+        out.section(&heading("Disk write"), &disk::table(&outcome), Fit::Rules)
+    })?;
+    runner.finish();
 
     // No runner without steps: one with none would print its title.
-    let outcome = match &bench.speedtest {
+    match &bench.speedtest {
         Ok(st) => {
-            let mut runner = Runner::start("sb bench", shutdown, log, Options::default());
-            let outcome = speedtest_section(&mut runner, st).await;
+            show(&live, Live::Preparing);
+            let mut runner = start(&live);
+            let outcome = speedtest_section(&mut runner, st, &live).await?;
+            print_section(&mut runner, &live, || {
+                out.section(
+                    &speedtest::heading(&outcome),
+                    &speedtest::table(&outcome),
+                    Fit::speedtest(&outcome),
+                )
+            })?;
             runner.finish();
-            outcome?
         }
         Err(why) => {
             tracing::info!(why = why.as_str(), "speedtest unavailable");
-            speedtest::Outcome::Unavailable(why.clone())
+            let outcome = speedtest::Outcome::Unavailable(why.clone());
+            out.section(
+                &speedtest::heading(&outcome),
+                &speedtest::table(&outcome),
+                Fit::speedtest(&outcome),
+            )?;
         }
-    };
-    out.section(
-        &speedtest::heading(&outcome),
-        &speedtest::table(&outcome),
-        Fit::speedtest(&outcome),
-    )?;
+    }
 
     out.footer(&finished_in(started.elapsed()), &timestamp())
 }
@@ -453,6 +690,7 @@ pub async fn run<W: Write>(
 async fn speedtest_section(
     runner: &mut Runner,
     st: &Speedtest,
+    live: &Mutex<LiveState>,
 ) -> Result<speedtest::Outcome, sb_cli_core::exit::Exit> {
     let prepared = runner
         .step(
@@ -473,22 +711,26 @@ async fn speedtest_section(
         Ok(prepared) => prepared,
         Err(why) => return Ok(speedtest::Outcome::Unavailable(why)),
     };
+    show(live, Live::Nodes(Vec::new()));
     run_nodes(
         runner,
         &prepared,
         &speedtest::NODES,
         speedtest::NODE_TIMEOUT,
+        live,
     )
     .await
 }
 
-/// `prepared` against each of `nodes`, a step each, `timeout` each; the
-/// private directory goes when `prepared` does, after the last.
+/// `prepared` against each of `nodes`, a step each, `timeout` each, each
+/// result shown in `live` as it comes; the private directory goes when
+/// `prepared` does, after the last.
 async fn run_nodes(
     runner: &mut Runner,
     prepared: &speedtest::Prepared,
     nodes: &[speedtest::Node],
     timeout: Duration,
+    live: &Mutex<LiveState>,
 ) -> Result<speedtest::Outcome, sb_cli_core::exit::Exit> {
     let mut results = Vec::with_capacity(nodes.len());
     for &node in nodes {
@@ -506,6 +748,10 @@ async fn run_nodes(
             })
             .await?;
         results.push((node, measured));
+        show(
+            live,
+            Live::Nodes(results.iter().map(|(_, m)| m.clone()).collect()),
+        );
     }
     Ok(speedtest::Outcome::Nodes(results))
 }
@@ -523,6 +769,7 @@ async fn disk_test(
     runner: &mut Runner,
     bench: &Bench,
     shutdown: &Shutdown,
+    live: &Mutex<LiveState>,
 ) -> Result<Outcome, sb_cli_core::exit::Exit> {
     let mut rates = Vec::with_capacity(disk::RUNS);
     for n in 1..=disk::RUNS {
@@ -563,7 +810,10 @@ async fn disk_test(
             .await?;
         match measured {
             DiskRun::Skipped(why) => return Ok(Outcome::Skipped(why)),
-            DiskRun::Rate(rate) => rates.push(rate),
+            DiskRun::Rate(rate) => {
+                rates.push(rate);
+                show(live, Live::Disk(rates.clone()));
+            }
         }
     }
     Ok(Outcome::Runs(rates))
@@ -632,6 +882,7 @@ mod tests {
                 zpool: dir.join("no-zpool"),
                 ..system::Sources::default()
             },
+            screen: None,
         }
     }
 
@@ -1045,6 +1296,7 @@ mod tests {
             &prepared,
             &speedtest::NODES[..2],
             Duration::from_secs(60),
+            &Mutex::default(),
         )
         .await;
         runner.finish();
@@ -1436,5 +1688,379 @@ mod tests {
                 .render(&plain, false, 3),
             "Speedtest\n---\n"
         );
+    }
+
+    /// A frame of the live block at `width`, colour off, the spinner
+    /// standing still; `interrupted` as given.
+    fn frame(width: usize, interrupted: bool) -> BlockFrame {
+        BlockFrame {
+            width,
+            rows: 40,
+            colour: false,
+            spinner: "⠋",
+            interrupted,
+        }
+    }
+
+    /// The design example's layout at a terminal `width` wide, as `run`
+    /// fixes it before System prints.
+    fn example_layout(width: usize) -> Layout {
+        WIDTH.set(width);
+        let out = Out::new(Vec::new(), Theme::plain(), false, width_now);
+        let system = system::table(&example_facts(true));
+        let [disk, speedtest, footer] = later_tables(None, "2026-01-15 10:00:00 UTC");
+        out.layout_of(&[&system, &disk, &speedtest, &footer])
+    }
+
+    /// The live block's frames at 80 and 120 columns with the design
+    /// example's values (fake timings: each state a measurement can be
+    /// in), as the maintainer saw them in the bench-live prototype: the
+    /// System rows with the network pending, the disk runs filling in,
+    /// Preparing, the nodes filling in, and an interrupted section.
+    #[test]
+    fn the_live_frames_fill_in_as_results_arrive() {
+        let nodes: Vec<speedtest::Measured> = match example_nodes() {
+            speedtest::Outcome::Nodes(nodes) => nodes.into_iter().map(|(_, m)| m).collect(),
+            speedtest::Outcome::Unavailable(_) => Vec::new(),
+        };
+        let states = [
+            (
+                "system",
+                Live::System(Box::new(example_facts(false))),
+                false,
+            ),
+            ("disk-0", Live::Disk(Vec::new()), false),
+            ("disk-2", Live::Disk(vec![Some(800.0), None]), false),
+            ("preparing", Live::Preparing, false),
+            ("nodes-0", Live::Nodes(Vec::new()), false),
+            ("nodes-7", Live::Nodes(nodes[..7].to_vec()), false),
+            (
+                "nodes-7-interrupted",
+                Live::Nodes(nodes[..7].to_vec()),
+                true,
+            ),
+            ("disk-1-interrupted", Live::Disk(vec![Some(800.0)]), true),
+        ];
+        for width in [80, 120] {
+            for (name, live, interrupted) in &states {
+                insta::assert_snapshot!(
+                    format!("live-{name}-{width}"),
+                    live.text(
+                        &frame(width, *interrupted),
+                        &Theme::plain(),
+                        example_layout(width)
+                    )
+                );
+            }
+        }
+        assert_eq!(
+            Live::Nothing.text(&frame(80, false), &Theme::plain(), Layout::default()),
+            ""
+        );
+    }
+
+    /// The cell being measured: the spinner and its word in Accent,
+    /// right-aligned in its column as its value will be; `interrupted`
+    /// in Warn.
+    #[test]
+    fn the_cell_being_measured_takes_accent_then_warn() {
+        use sb_term_ui::style::paint;
+        let theme = truecolor();
+        let coloured = |interrupted| BlockFrame {
+            colour: true,
+            ..frame(80, interrupted)
+        };
+        let layout = example_layout(80);
+        let text = Live::Disk(vec![Some(800.0)]).text(&coloured(false), &theme, layout);
+        assert!(
+            text.contains(&paint(&theme, Role::Accent, true, "⠋ running")),
+            "{text:?}"
+        );
+        let text = Live::Disk(vec![Some(800.0)]).text(&coloured(true), &theme, layout);
+        assert!(
+            text.contains(&paint(&theme, Role::Warn, true, "interrupted")),
+            "{text:?}"
+        );
+        let plain = Live::Disk(vec![Some(800.0)]).text(&frame(80, false), &Theme::plain(), layout);
+        // The column a cell ends in, in characters.
+        let end = |needle: &str| {
+            let line = plain.lines().find(|l| l.contains(needle)).expect(needle);
+            line.find(needle)
+                .map(|at| line[..at].chars().count() + needle.chars().count())
+        };
+        assert_eq!(end("800.0 MB/s"), Some(LABEL + RATE), "{plain}");
+        assert_eq!(end("⠋ running"), Some(LABEL + RATE), "{plain}");
+    }
+
+    /// Each section's live frame is laid out as it is printed, its rule
+    /// as long: with every node measured, Speedtest's live frame is the
+    /// printed section byte for byte; the disk runs and System's host
+    /// rows are the printed rows; each with the blank line `Out` writes
+    /// before it. System's is drawn in the layout known before its
+    /// network rows, which is the printed one when they aren't the widest.
+    #[test]
+    fn a_live_section_is_its_printed_layout() {
+        for width in [80, 120] {
+            for colour in [false, true] {
+                let theme = if colour { truecolor() } else { Theme::plain() };
+                let at = BlockFrame {
+                    colour,
+                    ..frame(width, false)
+                };
+                WIDTH.set(width);
+                let facts = example_facts(true);
+                let system = system::table(&facts);
+                let [disk, speedtest, footer] = later_tables(None, "2026-01-15 10:00:00 UTC");
+                let mut out = Out::new(Vec::new(), theme.clone(), colour, width_now);
+                let pending = system::live_table(&facts, Cell::new(PENDING));
+                let before = out.layout_of(&[&pending, &disk, &speedtest, &footer]);
+                out.lay_out(&[&system, &disk, &speedtest, &footer]);
+                assert_eq!(before, out.layout());
+                let layout = out.layout();
+                let printed = |heading: &Heading, table: &Table, fit: Fit, first: bool| {
+                    let mut out = Out::new(Vec::new(), theme.clone(), colour, width_now);
+                    out.widest = layout.widest;
+                    if !first {
+                        out.sections = 1;
+                    }
+                    out.section(heading, table, fit).expect("section");
+                    String::from_utf8(out.into_inner()).expect("utf-8")
+                };
+                let outcome = example_nodes();
+                let speedtest::Outcome::Nodes(nodes) = &outcome else {
+                    panic!("nodes");
+                };
+                let done = nodes.iter().map(|(_, m)| m.clone()).collect();
+                assert_eq!(
+                    format!("{}\n", Live::Nodes(done).text(&at, &theme, layout)),
+                    printed(
+                        &speedtest::heading(&outcome),
+                        &speedtest::table(&outcome),
+                        Fit::speedtest(&outcome),
+                        false
+                    )
+                );
+                // A node that couldn't parse widens its Upload column past
+                // the rules: the live table keeps the terminal's width too.
+                let mut unparsed = nodes.clone();
+                unparsed[1].1 = speedtest::Measured::Unparsed;
+                let wide = speedtest::Outcome::Nodes(unparsed.clone());
+                let done = unparsed.iter().map(|(_, m)| m.clone()).collect();
+                assert_eq!(
+                    format!("{}\n", Live::Nodes(done).text(&at, &theme, layout)),
+                    printed(
+                        &speedtest::heading(&wide),
+                        &speedtest::table(&wide),
+                        Fit::speedtest(&wide),
+                        false
+                    )
+                );
+                let rates = vec![Some(800.0), Some(820.0), Some(840.0)];
+                let live = Live::Disk(rates.clone()).text(&at, &theme, layout);
+                let final_text = printed(
+                    &heading("Disk write"),
+                    &disk::table(&disk::Outcome::Runs(rates)),
+                    Fit::Rules,
+                    false,
+                );
+                let lines =
+                    |text: &str| text.lines().take(6).map(str::to_owned).collect::<Vec<_>>();
+                assert_eq!(lines(&live), lines(&final_text));
+                let live = Live::System(Box::new(facts.clone())).text(&at, &theme, before);
+                let final_text = printed(&heading("System"), &system, Fit::Rules, true);
+                let host = |text: &str| {
+                    text.lines()
+                        .take_while(|line| !line.contains("IPv4/IPv6"))
+                        .map(str::to_owned)
+                        .collect::<Vec<_>>()
+                };
+                assert_eq!(host(&live), host(&final_text));
+                assert!(host(&live).len() > 10, "{live}");
+            }
+        }
+    }
+
+    /// stdout and a test screen at once: what a run writes on stdout, and
+    /// the terminal it would land on, the live block drawn there too.
+    struct Tee(Vec<u8>, sb_term_ui::Screen);
+
+    impl Write for Tee {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0.extend_from_slice(buf);
+            self.1.write_all(buf)?;
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// `bench` with its live block on a screen 40 x `width`: stdout's
+    /// text, the screen's history, and the run's result.
+    async fn live_output(
+        bench: Bench,
+        shutdown: &Shutdown,
+        width: u16,
+    ) -> (anyhow::Result<()>, String, Vec<String>) {
+        let screen = sb_term_ui::Screen::new(40, width);
+        let bench = Bench {
+            screen: Some(screen.clone()),
+            ..bench
+        };
+        WIDTH.set(usize::from(width));
+        let mut out = Out::new(
+            Tee(Vec::new(), screen.clone()),
+            Theme::plain(),
+            false,
+            width_now,
+        );
+        let result = run(&bench, shutdown, None, &mut out).await;
+        let Tee(stdout, _) = out.into_inner();
+        (
+            result,
+            String::from_utf8(stdout).expect("utf-8"),
+            screen.history(),
+        )
+    }
+
+    /// On a terminal the live block draws each section in progress on
+    /// stderr; stdout gets the same sections as a plain run, and nothing
+    /// of the block; the screen ends with the report, each heading once
+    /// and no spinner left.
+    #[tokio::test]
+    async fn a_live_run_prints_what_a_plain_run_prints() {
+        let _spawns = super::SPAWNS.lock().await;
+        let dir = tempfile::tempdir().expect("dir");
+        for width in [80, 120] {
+            let (result, stdout, screen) =
+                live_output(small(dir.path(), PLENTY), &Shutdown::new(), width).await;
+            result.expect("run");
+            WIDTH.set(usize::from(width));
+            let mut out = Out::new(Vec::new(), Theme::plain(), false, width_now);
+            run(&small(dir.path(), PLENTY), &Shutdown::new(), None, &mut out)
+                .await
+                .expect("plain run");
+            let plain = String::from_utf8(out.into_inner()).expect("utf-8");
+            // The measurements and times differ run to run.
+            let steady = |text: &str| {
+                text.lines()
+                    .filter(|line| {
+                        ![
+                            "MB/s",
+                            "Finished in",
+                            "Timestamp",
+                            "Load Average",
+                            "Uptime",
+                            "Total",
+                            "CPU Cores",
+                        ]
+                        .iter()
+                        .any(|varies| line.contains(varies))
+                    })
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(steady(&stdout), steady(&plain));
+            for word in ["⠋", "running", "checking", "\x1b"] {
+                assert!(!stdout.contains(word), "{word}: {stdout}");
+            }
+            let report: Vec<&String> = screen.iter().filter(|l| !l.is_empty()).collect();
+            let stdout_lines: Vec<&str> = stdout.lines().filter(|l| !l.is_empty()).collect();
+            assert_eq!(report, stdout_lines, "{screen:#?}");
+        }
+    }
+
+    /// The run [`interrupting_live`] interrupts.
+    static INTERRUPTED_LIVE: std::sync::OnceLock<Shutdown> = std::sync::OnceLock::new();
+
+    fn interrupting_live(path: &Path) -> Result<u64, DiskError> {
+        INTERRUPTED_LIVE.get().expect("set").signalled(2);
+        PLENTY(path)
+    }
+
+    /// Ctrl-C during the disk test: System is printed, and the Disk write
+    /// section stays on the screen with its first run `interrupted`;
+    /// stdout gets System alone, as before.
+    #[tokio::test]
+    async fn ctrl_c_leaves_the_section_in_progress_marked_interrupted() {
+        let _spawns = super::SPAWNS.lock().await;
+        let dir = tempfile::tempdir().expect("dir");
+        let shutdown = INTERRUPTED_LIVE.get_or_init(Shutdown::new);
+        let (result, stdout, screen) =
+            live_output(small(dir.path(), interrupting_live), shutdown, 80).await;
+        assert!(result.is_err(), "{stdout}");
+        assert!(
+            stdout.contains("CPU Model") && !stdout.contains("Disk write"),
+            "{stdout}"
+        );
+        let at = screen
+            .iter()
+            .position(|line| line == "Disk write")
+            .unwrap_or_else(|| panic!("{screen:#?}"));
+        // The kept section's rule is the report's, as long as System's
+        // printed one (the Speedtest's short reason keeps both well
+        // under the screen's width).
+        let rule = stdout.lines().nth(1).expect("System's rule");
+        assert!(rule.starts_with("---") && rule.len() < 80, "{stdout}");
+        assert_eq!(screen[at + 1], rule, "{screen:#?}");
+        assert_eq!(
+            screen[at + 2],
+            format!("1st run{}interrupted", " ".repeat(LABEL + RATE - 7 - 11)),
+            "{screen:#?}"
+        );
+        assert_eq!(screen.iter().filter(|l| l.as_str() == "System").count(), 1);
+        assert!(
+            !screen.iter().any(|l| l.contains("sb bench")),
+            "{screen:#?}"
+        );
+        assert!(std::fs::read_dir(dir.path()).expect("dir").next().is_none());
+    }
+
+    /// Ctrl-C during a node: the nodes measured so far stay with the one
+    /// being tested `interrupted`, the nodes after it muted.
+    #[tokio::test]
+    async fn ctrl_c_during_a_node_leaves_the_nodes_on_the_screen() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let _spawns = super::SPAWNS.lock().await;
+        let parent = tempfile::tempdir().expect("dir");
+        let dir = tempfile::tempdir_in(parent.path()).expect("private");
+        let program = dir.path().join("speedtest");
+        std::fs::write(&program, "#!/bin/sh\nsleep 30\n").expect("write");
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).expect("mode");
+        let prepared = speedtest::Prepared::of(dir, program);
+        let screen = sb_term_ui::Screen::new(30, 80);
+        let shutdown = Shutdown::new();
+        let live: Shared = Arc::new(Mutex::new(LiveState {
+            section: Live::Nodes(Vec::new()),
+            layout: Layout::default(),
+        }));
+        let mut runner = Runner::start_block(
+            "sb bench",
+            &shutdown,
+            None,
+            Options::default(),
+            block(&live).on(screen.clone()),
+        );
+        interrupt_after(&shutdown, Duration::from_millis(300));
+        let outcome = run_nodes(
+            &mut runner,
+            &prepared,
+            &speedtest::NODES[..2],
+            Duration::from_secs(60),
+            &live,
+        )
+        .await;
+        assert!(outcome.is_err());
+        drop(runner);
+        // The blank line before the section, as `Out` writes it.
+        let rows = screen.rows();
+        assert_eq!(rows[..2], ["", "Speedtest  12 nodes"], "{rows:#?}");
+        assert!(
+            rows[4].starts_with("Speedtest.net") && rows[4].ends_with("interrupted"),
+            "{rows:#?}"
+        );
+        assert_eq!(rows[5], "Los Angeles, US", "{rows:#?}");
+        drop(prepared);
     }
 }

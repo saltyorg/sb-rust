@@ -1,0 +1,11 @@
+---
+source: crates/ops/src/bench/mod.rs
+expression: "live.text(&frame(width, *interrupted), &Theme::plain(), example_layout(width))"
+---
+
+Disk write
+--------------------------------------------------------------
+1st run                  800.0 MB/s
+2nd run                 interrupted
+3rd run
+Average

@@ -150,14 +150,8 @@ pub fn table(outcome: &Outcome) -> Table {
             table
         }
         Outcome::Runs(runs) => {
-            let mut table = super::rows().right_align(1).min_width(1, super::RATE);
-            let shown = |rate: Option<f64>| {
-                rate.map_or_else(
-                    || Cell::new(FAILED).role(Role::Problem),
-                    |r| Cell::new(format!("{r:.1} MB/s")),
-                )
-            };
-            for (text, rate) in ["1st run", "2nd run", "3rd run"].iter().zip(runs) {
+            let mut table = runs_table();
+            for (text, rate) in RUNS_LABELS.iter().zip(runs) {
                 table.row([label(text), shown(*rate)]);
             }
             let measured: Vec<f64> = runs.iter().flatten().copied().collect();
@@ -169,6 +163,40 @@ pub fn table(outcome: &Outcome) -> Table {
             table
         }
     }
+}
+
+/// The runs' labels, in order.
+const RUNS_LABELS: [&str; RUNS] = ["1st run", "2nd run", "3rd run"];
+
+/// The runs' table, its rates right-aligned in a column 14 wide.
+fn runs_table() -> Table {
+    super::rows().right_align(1).min_width(1, super::RATE)
+}
+
+/// A rate, one decimal, or a failed run's `Test failed` in Problem.
+fn shown(rate: Option<f64>) -> Cell {
+    rate.map_or_else(
+        || Cell::new(FAILED).role(Role::Problem),
+        |r| Cell::new(format!("{r:.1} MB/s")),
+    )
+}
+
+/// The section while it runs (ops spec, "`sb bench`", Progress): the
+/// runs measured so far as [`table`] shows them, `running` in the next
+/// run's cell, the later runs and `Average` with empty values.
+#[must_use]
+pub fn live_table(runs: &[Option<f64>], running: Cell) -> Table {
+    let mut table = runs_table();
+    let mut running = Some(running);
+    for (n, text) in RUNS_LABELS.iter().enumerate() {
+        let cell = match runs.get(n) {
+            Some(rate) => shown(*rate),
+            None => running.take().unwrap_or_else(|| Cell::new("")),
+        };
+        table.row([label(text), cell]);
+    }
+    table.row([Cell::new("Average").bold(), Cell::new("")]);
+    table
 }
 
 #[cfg(test)]

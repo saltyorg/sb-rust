@@ -133,6 +133,15 @@ you could trip over.
   one label column, with no boxes and no line between rows. Rates are
   right-aligned so their decimals line up, a failed Speedtest node or
   disk run shows in red, and a skipped test's reason in yellow.
+- **`sb bench` shows its results as they arrive:** on a terminal, the
+  section in progress is drawn live in the report's own layout instead of
+  a list of steps: System's rows at once, then Disk write's runs and
+  Speedtest's nodes filling in one by one, with a spinner in the cell
+  being measured. Each section is printed when it ends, as before, so
+  what stays on the screen, and what a pipe or a log gets, is unchanged.
+  Ctrl-C leaves the section in progress on the screen marked
+  `interrupted`. Resizing the terminal mid-run redraws the section in
+  progress at the new width without leaving copies.
 - **A missing CA bundle is named, with its fix:** when the system's CA
   certificates are missing, `sb bench`, `sb self-update`, `sb update`,
   the config checks and `sb restore` say so and to run `apt install

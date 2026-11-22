@@ -1287,7 +1287,7 @@ Choices behind it:
     with bench specifically"):** `sb bench` shows its ruled report as
     results arrive, drawn by the runner (prototype A', the "option 4"
     policy: each section printed when it ends, only the one in progress
-    live; ops decision 45). The runner gains a live-block mode beside
+    live; ops decision 47). The runner gains a live-block mode beside
     the tree's ("Live block" above); the tree's own drawing, on
     indicatif, is unchanged. Why console_static_text and not the tree's
     indicatif area: indicatif pads each live line to the width and
