@@ -336,7 +336,9 @@ fn ctrl_c_during_the_tag_listing_runs_nothing() {
         dir.path().join("argv.term").exists(),
         "the listing got SIGTERM"
     );
-    assert!(!dir.path().join("argv.1").exists(), "no playbook ran");
+    // Sandbox's listing may have run at once with Saltbox's (ansible
+    // decision 22), stopped with it: listings only, no playbook.
+    assert_only_listings(dir.path(), &["saltbox.yml", "sandbox.yml"]);
     assert!(!stdout.contains("Executing"), "{stdout}");
     assert!(
         !dir.path().join("saltbox/cache.json").exists(),
@@ -441,7 +443,9 @@ fn ctrl_c_during_sb_lists_first_listing_starts_no_other() {
         dir.path().join("argv.term").exists(),
         "the listing got SIGTERM"
     );
-    assert!(!dir.path().join("argv.1").exists(), "nothing else started");
+    // Sandbox's listing may have run at once with Saltbox's (ansible
+    // decision 22), stopped with it; `saltbox_mod`'s didn't start.
+    assert_only_listings(dir.path(), &["saltbox.yml", "sandbox.yml"]);
     assert_eq!(stdout, "", "nothing listed");
 }
 
@@ -469,7 +473,34 @@ fn ctrl_c_during_a_refresh_starts_no_other_listing() {
         dir.path().join("argv.term").exists(),
         "the listing got SIGTERM"
     );
-    assert!(!dir.path().join("argv.1").exists(), "nothing else started");
+    // Sandbox's listing runs at once with Saltbox's (ansible decision
+    // 22), stopped with it: nothing but the two listings.
+    assert_only_listings(dir.path(), &["saltbox.yml", "sandbox.yml"]);
     assert_eq!(stdout, "", "nothing listed");
     assert_eq!(std::fs::read_to_string(&cache).expect("cache"), before);
+}
+
+/// Every run the fake recorded in `dir` was a tag listing of one of
+/// `playbooks`, each at most once, and one ran. At once either may have
+/// been the one waiting when Ctrl-C came, and the other stopped before
+/// its record.
+fn assert_only_listings(dir: &Path, playbooks: &[&str]) {
+    let mut seen = Vec::new();
+    for n in 0.. {
+        let Ok(bytes) = std::fs::read(dir.join(format!("argv.{n}"))) else {
+            break;
+        };
+        let text = String::from_utf8_lossy(&bytes).into_owned();
+        let args: Vec<&str> = text.split('\0').collect();
+        // The working directory, `$0`, the playbook, then its arguments.
+        assert_eq!(
+            args.get(3..6),
+            Some(&["--become", "--list-tags", "--skip-tags=always"][..]),
+            "a listing: {args:?}"
+        );
+        assert!(playbooks.contains(&args[2]), "{args:?}");
+        assert!(!seen.contains(&args[2].to_owned()), "listed once: {args:?}");
+        seen.push(args[2].to_owned());
+    }
+    assert!(!seen.is_empty(), "a listing ran");
 }

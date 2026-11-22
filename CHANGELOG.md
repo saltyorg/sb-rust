@@ -57,6 +57,10 @@ you could trip over.
 - **`sb list --refresh`** rebuilds the Saltbox and Sandbox tag caches
   before listing: after roles were edited locally, or to time the
   rebuild (the run log has each step's time).
+- **Both tag caches are rebuilt at once** on 2 or more CPU cores, when
+  both need it: `sb list` and `sb install`'s tag check take the longer
+  of the two listings, not both one after the other (about 2.5 s
+  instead of 5 s). On 1 core they run one after the other, as before.
 - **`sb update --verify-venv`** (hidden while its cost is tried): checks
   every file of the Ansible virtual environment against its package's
   record, and the Python against a manifest sb writes when it installs

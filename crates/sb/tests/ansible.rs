@@ -759,8 +759,10 @@ fn a_tag_with_a_suggestion_runs_nothing() {
 }
 
 /// No cache: each repository's tags are listed in a step of a runner
-/// titled `sb install`, Saltbox first, written, then the playbooks run.
-/// A valid cache shows nothing (the run-order test's empty stderr).
+/// titled `sb install`, Saltbox's step first, written, then the
+/// playbooks run. The two listings may run at once (ansible decision 22),
+/// so they may start in either order. A valid cache shows nothing (the
+/// run-order test's empty stderr).
 #[test]
 fn a_missing_cache_is_rebuilt_as_steps_before_the_runs() {
     if !root_gate::requested() {
@@ -778,10 +780,15 @@ fn a_missing_cache_is_rebuilt_as_steps_before_the_runs() {
     assert!(output.status.success(), "{}", stderr(&output));
     let runs = world.runs();
     let listing = ["--become", "--list-tags", "--skip-tags=always"];
-    assert_eq!(args_of(&runs[0])[1..], listing);
-    assert_eq!(args_of(&runs[0])[0], "saltbox.yml");
-    assert_eq!(args_of(&runs[1])[1..], listing);
-    assert_eq!(args_of(&runs[1])[0], "sandbox.yml");
+    let mut listed: Vec<&str> = runs[..2]
+        .iter()
+        .map(|run| {
+            assert_eq!(args_of(run)[1..], listing);
+            args_of(run)[0]
+        })
+        .collect();
+    listed.sort_unstable();
+    assert_eq!(listed, ["saltbox.yml", "sandbox.yml"]);
     assert_eq!(
         args_of(&runs[2]),
         ["saltbox.yml", "--become", "--tags", "plex"]
@@ -849,8 +856,19 @@ fn a_broken_saltbox_is_fatal() {
         err.contains("saltbox install appears broken: tags cache missing or empty"),
         "{err}"
     );
-    assert_eq!(world.runs().len(), 1, "only the listing ran");
+    // Sandbox's listing too when both run at once (ansible decision 22),
+    // stopped after Saltbox's failed; no playbook ran.
+    let runs = world.runs();
+    assert_eq!(args_of(&runs[0])[1..], LISTING_ARGS, "{runs:?}");
+    assert!(
+        runs.iter().all(|run| args_of(run)[1..] == LISTING_ARGS),
+        "only listings ran: {runs:?}"
+    );
+    assert!(runs.len() <= 2, "{runs:?}");
 }
+
+/// A tag listing's arguments after its playbook.
+const LISTING_ARGS: [&str; 3] = ["--become", "--list-tags", "--skip-tags=always"];
 
 /// No Sandbox checkout counts as no Sandbox tags: Saltbox's tags still
 /// run, and a Sandbox tag is then found nowhere.

@@ -11,6 +11,7 @@ use std::fmt;
 use std::io::Write as _;
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::sync::LazyLock;
 
 use regex::Regex;
@@ -211,12 +212,13 @@ impl TagCache {
     ) -> Result<Listed, CacheError> {
         same_repo(repo, checkout);
         let head = checkout.head(&runner.token()).await?;
-        self.tags_at(ansible, repo, head, runner).await
+        self.tags_at(ansible, repo, head, runner, None).await
     }
 
     /// [`TagCache::tags_on`] with the HEAD of `repo`'s checkout already
     /// read (sb-repo's `head()`), so `sb list` can read two checkouts'
-    /// HEADs at once.
+    /// HEADs at once; a rebuild runs `beside` alongside its listing (the
+    /// other repository's, started at once: spec, "Both at once").
     ///
     /// # Errors
     ///
@@ -227,11 +229,12 @@ impl TagCache {
         repo: &Repo,
         head: String,
         runner: &mut LazyRunner<F>,
+        beside: Option<&mut StartedListing<'_>>,
     ) -> Result<Listed, CacheError> {
         if let Some(tags) = self.fresh(repo, &head) {
             return Ok(Listed { tags, cached: true });
         }
-        let tags = self.rebuild_on(ansible, repo, head, runner).await?;
+        let tags = self.rebuild_on(ansible, repo, head, runner, beside).await?;
         Ok(Listed {
             tags,
             cached: false,
@@ -255,11 +258,11 @@ impl TagCache {
     ) -> Result<Vec<String>, CacheError> {
         same_repo(repo, checkout);
         let head = checkout.head(&runner.token()).await?;
-        self.refresh_at(ansible, repo, head, runner).await
+        self.refresh_at(ansible, repo, head, runner, None).await
     }
 
     /// [`TagCache::refresh_on`] with the checkout's HEAD already read, as
-    /// [`TagCache::tags_at`].
+    /// [`TagCache::tags_at`], `beside` run alongside its listing.
     ///
     /// # Errors
     ///
@@ -270,29 +273,88 @@ impl TagCache {
         repo: &Repo,
         head: String,
         runner: &mut LazyRunner<F>,
+        beside: Option<&mut StartedListing<'_>>,
     ) -> Result<Vec<String>, CacheError> {
-        self.rebuild_on(ansible, repo, head, runner).await
+        self.rebuild_on(ansible, repo, head, runner, beside).await
     }
 
     /// The listing in a top-level step of `runner`, transient when its
-    /// steps are.
+    /// steps are; `beside` (the other repository's listing, started at
+    /// once) runs alongside it, and goes on after this step if it hasn't
+    /// ended.
     async fn rebuild_on<F: FnOnce() -> Runner>(
         &mut self,
         ansible: &Ansible,
         repo: &Repo,
         head: String,
         runner: &mut LazyRunner<F>,
+        beside: Option<&mut StartedListing<'_>>,
     ) -> Result<Vec<String>, CacheError> {
         let label = label(repo.kind());
         let labels = runner.labels(label.clone(), label);
         runner
             .runner()
             .step(labels, async |step| {
-                self.list_and_record(ansible, repo, head, &step.token())
-                    .await
+                let token = step.token();
+                let listing = self.list_and_record(ansible, repo, head, &token);
+                match beside {
+                    Some(started) => started.alongside(listing).await,
+                    None => listing.await,
+                }
             })
             .await
             .map_err(CacheError::Step)
+    }
+
+    /// A listing started at once ([`StartedListing`]) waited for in its
+    /// own top-level step of `runner`, labelled and transient as a
+    /// rebuild's, then recorded as one. A step that doesn't start (after
+    /// Ctrl-C) stops the listing and waits for it.
+    ///
+    /// # Errors
+    ///
+    /// [`CacheError::Step`] when the step failed (it shows why).
+    pub(crate) async fn rebuild_started_on<F: FnOnce() -> Runner>(
+        &mut self,
+        started: StartedListing<'_>,
+        runner: &mut LazyRunner<F>,
+    ) -> Result<Vec<String>, CacheError> {
+        let label = label(started.repo.kind());
+        let labels = runner.labels(label.clone(), label);
+        let mut waiting = Some(started);
+        let rebuilt = runner
+            .runner()
+            .step(labels, async |_step| {
+                let started = waiting.take().expect("a step's body runs once");
+                self.record_started(started).await
+            })
+            .await;
+        if let Some(started) = waiting {
+            started.stop().await;
+        }
+        rebuilt.map_err(CacheError::Step)
+    }
+
+    /// A listing started at once, waited for, its entry recorded and the
+    /// file written when it changed (a rebuild step's body, as
+    /// [`TagCache::refresh`]'s): for a step of the caller's own (`update`,
+    /// ops spec, decision 46).
+    ///
+    /// # Errors
+    ///
+    /// The listing's error, or the write's.
+    pub async fn record_started(
+        &mut self,
+        started: StartedListing<'_>,
+    ) -> anyhow::Result<Vec<String>> {
+        let repo = started.repo;
+        let (head, listed) = started.finish().await;
+        let entry = RepoTags {
+            commit: head,
+            tags: listed?,
+        };
+        self.record(repo, &entry)?;
+        Ok(entry.tags)
     }
 
     /// `repo`'s cached tags if valid for its checkout's HEAD, else that
@@ -402,6 +464,108 @@ impl TagCache {
         file.as_file().sync_all().map_err(failed)?;
         file.persist(&self.path).map_err(|err| failed(err.error))?;
         Ok(())
+    }
+}
+
+/// A tag listing started at once with another repository's (ansible
+/// spec, "Both at once"; ops spec, decision 46): Sandbox's beside
+/// Saltbox's. Its child starts when it is first polled: by
+/// [`StartedListing::alongside`], the other listing's step body, then by
+/// the step that waits for it ([`TagCache::record_started`]). Why not a
+/// spawned task: `tokio::spawn` needs `'static`, and the listing borrows
+/// the [`Ansible`] and the [`Repo`]; sb's runtime is current-thread, so
+/// a task would run no more at once than a future (the work is in the
+/// child processes); and a dropped future drops exec's run, which kills
+/// the child at once (tokio's `kill_on_drop`), where an aborted task is
+/// dropped only when the runtime polls it again, and sb may exit first.
+/// Every early return still calls [`StartedListing::stop`], which ends
+/// the child's group as a Ctrl-C does and waits for it.
+pub struct StartedListing<'a> {
+    repo: &'a Repo,
+    head: String,
+    token: CancellationToken,
+    listing: Pin<Box<dyn Future<Output = anyhow::Result<Vec<String>>> + Send + 'a>>,
+    /// Whether the listing has been polled (its child started).
+    polled: bool,
+    /// Its result, once it ended alongside another step.
+    done: Option<anyhow::Result<Vec<String>>>,
+}
+
+impl<'a> StartedListing<'a> {
+    /// `repo`'s listing (ansible's one listing, [`Ansible::list_tags`]),
+    /// to be recorded for `head`; it stops with `token` (a child token of
+    /// it), or with [`StartedListing::stop`].
+    #[must_use]
+    pub fn start(
+        ansible: &'a Ansible,
+        repo: &'a Repo,
+        head: String,
+        token: &CancellationToken,
+    ) -> Self {
+        let token = token.child_token();
+        let listing_token = token.clone();
+        Self {
+            repo,
+            head,
+            token,
+            listing: Box::pin(async move { ansible.list_tags(repo, &listing_token).await }),
+            polled: false,
+            done: None,
+        }
+    }
+
+    /// `main` run to its end, this listing polled alongside it (started,
+    /// its output read), its result kept if it ends first. tokio's
+    /// `select!` in a loop over a pinned future, as its tutorial's
+    /// "Resuming an async operation"
+    /// (<https://tokio.rs/tokio/tutorial/select#resuming-an-async-operation>),
+    /// the ended branch disabled by its precondition, as "Modifying a
+    /// branch" (<https://tokio.rs/tokio/tutorial/select#modifying-a-branch>).
+    /// `biased`, the listing first, so it has been polled (its child
+    /// started) whenever `polled` says so, even when `main` ends at its
+    /// first poll.
+    pub async fn alongside<T>(&mut self, main: impl Future<Output = T>) -> T {
+        let mut main = std::pin::pin!(main);
+        self.polled = true;
+        loop {
+            tokio::select! {
+                biased;
+                listed = &mut self.listing, if self.done.is_none() => self.done = Some(listed),
+                out = &mut main => return out,
+            }
+        }
+    }
+
+    /// Its HEAD and its result, waited for.
+    async fn finish(mut self) -> (String, anyhow::Result<Vec<String>>) {
+        let listed = match self.done.take() {
+            Some(listed) => listed,
+            None => self.listing.as_mut().await,
+        };
+        (std::mem::take(&mut self.head), listed)
+    }
+
+    /// Its child stopped (the token cancelled: exec's group stop, SIGTERM,
+    /// the grace, SIGKILL) and waited for, for a command that returns
+    /// before the step that would wait for it. A listing never polled has
+    /// no child: it is dropped.
+    pub async fn stop(mut self) {
+        self.token.cancel();
+        if self.polled && self.done.is_none() {
+            // Its result is of no use now: stopped, or ended meanwhile.
+            let _stopped = self.listing.as_mut().await;
+        }
+    }
+}
+
+impl fmt::Debug for StartedListing<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("StartedListing")
+            .field("repo", &self.repo)
+            .field("head", &self.head)
+            .field("polled", &self.polled)
+            .field("done", &self.done.is_some())
+            .finish_non_exhaustive()
     }
 }
 

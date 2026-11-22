@@ -30,6 +30,9 @@ tokio = { workspace = true, features = ["macros"] }
 tracing.workspace = true
 # The rebuild step's body result (term-ui's `Step::step`).
 anyhow.workspace = true
+# Whether Saltbox's and Sandbox's tag listings run at once: one per
+# physical core sb may run on (host's `cores`; spec, decision 22).
+sb-host.workspace = true
 # install's suggestions: Levenshtein distance per Unicode scalar, as
 # sb-go's agnivade/levenshtein (spec, step 5; plan decision 8).
 strsim.workspace = true

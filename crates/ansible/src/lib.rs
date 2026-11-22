@@ -23,7 +23,8 @@ mod suggest;
 
 pub use args::{InstallArgs, NoTags, Routed, parse_tags};
 pub use cache::{
-    CacheError, FILE as CACHE_FILE, LazyRunner, Listed, RepoTags, TagCache, label as cache_label,
+    CacheError, FILE as CACHE_FILE, LazyRunner, Listed, RepoTags, StartedListing, TagCache,
+    label as cache_label,
 };
 pub use list::{
     Cache as ListCache, ListArgs, Listing, Match, PIPED_WIDTH, Section,
@@ -36,6 +37,7 @@ pub use suggest::{
     validate,
 };
 
+use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 
 /// Where Saltbox installs `ansible-playbook` (sb-go layout/layout.go):
@@ -151,6 +153,9 @@ impl Repos {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Ansible {
     program: PathBuf,
+    /// How many tag listings run at once; `None` (the default) is host's
+    /// rule, read when both rebuilds are due ([`Ansible::listings_at_once`]).
+    at_once: Option<NonZeroUsize>,
 }
 
 impl Default for Ansible {
@@ -165,7 +170,33 @@ impl Ansible {
     pub fn with_program(program: impl Into<PathBuf>) -> Self {
         Self {
             program: program.into(),
+            at_once: None,
         }
+    }
+
+    /// `at_once` tag listings at a time, in place of host's rule (tests:
+    /// a host of that many physical cores).
+    #[must_use]
+    pub fn with_listings_at_once(self, at_once: NonZeroUsize) -> Self {
+        Self {
+            at_once: Some(at_once),
+            ..self
+        }
+    }
+
+    /// Whether Saltbox's and Sandbox's tag listings run at once (ansible
+    /// spec, "Both at once"): on 2 or more physical cores sb may run on
+    /// (host's `cores::children_at_once`, the rule python-env's probes
+    /// take), in turn otherwise. Read only when a rebuild that could run
+    /// beside the other's is due, and noted in the run log.
+    #[must_use]
+    pub fn listings_at_once(&self) -> bool {
+        let at_once = self
+            .at_once
+            .unwrap_or_else(sb_host::cores::children_at_once);
+        let both = at_once.get() >= 2;
+        tracing::info!(cores = at_once, at_once = both, "tag listings at once");
+        both
     }
 
     /// The program it runs.
@@ -201,6 +232,24 @@ mod tests {
         assert_eq!(
             modded.playbook_path(),
             Path::new("/opt/saltbox_mod/saltbox_mod.yml")
+        );
+    }
+
+    /// Both listings at once from 2 physical cores up, in turn on 1; by
+    /// default host's rule.
+    #[test]
+    fn listings_run_at_once_from_two_cores() {
+        let on = |cores| {
+            Ansible::default()
+                .with_listings_at_once(NonZeroUsize::new(cores).expect("cores"))
+                .listings_at_once()
+        };
+        assert!(!on(1));
+        assert!(on(2));
+        assert!(on(4));
+        assert_eq!(
+            Ansible::default().listings_at_once(),
+            sb_host::cores::children_at_once().get() >= 2
         );
     }
 

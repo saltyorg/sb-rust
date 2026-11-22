@@ -419,8 +419,16 @@ async fn lazily_with<T>(
     transient: bool,
     body: impl AsyncFnOnce(&mut LazyRunner<Box<dyn FnOnce() -> Runner>>) -> T,
 ) -> Lazy<T> {
+    lazily_under(transient, &Shutdown::new(), body).await
+}
+
+/// [`lazily_with`] under `shutdown`.
+async fn lazily_under<T>(
+    transient: bool,
+    shutdown: &Shutdown,
+    body: impl AsyncFnOnce(&mut LazyRunner<Box<dyn FnOnce() -> Runner>>) -> T,
+) -> Lazy<T> {
     let term = indicatif::InMemoryTerm::new(40, 300);
-    let shutdown = Shutdown::new();
     let start: Box<dyn FnOnce() -> Runner> = {
         let (term, shutdown) = (term.clone(), shutdown.clone());
         Box::new(move || {
@@ -694,4 +702,326 @@ async fn saltboxs_failure_or_no_tags_is_fatal() {
             ran.screen
         );
     }
+}
+
+/// The fake on `cores` physical cores (ansible spec, "Both at once").
+fn on_cores(cores: usize) -> Ansible {
+    Ansible::with_program(FAKE)
+        .with_listings_at_once(std::num::NonZeroUsize::new(cores).expect("cores"))
+}
+
+/// The settings directories of `world`'s Saltbox and of its Sandbox at
+/// `sandbox`.
+fn both_settings(world: &World, sandbox: &Path) -> [PathBuf; 2] {
+    [world.settings(), sandbox.join(".fake-ansible")]
+}
+
+/// A Sandbox checkout beside `world`'s Saltbox, both entries stale, each
+/// listing in the fake's `meet` mode in `<dir>/meet`, waiting `ticks`
+/// times 0.05 s at most for the other; the meeting directory.
+fn both_meeting(world: &World, ticks: u32) -> PathBuf {
+    let sandbox = sandbox_checkout(world, SANDBOX_LISTING);
+    let meet = world.dir.path().join("meet");
+    std::fs::create_dir_all(&meet).expect("meet");
+    for settings in both_settings(world, &sandbox) {
+        std::fs::write(settings.join("FAKE_ANSIBLE_MODE"), "meet").expect("mode");
+        std::fs::write(
+            settings.join("FAKE_ANSIBLE_MEET"),
+            meet.display().to_string(),
+        )
+        .expect("meet");
+        std::fs::write(settings.join("FAKE_ANSIBLE_TICKS"), ticks.to_string()).expect("ticks");
+    }
+    meet
+}
+
+/// The meeting's log, a line per start and end; emptied, with the
+/// started marks, for the next run.
+fn take_meeting(meet: &Path) -> Vec<String> {
+    let log = std::fs::read_to_string(meet.join("log")).unwrap_or_default();
+    for entry in std::fs::read_dir(meet).expect("meet") {
+        std::fs::remove_file(entry.expect("entry").path()).expect("cleared");
+    }
+    log.lines().map(str::to_string).collect()
+}
+
+/// Both listings ran at once: each started before either ended.
+fn assert_at_once(log: &[String]) {
+    assert_eq!(log.len(), 4, "{log:?}");
+    assert!(
+        log[..2].iter().all(|line| line.starts_with("start "))
+            && log[2..].iter().all(|line| line.starts_with("end ")),
+        "{log:?}"
+    );
+}
+
+/// The listings ran in turn, Saltbox's first.
+fn assert_in_turn(log: &[String]) {
+    assert_eq!(
+        log,
+        [
+            "start saltbox",
+            "end saltbox",
+            "start sandbox",
+            "end sandbox"
+        ]
+    );
+}
+
+/// `sb list`'s gather on `world` with `args`, its runner transient.
+async fn gather(
+    world: &World,
+    cache: &mut TagCache,
+    ansible: &Ansible,
+    args: &sb_ansible::ListArgs,
+) -> Lazy<sb_ansible::Listing> {
+    lazily_with(true, async |runner| {
+        sb_ansible::gather(cache, ansible, &repos(world), args, runner).await
+    })
+    .await
+}
+
+/// Each section's repository and where its tags came from.
+fn sources(listing: &sb_ansible::Listing) -> Vec<(sb_ansible::Kind, sb_ansible::ListCache)> {
+    listing
+        .sections
+        .iter()
+        .map(|section| (section.repo, section.cache))
+        .collect()
+}
+
+/// `sb list` with both entries stale on 2 physical cores: the two
+/// listings run at once, both HEADs read first (decision 22); the
+/// listing is as in turn, and so is `--refresh`'s over a valid cache.
+#[tokio::test]
+async fn list_rebuilds_both_at_once_on_two_cores() {
+    use sb_ansible::{Kind, ListCache};
+    let world = World::new();
+    let meet = both_meeting(&world, 400);
+    let ansible = on_cores(2);
+    let mut cache = TagCache::load(&world.root());
+    let args = sb_ansible::ListArgs::default();
+    let ran = gather(&world, &mut cache, &ansible, &args).await;
+    assert_eq!(ran.result.failures, Vec::<String>::new(), "{}", ran.screen);
+    assert_eq!(
+        sources(&ran.result),
+        [
+            (Kind::Saltbox, ListCache::Rebuilt),
+            (Kind::Sandbox, ListCache::Rebuilt)
+        ]
+    );
+    assert_eq!(ran.result.sections[0].tags, strings(&SALTBOX_TAGS));
+    assert_eq!(ran.screen.trim(), "", "transient: {}", ran.screen);
+    assert_at_once(&take_meeting(&meet));
+
+    // Valid now: nothing runs without `--refresh`, both at once with it.
+    let mut cache = TagCache::load(&world.root());
+    let ran = gather(&world, &mut cache, &ansible, &args).await;
+    assert_eq!(
+        sources(&ran.result),
+        [
+            (Kind::Saltbox, ListCache::Cached),
+            (Kind::Sandbox, ListCache::Cached)
+        ]
+    );
+    assert_eq!(take_meeting(&meet), Vec::<String>::new());
+    let refresh = sb_ansible::ListArgs {
+        refresh: true,
+        ..sb_ansible::ListArgs::default()
+    };
+    let ran = gather(&world, &mut cache, &ansible, &refresh).await;
+    assert_eq!(ran.result.failures, Vec::<String>::new(), "{}", ran.screen);
+    assert_at_once(&take_meeting(&meet));
+}
+
+/// On 1 physical core (an SMT pair counts as one), or with one entry
+/// stale, `sb list` lists in turn, as before.
+#[tokio::test]
+async fn list_rebuilds_in_turn_on_one_core_or_for_one() {
+    let world = World::new();
+    let meet = both_meeting(&world, 4);
+    let mut cache = TagCache::load(&world.root());
+    let args = sb_ansible::ListArgs::default();
+    let ran = gather(&world, &mut cache, &on_cores(1), &args).await;
+    assert_eq!(ran.result.failures, Vec::<String>::new(), "{}", ran.screen);
+    assert_in_turn(&take_meeting(&meet));
+
+    // Only Saltbox's stale on 2 cores: its listing alone.
+    world.commit("two");
+    let mut cache = TagCache::load(&world.root());
+    let ran = gather(&world, &mut cache, &on_cores(2), &args).await;
+    assert_eq!(ran.result.failures, Vec::<String>::new(), "{}", ran.screen);
+    assert_eq!(take_meeting(&meet), ["start saltbox", "end saltbox"]);
+}
+
+/// `sb install`'s check with both stale: at once on 2 cores, in turn on
+/// 1, the same tags either way.
+#[tokio::test]
+async fn install_rebuilds_both_at_once_on_two_cores_in_turn_on_one() {
+    for (cores, ticks) in [(2, 400), (1, 4)] {
+        let world = World::new();
+        let meet = both_meeting(&world, ticks);
+        let ansible = on_cores(cores);
+        let mut cache = TagCache::load(&world.root());
+        let ran = lazily(async |runner| {
+            sb_ansible::known_tags(&mut cache, &ansible, &repos(&world), runner).await
+        })
+        .await;
+        let known = ran.result.expect("known");
+        assert_eq!(known.saltbox, strings(&SALTBOX_TAGS), "{cores}");
+        assert_eq!(known.sandbox.len(), 5, "{cores}");
+        let saltbox = ran.screen.find("✓ Updating Saltbox tags cache");
+        let sandbox = ran.screen.find("✓ Updating Sandbox tags cache");
+        assert!(saltbox.is_some() && saltbox < sandbox, "{}", ran.screen);
+        let log = take_meeting(&meet);
+        if cores == 2 {
+            assert_at_once(&log);
+        } else {
+            assert_in_turn(&log);
+        }
+    }
+}
+
+/// At once, Saltbox's failure still comes first, in the tree and in the
+/// failures, though Sandbox's listing failed first.
+#[tokio::test]
+async fn at_once_saltboxs_failure_is_reported_first() {
+    let world = World::new();
+    let sandbox = sandbox_checkout(&world, SANDBOX_LISTING);
+    let [saltbox_settings, sandbox_settings] = both_settings(&world, &sandbox);
+    for (name, value) in [
+        ("FAKE_ANSIBLE_MODE", "sleep"),
+        ("FAKE_ANSIBLE_SLEEP", "0.5"),
+        ("FAKE_ANSIBLE_EXIT", "4"),
+        ("FAKE_ANSIBLE_STDERR", "saltbox broke"),
+    ] {
+        std::fs::write(saltbox_settings.join(name), value).expect("setting");
+    }
+    for (name, value) in [
+        ("FAKE_ANSIBLE_EXIT", "5"),
+        ("FAKE_ANSIBLE_STDERR", "sandbox broke"),
+    ] {
+        std::fs::write(sandbox_settings.join(name), value).expect("setting");
+    }
+    let mut cache = TagCache::load(&world.root());
+    let args = sb_ansible::ListArgs::default();
+    let ran = gather(&world, &mut cache, &on_cores(2), &args).await;
+    let failures = &ran.result.failures;
+    assert_eq!(failures.len(), 2, "{failures:?}");
+    assert!(failures[0].contains("/saltbox: "), "{failures:?}");
+    assert!(failures[1].contains("/appdata/sandbox: "), "{failures:?}");
+    let at = |text| ran.screen.find(text);
+    let saltbox = at("✗ Updating Saltbox tags cache");
+    assert!(saltbox.is_some(), "{}", ran.screen);
+    assert!(saltbox < at("exit 4"), "{}", ran.screen);
+    assert!(
+        at("exit 4") < at("✗ Updating Sandbox tags cache"),
+        "{}",
+        ran.screen
+    );
+    assert!(
+        at("✗ Updating Sandbox tags cache") < at("exit 5"),
+        "{}",
+        ran.screen
+    );
+}
+
+/// Whether the fake's run whose pid is in `settings` has ended and been
+/// reaped (no such process).
+fn reaped(settings: &Path) -> bool {
+    let pid = std::fs::read_to_string(settings.join("argv.pid")).expect("pid");
+    !Path::new(&format!("/proc/{}", pid.trim())).exists()
+}
+
+/// Waits until every `pids` file is there (each fake's run is waiting),
+/// for 30 s at most; whether they all came.
+async fn wait_for(pids: &[PathBuf]) -> bool {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !pids.iter().all(|pid| pid.exists()) {
+        if std::time::Instant::now() > deadline {
+            return false;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    true
+}
+
+/// `sb install`'s Saltbox listing failing while Sandbox's still runs at
+/// once: Sandbox's is stopped (SIGTERM to its group) and waited for
+/// before the error comes back, so no child outlives sb; its step isn't
+/// drawn.
+#[tokio::test]
+async fn install_stops_and_reaps_sandboxs_listing_when_saltboxs_fails() {
+    let world = World::new();
+    let sandbox = sandbox_checkout(&world, SANDBOX_LISTING);
+    let [saltbox_settings, sandbox_settings] = both_settings(&world, &sandbox);
+    std::fs::write(sandbox_settings.join("FAKE_ANSIBLE_MODE"), "wait").expect("mode");
+    // Saltbox's fails once Sandbox's is waiting.
+    let started = sandbox_settings.join("argv.pid");
+    std::fs::write(
+        saltbox_settings.join("FAKE_ANSIBLE_STDERR"),
+        "saltbox broke",
+    )
+    .expect("stderr");
+    std::fs::write(saltbox_settings.join("FAKE_ANSIBLE_EXIT"), "4").expect("exit");
+    std::fs::write(saltbox_settings.join("FAKE_ANSIBLE_MODE"), "after").expect("mode");
+    std::fs::write(
+        saltbox_settings.join("FAKE_ANSIBLE_AFTER"),
+        started.display().to_string(),
+    )
+    .expect("after");
+    let ansible = on_cores(2);
+    let mut cache = TagCache::load(&world.root());
+    let ran = lazily(async |runner| {
+        sb_ansible::known_tags(&mut cache, &ansible, &repos(&world), runner).await
+    })
+    .await;
+    assert!(ran.result.is_err(), "{}", ran.screen);
+    assert!(started.exists(), "Sandbox's listing ran at once");
+    assert!(
+        sandbox_settings.join("argv.term").exists(),
+        "Sandbox's listing got SIGTERM"
+    );
+    assert!(reaped(&sandbox_settings), "Sandbox's listing is gone");
+    assert!(!ran.screen.contains("Sandbox"), "{}", ran.screen);
+}
+
+/// Ctrl-C while both listings run at once in `sb list`: both get SIGTERM
+/// and both are waited for before gather returns; nothing is listed.
+#[tokio::test]
+async fn ctrl_c_stops_and_reaps_both_listings() {
+    let world = World::new();
+    let sandbox = sandbox_checkout(&world, SANDBOX_LISTING);
+    let settings = both_settings(&world, &sandbox);
+    for dir in &settings {
+        std::fs::write(dir.join("FAKE_ANSIBLE_MODE"), "wait").expect("mode");
+    }
+    let shutdown = Shutdown::new();
+    let ctrl_c = shutdown.clone();
+    let pids: Vec<PathBuf> = settings.iter().map(|dir| dir.join("argv.pid")).collect();
+    // Pressed when both wait, or after the wait's limit (so a run in turn
+    // ends too, and fails below).
+    let pressed = tokio::spawn(async move {
+        let both = wait_for(&pids).await;
+        ctrl_c.signalled(2);
+        both
+    });
+    let ansible = on_cores(2);
+    let mut cache = TagCache::load(&world.root());
+    let args = sb_ansible::ListArgs::default();
+    let ran = lazily_under(true, &shutdown, async |runner| {
+        sb_ansible::gather(&mut cache, &ansible, &repos(&world), &args, runner).await
+    })
+    .await;
+    assert!(pressed.await.expect("pressed"), "both listings ran at once");
+    assert_eq!(ran.result.sections, Vec::new(), "{}", ran.screen);
+    for dir in &settings {
+        assert!(
+            dir.join("argv.term").exists(),
+            "{} got SIGTERM",
+            dir.display()
+        );
+        assert!(reaped(dir), "{} is gone", dir.display());
+    }
+    assert_eq!(world.cache_text(), None);
 }

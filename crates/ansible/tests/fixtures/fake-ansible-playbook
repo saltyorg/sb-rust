@@ -21,6 +21,16 @@
 #                        ansible-core's CLI does.
 #                        `self-kill`: it kills itself with SIGKILL, as the OOM
 #                        killer would, a signal sb never got.
+#                        `sleep`: it sleeps FAKE_ANSIBLE_SLEEP seconds first.
+#                        `after`: it waits until the file FAKE_ANSIBLE_AFTER
+#                        is there (30 s at most) first.
+#                        `meet`: it appends `start <dir>` to
+#                        `$FAKE_ANSIBLE_MEET/log` (<dir> the last part of its
+#                        working directory), marks itself started, waits
+#                        until two runs have started or FAKE_ANSIBLE_TICKS
+#                        times 0.05 s have passed (40 when unset), then
+#                        appends `end <dir>`: two listings at once each see
+#                        the other start; in turn, the first ends alone.
 #   FAKE_ANSIBLE_LISTING printed to stdout when `--list-tags` is an argument
 #                        (`.fake-ansible/FAKE_ANSIBLE_LISTING` keeps its
 #                        escape codes and newlines, as a file)
@@ -36,9 +46,15 @@ log=$(setting FAKE_ANSIBLE_LOG)
 log=${log:-.fake-ansible/argv}
 mode=$(setting FAKE_ANSIBLE_MODE)
 code=$(setting FAKE_ANSIBLE_EXIT)
+# The record is written whole to a file of its own, then linked to the
+# first free number (a hard link fails when the name is taken), so two
+# runs at once (the tag listings) never take the same number, and a run
+# stopped half-way leaves no partial record.
+tmp="$log.tmp.$$"
+printf '%s\0' "$PWD" "$0" "$@" > "$tmp"
 n=0
-while [ -e "$log.$n" ]; do n=$((n + 1)); done
-printf '%s\0' "$PWD" "$0" "$@" > "$log.$n"
+while [ "$n" -lt 1000 ] && ! ln "$tmp" "$log.$n" 2>/dev/null; do n=$((n + 1)); done
+rm -f "$tmp"
 for arg; do
   if [ "$arg" = --list-tags ]; then
     if [ -n "${FAKE_ANSIBLE_LISTING-}" ]; then
@@ -61,6 +77,29 @@ case "$mode" in
     ;;
   self-kill)
     kill -KILL $$
+    ;;
+  sleep)
+    sleep "$(setting FAKE_ANSIBLE_SLEEP)"
+    ;;
+  after)
+    after=$(setting FAKE_ANSIBLE_AFTER)
+    i=0
+    while [ ! -e "$after" ] && [ "$i" -lt 600 ]; do sleep 0.05; i=$((i + 1)); done
+    ;;
+  meet)
+    meet=$(setting FAKE_ANSIBLE_MEET)
+    ticks=$(setting FAKE_ANSIBLE_TICKS)
+    name=${PWD##*/}
+    echo "start $name" >> "$meet/log"
+    : > "$meet/$name.started"
+    i=0
+    while [ "$i" -lt "${ticks:-40}" ]; do
+      set -- "$meet"/*.started
+      [ $# -ge 2 ] && break
+      sleep 0.05
+      i=$((i + 1))
+    done
+    echo "end $name" >> "$meet/log"
     ;;
 esac
 exit "${code:-0}"

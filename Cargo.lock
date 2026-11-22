@@ -3490,6 +3490,7 @@ dependencies = [
  "regex",
  "sb-cli-core",
  "sb-exec",
+ "sb-host",
  "sb-repo",
  "sb-term-ui",
  "serde",

@@ -12,7 +12,7 @@ use sb_term_ui::{Heading, Runner, Table};
 use term_grid::{Direction, Filling, Grid, GridOptions};
 use unicode_width::UnicodeWidthChar;
 
-use crate::cache::{CacheError, LazyRunner, Listed, TagCache};
+use crate::cache::{CacheError, LazyRunner, Listed, StartedListing, TagCache};
 use crate::{Ansible, Kind, Repo, Repos};
 
 /// The width the columns fill when stdout isn't a terminal (sb-go's
@@ -111,26 +111,56 @@ pub async fn gather<F: FnOnce() -> Runner>(
     // <https://docs.rs/tokio/1.54.1/tokio/macro.join.html>).
     let token = runner.token();
     let heads = tokio::join!(head_of(saltbox, &token), head_of(sandbox, &token));
+    // Both rebuilds due (both stale, or `--refresh`) on 2 or more physical
+    // cores: Sandbox's listing starts with Saltbox's and runs alongside
+    // its step; Sandbox's step then waits for what is left of it, so the
+    // steps and the failures keep their order (spec, "Both at once").
+    let mut started = match (&heads.0, &heads.1) {
+        (Ok(Ok(saltbox_head)), Ok(Ok(sandbox_head)))
+            if (args.refresh
+                || (cache.fresh(saltbox.0, saltbox_head).is_none()
+                    && cache.fresh(sandbox.0, sandbox_head).is_none()))
+                && ansible.listings_at_once() =>
+        {
+            Some(StartedListing::start(
+                ansible,
+                sandbox.0,
+                sandbox_head.clone(),
+                &token,
+            ))
+        }
+        _ => None,
+    };
     for ((repo, name), head) in [(saltbox, heads.0), (sandbox, heads.1)] {
         if runner.token().is_cancelled() {
+            // Stopped and waited for: sb may exit right after.
+            if let Some(started) = started {
+                started.stop().await;
+            }
             return listing;
         }
-        let listed = match head {
-            Ok(Ok(head)) if args.refresh => cache
-                .refresh_at(ansible, repo, head, runner)
+        let rebuilt = |tags| Listed {
+            tags,
+            cached: false,
+        };
+        let listed = match (head, started.take_if(|_| repo.kind() == Kind::Sandbox)) {
+            (_, Some(started)) => cache
+                .rebuild_started_on(started, runner)
                 .await
-                .map(|tags| Listed {
-                    tags,
-                    cached: false,
-                })
+                .map(rebuilt)
                 .map_err(anyhow::Error::from),
-            Ok(Ok(head)) => cache
-                .tags_at(ansible, repo, head, runner)
+            (Ok(Ok(head)), None) if args.refresh => cache
+                .refresh_at(ansible, repo, head, runner, started.as_mut())
+                .await
+                .map(rebuilt)
+                .map_err(anyhow::Error::from),
+            (Ok(Ok(head)), None) => cache
+                .tags_at(ansible, repo, head, runner, started.as_mut())
                 .await
                 .map_err(anyhow::Error::from),
             // As the cache's own read of the HEAD fails.
-            Ok(Err(err)) => Err(CacheError::from(err).into()),
-            Err(err) => Err(err.into()),
+            (Ok(Err(err)), None) => Err(CacheError::from(err).into()),
+            (Err(err), None) => Err(err.into()),
         };
         match listed {
             Ok(listed) => {
@@ -185,7 +215,7 @@ pub async fn gather<F: FnOnce() -> Runner>(
 
 /// The HEAD of `repo`'s checkout, named `name` (sb-repo's `head()`), or
 /// why the checkout didn't open.
-async fn head_of(
+pub(crate) async fn head_of(
     (repo, name): (&Repo, &str),
     token: &tokio_util::sync::CancellationToken,
 ) -> Result<Result<String, sb_repo::RepoError>, sb_repo::RepoError> {

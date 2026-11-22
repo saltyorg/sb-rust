@@ -10,7 +10,8 @@ use sb_cli_core::exit::escaped;
 use sb_cli_core::theme::{Role, Theme};
 use sb_term_ui::Runner;
 
-use crate::cache::{CacheError, LazyRunner, TagCache};
+use crate::cache::{CacheError, LazyRunner, StartedListing, TagCache};
+use crate::list::head_of;
 use crate::{Ansible, Repos, Routed};
 
 /// The most edits a typo may be from the tag it suggests (sb-go's
@@ -100,8 +101,10 @@ pub struct SaltboxBroken {
 
 /// Saltbox's and then Sandbox's tags through the cache, each rebuilt in a
 /// top-level step of `runner` when stale (spec, step 5: both loaded even
-/// when only one repository has requested tags). Sandbox's failure counts
-/// as no tags, and is logged: a host without Sandbox has none.
+/// when only one repository has requested tags), both listings at once
+/// when both are stale on 2 or more physical cores (spec, "Both at
+/// once"). Sandbox's failure counts as no tags, and is logged: a host
+/// without Sandbox has none.
 ///
 /// # Errors
 ///
@@ -116,25 +119,65 @@ pub async fn known_tags<F: FnOnce() -> Runner>(
     let broken = |cause| SaltboxBroken { cause };
     let checkout =
         sb_repo::Repo::open("Saltbox", repos.saltbox.dir()).map_err(|e| broken(Some(e)))?;
+    let token = runner.token();
+    let head = checkout
+        .head(&token)
+        .await
+        .map_err(|err| broken(Some(err)))?;
+    // Sandbox's HEAD is read before Saltbox's listing only when both may
+    // run at once (Saltbox's stale, 2 or more physical cores): elsewhere
+    // it is read after, and not at all when Saltbox's tags can't be had,
+    // as before. Sandbox's stale too, its listing starts with Saltbox's.
+    let mut sandbox_head = None;
+    let mut started = None;
+    if cache.fresh(&repos.saltbox, &head).is_none() && ansible.listings_at_once() {
+        let read = head_of((&repos.sandbox, "Sandbox"), &token).await;
+        if let Ok(Ok(head)) = &read
+            && cache.fresh(&repos.sandbox, head).is_none()
+        {
+            started = Some(StartedListing::start(
+                ansible,
+                &repos.sandbox,
+                head.clone(),
+                &token,
+            ));
+        }
+        sandbox_head = Some(read);
+    }
     let saltbox = match cache
-        .tags_on(ansible, &repos.saltbox, &checkout, runner)
+        .tags_at(ansible, &repos.saltbox, head, runner, started.as_mut())
         .await
     {
-        Ok(listed) => listed.tags,
-        Err(CacheError::Head(err)) => return Err(broken(Some(err))),
-        // The step has shown why.
-        Err(CacheError::Step(_)) => return Err(broken(None)),
+        Ok(listed) if !listed.tags.is_empty() => listed.tags,
+        // The step has shown why, or there are no tags. Sandbox's listing
+        // is stopped and waited for: sb exits right after.
+        _ => {
+            if let Some(started) = started {
+                started.stop().await;
+            }
+            return Err(broken(None));
+        }
     };
-    if saltbox.is_empty() {
-        return Err(broken(None));
-    }
-    let sandbox = match sb_repo::Repo::open("Sandbox", repos.sandbox.dir()) {
-        Ok(checkout) => cache
-            .tags_on(ansible, &repos.sandbox, &checkout, runner)
+    let sandbox = if let Some(started) = started {
+        cache
+            .rebuild_started_on(started, runner)
             .await
-            .map(|listed| listed.tags)
-            .map_err(anyhow::Error::from),
-        Err(err) => Err(err.into()),
+            .map_err(anyhow::Error::from)
+    } else {
+        let read = match sandbox_head {
+            Some(read) => read,
+            None => head_of((&repos.sandbox, "Sandbox"), &token).await,
+        };
+        match read {
+            Ok(Ok(head)) => cache
+                .tags_at(ansible, &repos.sandbox, head, runner, None)
+                .await
+                .map(|listed| listed.tags)
+                .map_err(anyhow::Error::from),
+            // As the cache's own read of the HEAD fails.
+            Ok(Err(err)) => Err(CacheError::from(err).into()),
+            Err(err) => Err(err.into()),
+        }
     };
     let sandbox = sandbox.unwrap_or_else(|err| {
         tracing::info!(error = %format!("{err:#}"), "Sandbox tags unavailable; counted as none");
