@@ -3,7 +3,7 @@ source: crates/ops/src/bench/mod.rs
 expression: "example(true, Theme::plain(), false, width)"
 ---
 System
---------------------------------------------------------------------------------
+--------------------------------------------------------------
 CPU Model            Example CPU 16-Core Processor
 CPU Cores            16 @ 3000.000 MHz
 CPU Cache            1024 KB
@@ -25,14 +25,14 @@ Location             Lisbon / PT
 Region               Lisbon
 
 Disk write
---------------------------------------------------------------------------------
+--------------------------------------------------------------
 1st run                  800.0 MB/s
 2nd run                  820.0 MB/s
 3rd run                  840.0 MB/s
 Average                  820.0 MB/s
 
 Speedtest  12 nodes
---------------------------------------------------------------------------------
+--------------------------------------------------------------
 Node                         Upload      Download    Latency
 Speedtest.net           900.00 Mbps   950.00 Mbps    1.00 ms
 Los Angeles, US         Test failed
@@ -47,6 +47,6 @@ Singapore, SG           200.00 Mbps   250.00 Mbps  250.00 ms
 Taipei, CN              100.00 Mbps   150.00 Mbps  220.00 ms
 Tokyo, JP               600.00 Mbps   640.00 Mbps  270.00 ms
 
---------------------------------------------------------------------------------
+--------------------------------------------------------------
 Finished in          4 min 10 sec
 Timestamp            2026-01-15 10:00:00 UTC

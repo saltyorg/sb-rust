@@ -3,7 +3,7 @@ source: crates/ops/src/bench/mod.rs
 expression: "example(false, truecolor(), true, width).replace('\\x1b', \"␛\")"
 ---
 ␛[1m␛[38;2;126;166;255mSystem␛[0m
-␛[38;2;139;149;167m────────────────────────────────────────────────────────────────────────────────␛[0m
+␛[38;2;139;149;167m──────────────────────────────────────────────────────────────␛[0m
 ␛[38;2;139;149;167mCPU Model␛[0m            Example CPU 16-Core Processor
 ␛[38;2;139;149;167mCPU Cores␛[0m            16 @ 3000.000 MHz
 ␛[38;2;139;149;167mCPU Cache␛[0m            1024 KB
@@ -23,20 +23,22 @@ expression: "example(false, truecolor(), true, width).replace('\\x1b', \"␛\")"
 ␛[38;2;139;149;167mRegion␛[0m               ␛[38;2;255;110;122mNo ISP detected␛[0m
 
 ␛[1m␛[38;2;126;166;255mDisk write␛[0m
-␛[38;2;139;149;167m────────────────────────────────────────────────────────────────────────────────␛[0m
+␛[38;2;139;149;167m──────────────────────────────────────────────────────────────␛[0m
 ␛[38;2;139;149;167m1st run␛[0m                  700.0 MB/s
 ␛[38;2;139;149;167m2nd run␛[0m                  710.0 MB/s
 ␛[38;2;139;149;167m3rd run␛[0m                  720.0 MB/s
 ␛[1mAverage␛[0m                  ␛[1m710.0 MB/s␛[0m
 
 ␛[1m␛[38;2;126;166;255mSpeedtest␛[0m
-␛[38;2;139;149;167m────────────────────────────────────────────────────────────────────────────────␛[0m
-␛[38;2;139;149;167mSkipped␛[0m              ␛[38;2;245;181;91mSpeedtest unavailable: download release asset␛[0m
-                     ␛[38;2;245;181;91m"ookla-speedtest-1.2.0-linux-x86_64.tgz": error sending␛[0m
-                     ␛[38;2;245;181;91mrequest: client error (Connect): dns error: error resolving␛[0m
-                     ␛[38;2;245;181;91mDNS: failed to lookup address information: Temporary␛[0m
-                     ␛[38;2;245;181;91mfailure in name resolution␛[0m
+␛[38;2;139;149;167m──────────────────────────────────────────────────────────────␛[0m
+␛[38;2;139;149;167mSkipped␛[0m              ␛[38;2;245;181;91mSpeedtest unavailable: download release␛[0m
+                     ␛[38;2;245;181;91masset "ookla-speedtest-1.2.0-linux-x86␛[0m
+                     ␛[38;2;245;181;91m_64.tgz": error sending request: client␛[0m
+                     ␛[38;2;245;181;91merror (Connect): dns error: error␛[0m
+                     ␛[38;2;245;181;91mresolving DNS: failed to lookup address␛[0m
+                     ␛[38;2;245;181;91minformation: Temporary failure in name␛[0m
+                     ␛[38;2;245;181;91mresolution␛[0m
 
-␛[38;2;139;149;167m────────────────────────────────────────────────────────────────────────────────␛[0m
+␛[38;2;139;149;167m──────────────────────────────────────────────────────────────␛[0m
 ␛[38;2;139;149;167mFinished in␛[0m          10 sec
 ␛[38;2;139;149;167mTimestamp␛[0m            2026-01-15 10:05:00 UTC

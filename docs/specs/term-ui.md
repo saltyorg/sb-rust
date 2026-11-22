@@ -403,8 +403,10 @@ sequence.
   for `sb bench`*): `sb list`'s heading, moved here so `sb list` and
   `sb bench` share it: a name, bold, in the role its caller names; any
   hints after it, each in its own role (list's `  31 tags` and `  ·
-  install as sandbox-<tag>`, bench's `  12 nodes`); then a rule across
-  the width in its role, Muted unless the caller names another. With
+  install as sandbox-<tag>`, bench's `  12 nodes`); then a rule as long
+  as its caller says (`sb list`'s across the width, bench's past its
+  widest line; amended 2026-11-22) in its role, Muted unless the caller
+  names another. With
   colour off or under `ascii`, no codes at all, bold included, and the
   rule in `-` instead of `─`. Its text is sb's own words, never
   untrusted input. `sb list`'s output is byte for byte what it was.

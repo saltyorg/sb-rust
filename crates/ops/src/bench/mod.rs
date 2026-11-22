@@ -154,6 +154,82 @@ fn rows() -> Table {
     Table::ruled(Vec::<String>::new()).min_width(0, LABEL)
 }
 
+/// How a section's table is laid out ([`Out::table_width`]).
+#[derive(Clone, Copy, Debug)]
+enum Fit {
+    /// Within the rules: label and value rows.
+    Rules,
+    /// At the terminal's width: Speedtest's node table.
+    Terminal,
+}
+
+impl Fit {
+    /// Speedtest's section's: its node table keeps the terminal's width.
+    fn speedtest(outcome: &speedtest::Outcome) -> Self {
+        match outcome {
+            speedtest::Outcome::Nodes(_) => Fit::Terminal,
+            speedtest::Outcome::Unavailable(_) => Fit::Rules,
+        }
+    }
+}
+
+/// How far the rules run past the report's widest line: the tables'
+/// column gap (the maintainer, 2026-11-22).
+const RULE_PAST: usize = 2;
+
+/// `table`'s widest line laid out at a terminal `width` wide, plain.
+fn shown_width(table: &Table, theme: &Theme, width: usize) -> usize {
+    table
+        .render(theme, false, Some(width))
+        .lines()
+        .map(console::measure_text_width)
+        .max()
+        .unwrap_or(0)
+}
+
+/// The widest disk rate the layout allows: `10000.0 MB/s`, 12 columns,
+/// fills [`RATE`] with its gap.
+const WIDEST_RATE: f64 = 9999.99;
+
+/// What the sections after System will print, as far as it is known
+/// before the first section prints: Disk write's runs, Speedtest's node
+/// table (every node, as wide as its name and its widest cells allow) or
+/// why it can't run (`unavailable`), and the footer with a timestamp like
+/// `timestamp`.
+fn later_tables(unavailable: Option<&str>, timestamp: &str) -> [Table; 3] {
+    let disk = disk::table(&disk::Outcome::Runs(vec![Some(WIDEST_RATE); disk::RUNS]));
+    let speedtest = match unavailable {
+        Some(why) => speedtest::Outcome::Unavailable(why.to_owned()),
+        None => speedtest::Outcome::Nodes(
+            speedtest::NODES
+                .iter()
+                .map(|&node| (node, speedtest::Measured::Failed))
+                .collect(),
+        ),
+    };
+    [
+        disk,
+        speedtest::table(&speedtest),
+        footer_table("", timestamp),
+    ]
+}
+
+/// The footer's rows: `Finished in` and `Timestamp` in the label column.
+fn footer_table(finished: &str, timestamp: &str) -> Table {
+    let mut table = rows();
+    table.row([label("Finished in"), Cell::new(finished)]);
+    table.row([label("Timestamp"), Cell::new(timestamp)]);
+    table
+}
+
+/// The run's timestamp, as the footer shows it.
+fn timestamp() -> String {
+    jiff::Timestamp::now()
+        .to_zoned(sb_tui::line::local_zone())
+        .strftime("%Y-%m-%d %H:%M:%S %Z")
+        .to_string()
+}
+
 /// Stdout's terminal width, or [`PIPED_WIDTH`] when it isn't a
 /// terminal: what [`Out::stdout`] reads as each section is written. Read
 /// then, not once at the start: a run takes minutes, and a terminal
@@ -180,6 +256,8 @@ pub struct Out<W> {
     colour: bool,
     /// The width a section is laid out at, read as it is written.
     width: fn() -> usize,
+    /// The report's widest line ([`Out::lay_out`]), once known.
+    widest: Option<usize>,
     /// How many sections are written: a blank line goes before every
     /// heading but the first.
     sections: usize,
@@ -209,7 +287,43 @@ impl<W: Write> Out<W> {
             theme,
             colour,
             width,
+            widest: None,
             sections: 0,
+        }
+    }
+
+    /// Fix the report's widest line before its first section prints, from
+    /// `tables`: System's, printed first, and what the later sections
+    /// will print as far as it is known then ([`later_tables`]). The
+    /// sections print as they end, so the rules' one length has to be
+    /// known at the first.
+    fn lay_out(&mut self, tables: &[&Table]) {
+        let (theme, width) = (&self.theme, (self.width)());
+        self.widest = tables
+            .iter()
+            .map(|table| shown_width(table, theme, width))
+            .max();
+    }
+
+    /// The rules' length at a terminal `width` wide: [`RULE_PAST`]
+    /// columns past the report's widest line, never past the terminal;
+    /// the terminal's width before [`Out::lay_out`].
+    fn rule_len(&self, width: usize) -> usize {
+        self.widest
+            .map_or(width, |widest| (widest + RULE_PAST).min(width))
+    }
+
+    /// The width a table is laid out at on a terminal `width` wide:
+    /// within the rules for label and value rows, so a value only found
+    /// after the first section (why a Speedtest's download failed, why
+    /// the disk test was skipped) wraps under them; the terminal's for
+    /// Speedtest's node table, whose columns keep their widths (a node's
+    /// `Failed to parse results` widens its Upload column, and the table
+    /// then runs past the rules).
+    fn table_width(&self, width: usize, fit: Fit) -> usize {
+        match (fit, self.widest) {
+            (Fit::Rules, Some(widest)) => widest.min(width),
+            _ => width,
         }
     }
 
@@ -225,12 +339,12 @@ impl<W: Write> Out<W> {
     /// # Errors
     ///
     /// The writer failing.
-    fn section(&mut self, heading: &Heading, table: &Table) -> anyhow::Result<()> {
+    fn section(&mut self, heading: &Heading, table: &Table, fit: Fit) -> anyhow::Result<()> {
         let gap = if self.sections == 0 { "" } else { "\n" };
         self.sections += 1;
         let width = (self.width)();
-        let heading = heading.render(&self.theme, self.colour, width);
-        let table = table.render(&self.theme, self.colour, Some(width));
+        let heading = heading.render(&self.theme, self.colour, self.rule_len(width));
+        let table = table.render(&self.theme, self.colour, Some(self.table_width(width, fit)));
         writeln!(self.writer, "{gap}{heading}{table}").map_err(output_error)?;
         Ok(())
     }
@@ -243,11 +357,9 @@ impl<W: Write> Out<W> {
     /// The writer failing.
     fn footer(&mut self, finished: &str, timestamp: &str) -> anyhow::Result<()> {
         let width = (self.width)();
-        let rule = sb_term_ui::rule(&self.theme, Role::Muted, self.colour, width);
-        let mut table = rows();
-        table.row([label("Finished in"), Cell::new(finished)]);
-        table.row([label("Timestamp"), Cell::new(timestamp)]);
-        let table = table.render(&self.theme, self.colour, Some(width));
+        let rule = sb_term_ui::rule(&self.theme, Role::Muted, self.colour, self.rule_len(width));
+        let width = self.table_width(width, Fit::Rules);
+        let table = footer_table(finished, timestamp).render(&self.theme, self.colour, Some(width));
         writeln!(self.writer, "\n{rule}\n{table}").map_err(output_error)?;
         Ok(())
     }
@@ -300,12 +412,16 @@ pub async fn run<W: Write>(
         )
         .await;
     runner.finish();
-    out.section(&heading("System"), &system::table(&facts?))?;
+    let system = system::table(&facts?);
+    let unavailable = bench.speedtest.as_ref().err().map(String::as_str);
+    let [disk, speedtest, footer] = later_tables(unavailable, &timestamp());
+    out.lay_out(&[&system, &disk, &speedtest, &footer]);
+    out.section(&heading("System"), &system, Fit::Rules)?;
 
     let mut runner = Runner::start("sb bench", shutdown, log, Options::default());
     let outcome = disk_test(&mut runner, bench, shutdown).await;
     runner.finish();
-    out.section(&heading("Disk write"), &disk::table(&outcome?))?;
+    out.section(&heading("Disk write"), &disk::table(&outcome?), Fit::Rules)?;
 
     // No runner without steps: one with none would print its title.
     let outcome = match &bench.speedtest {
@@ -320,13 +436,13 @@ pub async fn run<W: Write>(
             speedtest::Outcome::Unavailable(why.clone())
         }
     };
-    out.section(&speedtest::heading(&outcome), &speedtest::table(&outcome))?;
+    out.section(
+        &speedtest::heading(&outcome),
+        &speedtest::table(&outcome),
+        Fit::speedtest(&outcome),
+    )?;
 
-    let now = jiff::Timestamp::now().to_zoned(sb_tui::line::local_zone());
-    out.footer(
-        &finished_in(started.elapsed()),
-        &now.strftime("%Y-%m-%d %H:%M:%S %Z").to_string(),
-    )
+    out.footer(&finished_in(started.elapsed()), &timestamp())
 }
 
 /// The Speedtest section's steps: `Preparing Speedtest` (the download,
@@ -535,19 +651,19 @@ mod tests {
         WIDTH.get()
     }
 
-    /// Each section takes the width it is written at, rules and tables:
-    /// a terminal widened during the run (full screen, after the start)
-    /// gets its later sections across its new width, as `sb list`'s
-    /// headings, which read the width after the steps.
+    /// Each section reads the terminal's width as it is written, as `sb
+    /// list` reads its width after its steps: before the layout is
+    /// fixed (`Out::lay_out`, which `run` calls before the first section)
+    /// its rules are that width; after, the width caps them.
     #[test]
     fn each_section_takes_the_width_it_is_written_at() {
         WIDTH.set(40);
         let mut out = Out::new(Vec::new(), Theme::plain(), false, width_now);
         let disk = disk::Outcome::Runs(vec![Some(800.0)]);
-        out.section(&heading("Disk write"), &disk::table(&disk))
+        out.section(&heading("Disk write"), &disk::table(&disk), Fit::Rules)
             .expect("first");
         WIDTH.set(90);
-        out.section(&heading("Disk write"), &disk::table(&disk))
+        out.section(&heading("Disk write"), &disk::table(&disk), Fit::Rules)
             .expect("second");
         WIDTH.set(120);
         out.footer("1 sec", "now").expect("footer");
@@ -558,6 +674,94 @@ mod tests {
             .map(str::len)
             .collect();
         assert_eq!(rules, [40, 90, 120], "{text}");
+        // Laid out, a terminal narrowed during the run caps the rules.
+        let mut out = Out::new(Vec::new(), Theme::plain(), false, width_now);
+        let table = disk::table(&disk);
+        out.lay_out(&[&table]);
+        WIDTH.set(120);
+        out.section(&heading("Disk write"), &table, Fit::Rules)
+            .expect("wide");
+        WIDTH.set(20);
+        out.footer("1 sec", "now").expect("narrow");
+        WIDTH.set(PIPED_WIDTH);
+        let text = String::from_utf8(out.into_inner()).expect("utf-8");
+        assert_eq!(rules_and_lines(&text).0, [37, 20], "{text}");
+    }
+
+    /// The rules end two columns past the report's widest line, one
+    /// length for every section and the footer, plain as in colour,
+    /// never past the terminal (the maintainer, 2026-11-22).
+    #[test]
+    fn the_rules_end_two_columns_past_the_widest_line() {
+        for width in [120, 80] {
+            let text = example(true, Theme::plain(), false, width);
+            let (rules, lines) = rules_and_lines(&text);
+            let widest = lines.iter().map(|line| line_width(line)).max();
+            let expected = (widest.expect("lines") + 2).min(width);
+            assert_eq!(rules, [expected; 4], "{width}\n{text}");
+        }
+        // A terminal narrower than the report: the rules end with it.
+        let text = example(true, Theme::plain(), false, 50);
+        assert_eq!(rules_and_lines(&text).0, [50; 4], "{text}");
+    }
+
+    /// The sections print as they end, so the rules' length is fixed at
+    /// the first, from what is known then: why a Speedtest's download
+    /// failed, found later, wraps under the rules.
+    #[test]
+    fn a_reason_found_after_the_first_section_wraps_under_the_rules() {
+        for width in [120, 80] {
+            let text = example(false, Theme::plain(), false, width);
+            let (rules, lines) = rules_and_lines(&text);
+            // The Speedtest's node table, foreseen, is the widest: 60.
+            assert_eq!(rules, [62; 4], "{text}");
+            assert!(lines.iter().all(|line| line_width(line) <= 60), "{text}");
+        }
+    }
+
+    /// `run`'s own layout: a Speedtest that can't run, known at the start,
+    /// has its reason as the widest line, and the rules end two columns
+    /// past it.
+    #[tokio::test]
+    async fn a_run_ends_its_rules_past_its_widest_line() {
+        let _spawns = super::SPAWNS.lock().await;
+        let dir = tempfile::tempdir().expect("dir");
+        let why = "w".repeat(140);
+        let bench = Bench {
+            speedtest: Err(why.clone()),
+            ..small(dir.path(), SHORT)
+        };
+        WIDTH.set(180);
+        let (result, text) = output(&bench, &Shutdown::new()).await;
+        WIDTH.set(PIPED_WIDTH);
+        result.expect("run");
+        let (rules, lines) = rules_and_lines(&text);
+        let widest = lines
+            .iter()
+            .map(|line| line_width(line))
+            .max()
+            .expect("lines");
+        assert!(lines.iter().any(|line| line.contains(&why)), "{text}");
+        assert_eq!(rules, [widest + 2; 4], "{text}");
+    }
+
+    /// `text`'s rules' lengths, and its other lines.
+    fn rules_and_lines(text: &str) -> (Vec<usize>, Vec<&str>) {
+        let (rules, lines): (Vec<&str>, Vec<&str>) = text
+            .lines()
+            .partition(|line| !line.is_empty() && line.chars().all(|c| c == '-'));
+        (rules.iter().map(|rule| line_width(rule)).collect(), lines)
+    }
+
+    /// `text`'s words, one space between: a reason as written, wherever
+    /// it wraps (within the rules, `Fit::Rules`).
+    fn words(text: &str) -> String {
+        text.split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    /// `line`'s width as the rules' length is measured.
+    fn line_width(line: &str) -> usize {
+        console::measure_text_width(line)
     }
 
     #[test]
@@ -611,7 +815,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("dir");
         let (result, text) = output(&small(dir.path(), SHORT), &Shutdown::new()).await;
         result.expect("run");
-        assert!(text.contains(disk::NO_SPACE), "{text}");
+        assert!(words(&text).contains(disk::NO_SPACE), "{text}");
         assert!(!text.contains("1st run"), "{text}");
         assert!(text.contains("\nFinished in "), "{text}");
     }
@@ -622,7 +826,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("dir");
         let (result, text) = output(&small(dir.path(), unreadable), &Shutdown::new()).await;
         result.expect("run");
-        assert!(text.contains(disk::NO_FREE_SPACE), "{text}");
+        assert!(words(&text).contains(disk::NO_FREE_SPACE), "{text}");
     }
 
     #[tokio::test]
@@ -633,7 +837,7 @@ mod tests {
         std::fs::write(&file, "").expect("file");
         let (result, text) = output(&small(&file, PLENTY), &Shutdown::new()).await;
         result.expect("run");
-        assert!(text.contains(disk::NO_WRITE), "{text}");
+        assert!(words(&text).contains(disk::NO_WRITE), "{text}");
         assert!(!text.contains("1st run"), "{text}");
     }
 
@@ -1020,7 +1224,17 @@ mod tests {
     fn example(network: bool, theme: Theme, colour: bool, width: usize) -> String {
         WIDTH.set(width);
         let mut out = Out::new(Vec::new(), theme, colour, width_now);
-        out.section(&heading("System"), &system::table(&example_facts(network)))
+        let (finished, timestamp) = if network {
+            ("4 min 10 sec", "2026-01-15 10:00:00 UTC")
+        } else {
+            ("10 sec", "2026-01-15 10:05:00 UTC")
+        };
+        // As `run` lays it out: the Speedtest set up (the offline run's
+        // failed in its download).
+        let system = system::table(&example_facts(network));
+        let [disk, speedtest, footer] = later_tables(None, timestamp);
+        out.lay_out(&[&system, &disk, &speedtest, &footer]);
+        out.section(&heading("System"), &system, Fit::Rules)
             .expect("system");
         let rates = if network {
             [800.0, 820.0, 840.0]
@@ -1028,7 +1242,7 @@ mod tests {
             [700.00, 710.00, 720.00]
         };
         let disk = disk::Outcome::Runs(rates.map(Some).to_vec());
-        out.section(&heading("Disk write"), &disk::table(&disk))
+        out.section(&heading("Disk write"), &disk::table(&disk), Fit::Rules)
             .expect("disk");
         let speedtest = if network {
             example_nodes()
@@ -1043,13 +1257,9 @@ mod tests {
         out.section(
             &speedtest::heading(&speedtest),
             &speedtest::table(&speedtest),
+            Fit::speedtest(&speedtest),
         )
         .expect("speedtest");
-        let (finished, timestamp) = if network {
-            ("4 min 10 sec", "2026-01-15 10:00:00 UTC")
-        } else {
-            ("10 sec", "2026-01-15 10:05:00 UTC")
-        };
         out.footer(finished, timestamp).expect("footer");
         String::from_utf8(out.into_inner()).expect("utf-8")
     }
@@ -1086,9 +1296,10 @@ mod tests {
     }
 
     /// Every line fits the width and none ends in a space; plain is the
-    /// colour form without its codes; wider only lengthens the rules.
+    /// colour form without its codes; a wider terminal changes nothing
+    /// (the rules end past the widest line, not at the terminal's edge).
     #[test]
-    fn the_report_fits_and_only_its_rules_grow() {
+    fn the_report_fits_and_a_wider_terminal_changes_nothing() {
         // term-ui's own parser drops the codes (anstyle-parse's); its text
         // has no final newline.
         let strip = |text: &str| {
@@ -1107,10 +1318,10 @@ mod tests {
                 }
             }
         }
-        // Without a cell to wrap, a wider terminal only lengthens the rules.
+        // Without a cell to wrap, a wider terminal changes nothing.
         let narrow = example(true, Theme::plain(), false, 80);
         let wide = example(true, Theme::plain(), false, 120);
-        assert_eq!(wide.replace(&"-".repeat(120), &"-".repeat(80)), narrow);
+        assert_eq!(wide, narrow);
     }
 
     /// Over 1 Gbps and over 1000 MB/s (common on Saltbox servers), Disk

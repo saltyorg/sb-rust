@@ -28,6 +28,9 @@ sb-config.workspace = true
 saphyr.workspace = true
 # `sb announcements`' runner step (term-ui).
 sb-term-ui.workspace = true
+# Display widths of bench's tables, for its rules' length (console is
+# already under term-ui).
+console.workspace = true
 # The branch commands' fetch and reset of Saltbox's checkouts (ops spec,
 # "`sb branch <name>` and `sb branch-sandbox <name>`").
 sb-repo.workspace = true

@@ -504,8 +504,19 @@ shows it:
 - each section opens with term-ui's section heading, `sb list`'s:
   `System`, `Disk write` and `Speedtest` bold in the Service role,
   Speedtest's followed by a muted `  <n> nodes` when its nodes ran,
-  then a Muted rule across the width (`-` when plain), and a blank
-  line before every heading but the first;
+  then a Muted rule (`-` when plain), and a blank line before every
+  heading but the first;
+- every rule, the footer's too, is one length: two columns (the tables'
+  gap) past the report's widest line, never past the terminal or, piped,
+  80 columns (the maintainer, 2026-11-22; `sb list`'s rule stays across
+  the width). The sections print as they end, so the length is fixed
+  when the first prints, from System's rows and the widest lines the
+  later sections' layouts can have then (Disk write's runs, Speedtest's
+  node table, or why it can't run, and the footer). A value only found
+  later (why a Speedtest's download failed, why the disk test was
+  skipped) wraps within the rules; Speedtest's node table keeps the
+  terminal's width, so a node's `Failed to parse results`, which
+  widens its Upload column, runs the table past the rules;
 - every section and the footer are term-ui ruled tables
   (term-ui spec, "Tables", the ruled look) on one label column 21
   wide (`TCP Congestion Ctrl` and two spaces), the labels Muted, a
@@ -1419,8 +1430,11 @@ Local changes (the maintainer, 2026-11-19; decisions 40 to 42):
 
 `bench`, the ruled layout (the maintainer, 2026-11-21; decision 43):
 67. bench's output is sb list's look: bold section headings over a
-    rule across the terminal, label and value rows with no separator,
-    and a footer under a rule. bench.sh drew `Label : value` lines
+    rule, label and value rows with no separator, and a footer under a
+    rule; bench's rules end two columns past its widest line, one
+    length for every section (amended 2026-11-22: they ran across the
+    terminal, and stopped short of one made full screen during the
+    run). bench.sh drew `Label : value` lines
     under a banner (`A Bench.sh Script By Teddysun`, its version and
     usage), each section between 70-column `-` rules, and cleared the
     screen first; sb has no banner and no `clear` (difference 15).
