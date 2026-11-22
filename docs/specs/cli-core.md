@@ -57,7 +57,10 @@ logged. *Amended 2026-11-13 by the completion spec.*
    not a child as in sb-go: signals and the exit code then belong to the
    real run); if sudo asks for a password, the user answers its own
    prompt. Each command declares whether it needs root, in an exhaustive
-   match, so a new command can't skip the decision.
+   match, so a new command can't skip the decision (`fact get` and
+   `fact list` need it, as `fact` does: tui decision 46, 2026-11-22;
+   sudo's prompt uses the terminal, so `$(sb fact get …)` still captures
+   only sb's stdout).
    - **No relaunch loop:** `-u root` asks sudo for root explicitly, so
      sudo runs sb as root or refuses; without it sudo runs the command as
      `runas_default`, which a sudoers rule can set to another user, and
@@ -90,7 +93,10 @@ logged. *Amended 2026-11-13 by the completion spec.*
    directory 0700), one file that Saltbox's logrotate rotates, kept
    regardless of outcome, for every run as root. The record holds sb's
    version and the command's name, never argument values (they can carry secrets), then the command's
-   events and how the run ended; a failure's error and causes go in as
+   events and how the run ended (a command may log names it was given
+   when they are names, never values: `fact get` and `fact list` log the
+   app, instance and key, never the fact's value, *amended 2026-11-22*,
+   tui decision 46); a failure's error and causes go in as
    tracing's error field. Every record carries the run id: work sb
    moves off the run's thread (tokio's blocking pool, a thread of sb's own)
    takes the caller's span along, with tracing's `Span::current()` and
@@ -240,8 +246,8 @@ run one at a time. Each command decides in an exhaustive match
   as `update` does (ops decision 34).
 - **Never takes it:** the rest. `motd`, `list`, `logs`, `docker ps`,
   `validate-config`, `announcements` (its `preview`
-  without `--run-migrations`, and `check`), `edit`, `fact`,
-  `bench`, `completion` and `version` only read or are interactive;
+  without `--run-migrations`, and `check`), `edit`, `fact` (its `get`
+  and `list` too: no lock of any kind, tui decision 46), `bench`, `completion` and `version` only read or are interactive;
   `motd` must never wait (pam_motd runs it at login). `diag` is left
   out: Saltbox's diag role only reports (debug output, a Cloudflare
   lookup, gathered facts). `docker start`, `stop` and `restart` go

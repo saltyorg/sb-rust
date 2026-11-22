@@ -160,6 +160,28 @@ completion files in place.
   (cli-core's inventory read), through ansible's `TagCache::load`.
 - **Budget:** a Tab-time run, cache read included (about 300 tags),
   within the 10 ms startup budget (CONSTRAINTS.md).
+- **Facts for `sb fact get` and `sb fact list`** (*added 2026-11-22*,
+  decision 15): an `ArgValueCompleter` on each positional, through the
+  derive's `add`
+  (https://docs.rs/clap_complete/4.6.11/clap_complete/engine/struct.ArgValueCompleter.html):
+  - **apps** are the `*.ini` names in the facts directory
+    (`<server_appdata_path>/saltbox`, the editor's), read through
+    sb-config's read-only `facts::read::Store` (one `readdir`; the
+    directory is 0755);
+  - **instances, then keys,** come from parsing that app's file, the app
+    (and the instance) read from the earlier words with clap's own parse,
+    as the tag completer reads them;
+  - it reads as the calling user, without sudo: the files are 0640
+    `user:user`, so the Saltbox user gets instances and keys and anyone
+    else none;
+  - names only; a name with whitespace or a control character is
+    dropped, and so is one that doesn't start with the current word; a
+    current word with a control character gets none;
+  - any error (no directory, a symlink, an unreadable or broken file)
+    gives no candidates; nothing is logged or written;
+  - within the 10 ms budget (one `readdir`, one file of at most 1 MiB).
+    Why no names cache: one a root run wrote would go stale between
+    Saltbox runs, because Ansible writes the store and sb doesn't.
 
 ### `sb completion`, `sb completion <bash|zsh|fish>`, `sb completion install [bash|zsh|fish]`
 
@@ -299,15 +321,16 @@ tests with a temporary root.
   migration, the result lines, `refresh` for `ops`, the PTY and container
   tests.
 - **Elsewhere:** calling `refresh` from `update` and `setup` (`ops`,
-  module build M87). **Later:** completion for other dynamic values (none
-  in sb-go).
+  module build M87). The facts completers (decision 15) are here.
+  **Later:** completion for other dynamic values (none in sb-go).
 - **Not here:** writing the cache (`ansible`).
 
 ## Tech Stack
 
 Rust 1.100.0 (edition 2024). New crate `sb-completion`
 (crates/completion), depending on sb-cli-core, sb-exec, sb-term-ui (the
-refresh step) and sb-ansible (the cache reader).
+refresh step), sb-ansible (the cache reader) and sb-config (the facts
+reader, *amended 2026-11-22*).
 
 | Concern | Crate | Version | In Cargo.lock | Docs |
 |---|---|---|---|---|
@@ -334,6 +357,8 @@ scripts/check.sh fast | task | full
 crates/completion/
   src/lib.rs        → the shells, names, errors; refresh
   src/tags.rs       → the install-tag ValueCompleter (sb-go's rules)
+  src/facts.rs      → the fact get / list completers (apps, instances,
+                      keys), the earlier words read through tags.rs's parse
   src/install.rs    → probes, paths, writes, markers, migration, results
   tests/            → sb-go-written files for migration; tag cases
   tests/shells.sh   → containers: install, then Tab in a PTY per shell
@@ -559,6 +584,14 @@ the test's directory.
     declares the array apart from its assignment and returns when the
     assignment fails, matched against clap's exact text as decision 12.
     Source: the maintainer, 2026-11-20 (the zsh case of B4).
+15. **`sb fact get` and `sb fact list` complete apps, instances and keys
+    from the store** (Tab completion, "Facts for `sb fact get` and `sb
+    fact list`"; the maintainer, 2026-11-22, on the design "Showing one
+    secret", tui decisions 43 to 46). Read as the calling user, names
+    only, nothing on any error, no cache. The completers live here,
+    beside the tag completer and its earlier-word parse, so sb-completion
+    depends on sb-config (capability map amended; deny.toml's wrappers
+    follow).
 
 ## Known limits
 

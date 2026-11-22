@@ -1084,7 +1084,8 @@ specs, docs/ideas/fact-editor.md and prototypes/proto-facts/FINDINGS.md.
    six subcommands (`accounts`, `adv_settings`, `backup_config`,
    `hetzner_vlan`, `settings`, `inventory`), and adds `motd` and
    `providers` (Difference 38), each also by its file's name (Difference
-   39). `fact` takes no arguments.
+   39). Bare `fact` takes no arguments; its `get` and `list` are new
+   (Difference 40, *amended 2026-11-22*).
    Help texts are sb-go's except where a difference below changes them
    (capability map decision 1).
 2. **Root.** Both commands need root (cli-core decision 3). cli-core's
@@ -1413,6 +1414,73 @@ command can corrupt a file Saltbox owns or race Saltbox while it writes.
   restored. A Ctrl+C with staged changes discards them, and an
   interrupted save finishes the role it is committing before it stops.
 
+#### `sb fact get` and `sb fact list`
+
+*Added 2026-11-22* (the maintainer's decision on the design "Showing one
+secret", decisions 43 to 46): a role can print the command to read a
+secret instead of the secret, and a script can read a fact with
+`$(…)`. Bare `sb fact` stays the editor.
+
+```
+sb fact get <app> <instance> <key> [--json]   # one value
+sb fact get <app> <key> [--json]              # only when <app> has one instance
+sb fact list [<app> [<instance>]] [--json]    # names only, never values
+```
+
+- **Words.** The app is the file (`<app>.ini`, Saltbox's role name),
+  the instance its section, the key the fact, as `saltbox_facts` names
+  them. The three-word form is canonical; the two-word form resolves
+  only when the file holds exactly one instance. `get` reads any fact,
+  secret or not.
+- **The reader** (sb-config `facts::read::Store`): the session's
+  directory rules without its locks. The facts directory is opened from
+  `/` one component at a time without symlinks and pinned; each
+  `<app>.ini` is opened relative to it with `O_NOFOLLOW|O_NONBLOCK`,
+  must be a regular file that keeps its dev and inode, and is read up
+  to 1 MiB; `DEFAULT` is hidden. It takes **no editor lock and no
+  `<role>.ini.lock`**, so it works while `sb fact` is open and while
+  Saltbox runs (Saltbox writes with `os.replace`, so one read is
+  consistent). `get` reads only `<app>.ini`; `list` reads the files it
+  lists, and one bad file fails it, naming it, as the editor's open
+  does. An app name holding `/` or NUL names no file.
+- **Output of `get`:** the value alone and `\n` on stdout, continuation
+  lines joined by `\n`. To a pipe or a file the exact bytes go out; to
+  a terminal the value goes through term-ui's `DisplayText` (colour
+  off), as the editor shows values, so a value can't move the cursor or
+  retitle the terminal. `--json` writes
+  `{"app":…,"instance":…,"key":…,"value":…}` on one line, lossless; DEL
+  and the C1 controls are written as `\u` escapes as well as the C0
+  ones serde_json escapes, so the line is safe on a terminal and still
+  the same JSON. No colour on stdout.
+- **Output of `list`:** `<app> <instance> <key>` lines, sorted, narrowed
+  by the app and the instance given; through `DisplayText` to a
+  terminal. `--json` is an array of `{"app","instance","key"}` on one
+  line. No value is ever listed. An empty store lists nothing (exit 0).
+- **Exit codes and errors** (names only, escaped as cli-core's error
+  block escapes them):
+
+  | Case | Exit | stderr |
+  |---|---|---|
+  | found, not empty | 0 | nothing |
+  | unknown app | 1 | `no facts for app 'plexx'; run sb fact list to see them` |
+  | app with no instance | 1 | `app 'plex' has no instances` |
+  | unknown instance | 1 | `app 'plex' has no instance 'plex2'; instances: plex, plex-4k` |
+  | two-word form, several instances | 1 | `app 'plex' has 2 instances; name one: plex, plex-4k` |
+  | unknown key | 1 | `plex/plex has no fact 'tokn'; facts: client_identifier, token` |
+  | key present, value empty | 1 | `plex/plex token is empty` (Saltbox writes `""` as a placeholder; `--json` too) |
+  | store missing, symlinked or unreadable | 1 | the facts layer's own text (`facts directory must be an existing directory without symlinks: …`, `facts file plex.ini must not be a symlink`, …) |
+  | bad arguments | 2 | clap |
+
+  `list` gives the unknown-app, unknown-instance and store rows.
+- **Root, locks and the log.** Both need root through the existing
+  relaunch (cli-core, `needs_root`) and never take the run lock. The run
+  record holds `fact get` or `fact list`, the app, instance and key
+  names (escaped) and the outcome. **No value reaches the run log, an
+  error or a tracing field:** the error texts carry names only, and the
+  value is held in a type whose `Debug` leaves it out.
+- **Completion:** apps, instances and keys (completion spec, "Facts for
+  `sb fact get` and `sb fact list`").
+
 ### Differences from sb-go (the editors; continuing the list above)
 
 21. `sb edit` validates the edited file after the editor exits, with
@@ -1479,6 +1547,12 @@ command can corrupt a file Saltbox owns or race Saltbox while it writes.
     `inventory` also takes `localhost` and `localhost.yml`, the
     inventory file's name: the names users type from the files. sb-go
     has no aliases; the contract test lists them as extensions.
+40. `sb fact get <app> [<instance>] <key>` prints one fact's value and
+    `sb fact list [<app> [<instance>]]` lists the facts' names
+    (decisions 43 to 46, 2026-11-22). sb-go's `sb fact` takes no
+    arguments (`cobra.NoArgs`) and has no way to read a fact without its
+    editor; bare `sb fact` is the editor in both. The contract test lists
+    both commands as extensions.
 
 ### Scope
 
@@ -1811,6 +1885,28 @@ the test's directory.
     validate-config's check, its schema included once Saltbox has it.
     Both are left out of the picker when missing, and refused by name
     (the target check) when asked for directly.
+43. **`sb fact get` and `sb fact list` are subcommands of `sb fact`**
+    (the maintainer, 2026-11-22, on the design "Showing one secret"),
+    in `sb edit`'s shape: bare `sb fact` stays the editor. Plain
+    positionals mirror `saltbox_facts`' role, instance and key, so every
+    line `list` prints can be pasted after `sb fact get`. Generic, not
+    secret-only: nothing has to be kept in step with Saltbox. Not
+    `sb secret` (a top-level command suggesting a curated registry), not
+    per-app helpers, not an `op://`-style joined reference.
+44. **The value alone and a newline on stdout,** exact bytes to a pipe,
+    `DisplayText` to a terminal, `--json` lossless, no `--no-newline`
+    (an INI value can't end in a newline). It prints to a terminal
+    without asking, as gh, op, pass and docker do: the user typed the
+    command to see the value (the maintainer, 2026-11-22; decision 2 of
+    2026-11-18 points the same way).
+45. **Every miss exits 1,** an empty value included (printing an empty
+    line with exit 0 would hide Saltbox's `""` placeholder from `$(…)`);
+    the stderr text says which miss. Separate codes can come later
+    without breaking anyone.
+46. **Root through the relaunch, no locks.** One rule for every command,
+    and the read is in the root run log; no editor lock and no role lock,
+    because the role's line shows during an install, when the user may
+    run the command in another terminal (the maintainer, 2026-11-22).
 
 ### Known limits
 
@@ -1829,6 +1925,10 @@ the test's directory.
   reads it as a key when it holds an `=`. A file sb saves never gains
   one: sb writes no comments. An indented `;` line right after a value
   is read as Saltbox reads it (decision 39).
+- `sb fact list` prints names as they are, one line each, space
+  separated: a key or instance holding a space (Saltbox allows any but
+  `=` and line breaks) can't be pasted after `sb fact get` without
+  quoting. Completion leaves such names out.
 - Someone who can mount a FUSE file system with `allow_other` over a
   role file can make `sb fact` hang while it reads that file. That
   needs the Saltbox user, who usually has sudo anyway, so sb doesn't
