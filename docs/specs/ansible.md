@@ -150,6 +150,10 @@ Steps, in sb-go's order (cmd/install.go:60-210):
    sb's palette roles (sb-go 514ecd2, 5a8135e). Any suggestion stops the
    run: exit 1, nothing runs. The runner has ended before step 6
    (exec's `attached` refuses while one is live).
+   *Added 2026-11-22 (decision 22):* when both rebuilds are due on 2 or
+   more physical cores, both listings run at once ("The tag cache",
+   "Both at once"); a Saltbox failure then stops Sandbox's listing and
+   waits for it before the error.
 6. **Runs:** Saltbox, then saltbox_mod, then Sandbox, each only if it has
    tags (:192-210). Each is
    `/usr/local/bin/ansible-playbook <playbook> --become --tags <a,b>
@@ -265,6 +269,10 @@ death by signal for an interrupted run (cli-core).
   matching 'q'`, exit 0.
 - Per-repo errors are collected; the other repos still print; then one
   error block, exit 1.
+- *Added 2026-11-22 (decision 22):* when both Saltbox's and Sandbox's
+  rebuilds are due (both stale, or `--refresh`) on 2 or more physical
+  cores, both listings run at once ("The tag cache", "Both at once");
+  the output is the same.
 - **`--json`** (decision 20, the maintainer, 2026-11-18): stdout is one
   line of compact JSON (cli-core's `json::line`: keys in this order, one
   trailing newline, every control character escaped, C1 and DEL
@@ -345,6 +353,31 @@ nothing from ops, so it lands here.
   HEAD before its pull, before `refresh` writes over the entry, to tell
   which tags the pull added or removed (ops spec, "What moved, and the
   closing hint").
+- **Both at once** (decision 22, the maintainer, 2026-11-22): when
+  Saltbox's and Sandbox's rebuilds are both due and sb may run on 2 or
+  more physical cores (host's `cores`, the rule python-env's probes
+  take: SMT siblings of one core count once, no more than the CPUs sb
+  may use), Sandbox's listing starts with Saltbox's, so the pair takes
+  the longer of the two, not their sum. Otherwise, and whenever only one
+  is due, they run one after the other as before. The steps don't
+  change: Saltbox's step shows while its listing runs, then Sandbox's
+  for what is left of Sandbox's listing (its time only that), each
+  ending as it did; Saltbox's failure is shown first, whichever listing
+  ended first, and the output, transient or kept, is the same. Both
+  listings start only once both HEADs are read: in `list` they already
+  are (one `join!`); in `install` Sandbox's HEAD is read before
+  Saltbox's listing only when Saltbox's rebuild is due and the cores
+  allow both at once, so a 1-core host or a valid Saltbox entry reads
+  it as before. When `install`'s Saltbox step fails or lists no tags,
+  Sandbox's listing is stopped (exec's group stop) and waited for
+  before the error; after Ctrl-C both are stopped and waited for,
+  whatever the command. The API: `StartedListing::start` (a listing
+  whose child starts when first polled), `alongside` (it runs while
+  another step's body does), `stop` (cancelled and waited for), and
+  `TagCache::record_started` (waited for, recorded and written as a
+  rebuild). `Ansible::listings_at_once` gives the rule, and
+  `with_listings_at_once` sets the count (tests). `update` takes the
+  same pieces for its two rebuilds (ops spec, decision 46).
 
 ### Differences from sb-go (the complete list)
 
@@ -409,6 +442,10 @@ nothing from ops, so it lands here.
     before listing. sb-go's `list` has no way to rebuild a valid cache
     (an edited role needs a commit, or `install --no-cache` to skip the
     check).
+19. **Both tag caches are rebuilt at once** (decision 22) in `list` and
+    `install`'s check, when both are due on 2 or more physical cores.
+    sb-go always lists one after the other (cmd/list.go:110-132,
+    cmd/install.go:494).
 
 ### Scope
 
@@ -778,6 +815,23 @@ for validate-config.
     top-level steps of `sb list`'s lazy runner (`TagCache::refresh_on`,
     beside `tags_on`), since `list` has no parent step. Shown in help:
     an extension to sb-go's command tree (the contract's `EXTENSIONS`).
+22. **Saltbox's and Sandbox's listings at once** (the maintainer,
+    2026-11-22, from the measured research of 2026-11-21: rebuild both
+    caches at the same time, the listings only after both repositories'
+    git work, which in `list` and `install` is reading the HEADs):
+    "The tag cache", "Both at once"; difference 19. Measured (Saltbox
+    5087d950, Sandbox 29bf694a, production builds in pinned
+    containers): both stale, 4.6-5.5 s and 2.5-2.9 s at once on 2 and 4
+    cores (about -45%), 21 s and 12 s on an emulated slow 2-core box;
+    instructions unchanged, total CPU about +2% to +3%, which the
+    maintainer accepted. On 1 core, or 1 core with SMT siblings, at once
+    cost +12% to +24% wall or +45% CPU, so the cores rule keeps them in
+    turn there. No free-memory guard (the pair peaks at about 162 MB
+    against 85 MB): the maintainer chose the cores rule only. Decided: the rule lives in host (`cores`), moved from python-env,
+    so ansible takes it without depending on python-env; the started
+    listing is a future polled beside Saltbox's step, not a spawned
+    task, so its records keep the run's span and a drop kills its child
+    at once.
 
 ## Known limits
 

@@ -607,6 +607,7 @@ crates/host/src/apt/sources.rs  the repository rules on a given root
 crates/host/src/owner.rs        ownership
 crates/host/src/systemd.rs      service list and sb-go's formatting
 crates/host/src/journal.rs      sb-journal re-exported; coredump uid; helpers
+crates/host/src/cores.rs        CPU-bound children at once (decision 9)
 crates/host/src/testing.rs      stand-in programs (`testing` feature)
 crates/host/tests/journal.rs    the journal helpers on crafted files
 crates/host/tests/live.rs       opt-in live test
@@ -755,3 +756,13 @@ fn installed(status: &str) -> bool {
    `pty`'s first user (assumption 1). The first module that runs a child
    needing a terminal takes that role.
 8. **The spec is approved** as written above.
+9. **How many CPU-bound children run at once** (2026-11-22, with
+   ansible's decision 22): `cores::children_at_once`, one per physical
+   core sb may run on (sysfs's topology of the CPUs in its affinity
+   mask, SMT siblings counted once), no more than
+   `available_parallelism`, in turn when the topology can't be read.
+   Moved here from python-env, whose environment check's probes took it
+   first (python-env's `Env::probes_at_once` defaults to it), so
+   ansible's tag listings can take it too without ansible depending on
+   python-env. ansible's manifest gains `sb-host`, an edge the capability
+   map's ansible row and deny.toml's wrappers already allow.

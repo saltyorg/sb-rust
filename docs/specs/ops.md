@@ -719,20 +719,49 @@ migrations question) and below for the migrations' playbooks.
    "Updating Saltbox repository" (repo `fetch_and_reset` to the chosen
    branch, owner the Saltbox user), the runtime (python-env's
    `reconcile_runtime`: deadsnakes, venv, fact, as `update-venv`),
-   `head()` after, "Updating Saltbox tags cache" (ansible's
-   `TagCache::refresh`) when the hash changed or the cache entry or its
-   tags are missing. `head()` after is read right after the fetch and
+   `head()` after. `head()` after is read right after the fetch and
    reset, before the runtime (HEAD doesn't move in between; what moved
    is then known even if the runtime fails, decision 38), and the old
-   cache entry is read before the rebuild writes over it (step 13).
-   A checkout left as it is (`--skip-git`, or its local changes question
-   declined) skips "Updating <Repo> repository" and reads `head()` once;
-   its tags cache is rebuilt always ("Local changes", below).
+   cache entry is read here, before the rebuild (step 9a) writes over it
+   (step 13). A checkout left as it is (`--skip-git`, or its local
+   changes question declined) skips "Updating <Repo> repository" and
+   reads `head()` once.
+   *Amended 2026-11-22 (decision 46):* the tags cache is no longer
+   rebuilt in this step; it is step 9a's.
 8. **"Securing Saltbox configuration permissions"** / "Saltbox
    configuration permissions secured": `secure_existing_configs`
    (`sb setup`, above).
-9. **"Updating Sandbox"**: the same without the runtime, its own tags
-   cache.
+9. **"Updating Sandbox"**: the same without the runtime.
+9a. **"Updating Saltbox tags cache", then "Updating Sandbox tags
+   cache"** (*added 2026-11-22, decision 46*), top-level steps after
+   Sandbox's, so neither listing starts before both checkouts' git
+   steps have ended. Each rebuild is due, as sb-go's rule in step 7
+   was, when its checkout's hash changed or its cache entry or its tags
+   are missing, and always for a checkout left as it is ("Local
+   changes", below); a step that isn't due isn't drawn. Each lists with
+   ansible's one listing and writes the entry for the HEAD its checkout
+   step read after the pull (`head()` isn't read again), and the old
+   entry read in step 7 is compared with the new tags (step 13).
+   - **At once:** with both due and 2 or more physical cores sb may run
+     on (host's `cores`, the rule python-env's probes take), Sandbox's
+     listing starts with Saltbox's. Saltbox's step shows while Saltbox's
+     listing runs, then Sandbox's step shows for what is left of
+     Sandbox's. Otherwise (one due, 1 core, or 1 core with SMT
+     siblings) they run one after the other, as the steps are drawn.
+     The tree is the same either way.
+   - **Which run after a failure:** Saltbox's runs once Saltbox's step
+     has succeeded, even when the permissions step or Sandbox's step
+     failed, so its cache and its comparison are what they were when it
+     ran inside Saltbox's step; Sandbox's only when Sandbox's step
+     succeeded; neither after Ctrl-C. Each runs whatever the other's
+     result.
+   - **Failures:** the run fails with the first failure in the steps'
+     order: the permissions' or Sandbox's step before either tag step,
+     Saltbox's tag step before Sandbox's, whichever listing ended first.
+     A Saltbox tag failure no longer stops the update before Sandbox's
+     pull (it did while the rebuild was in Saltbox's step).
+   - **Ctrl-C** stops both listings (exec's group stop), and sb waits
+     for both before it goes on to end.
 10. **Announcements after**, the diff, then the announcements shown and
     the migrations (below).
 11. **"Validating Saltbox configuration"**: validate-config's checks, as
@@ -1428,6 +1457,7 @@ Local changes (the maintainer, 2026-11-19; decisions 40 to 42):
     runs the rest, the tags caches always rebuilt; sb-go had no way to
     update without resetting the checkouts.
 
+
 `bench`, the ruled layout (the maintainer, 2026-11-21; decision 43):
 67. bench's output is sb list's look: bold section headings over a
     rule, label and value rows with no separator, and a footer under a
@@ -1471,6 +1501,14 @@ The system's CA bundle (the maintainer, 2026-11-21; decision 44):
     checks for it (decision 45; python-env difference 21). sb-go
     installs it in setup (`saltbox/setup.go:79`) and on every venv
     reconcile where it is missing. A host that has it keeps it.
+
+The tag caches after both checkouts (the maintainer, 2026-11-22;
+decision 46):
+72. `update` rebuilds the tag caches as two top-level steps after
+    Sandbox's step, both listings at once on 2 or more physical cores.
+    sb-go rebuilds each inside its checkout's task, always one after the
+    other (cmd/update.go:301 and :378), so a Saltbox tag failure stopped
+    its update before Sandbox's pull.
 
 ## Scope
 
@@ -2251,6 +2289,37 @@ the real services.
     2026-11-21; python-env decision 26 has the evidence): nothing on a
     Saltbox host builds against it since Saltbox's lock moved to
     `psycopg[binary]`.
+46. **The tag caches are rebuilt after both checkouts' git steps, at
+    once where the host has the cores** (the maintainer, 2026-11-22,
+    from the measured research of 2026-11-21: rebuild them at the same
+    time, on the condition that the listings run only after the git
+    steps of both repositories have finished, "that is the main blocker
+    in my mind, if a change in saltbox means sandbox only works once
+    they both are on the newest versions"). Since Sandbox 29bf694a,
+    Sandbox's `ansible.cfg` loads Saltbox's vars plugin and inventory,
+    so Sandbox's listing needs Saltbox's checkout, and the venv
+    Saltbox's step reconciles, updated first; Saltbox's listing needs
+    nothing of Sandbox's. Step 9a above, difference 72.
+    - **Measured** (Saltbox 5087d950, Sandbox 29bf694a, production
+      builds in pinned containers): `sb update` with both checkouts
+      moved took 9.0-9.6 s and takes 6.5-7.2 s on 2 and 4 cores
+      (about -25%), instructions unchanged, total CPU about +2% to +3%,
+      a cost the maintainer accepted; on 1 core both run in turn and
+      nothing changes. The two listings at once peak at about 162 MB
+      against 85 MB in turn; no free-memory guard, the maintainer
+      chose the cores rule only, as for python-env's probes.
+    - **The tree changes on every host,** not only where they run at
+      once: one tree to read, document and test.
+    - **Accepted:** a Saltbox tag failure no longer stops the update
+      before Sandbox's pull. Sandbox is pulled, and what moved shows
+      its line too.
+    - **Decided:** Saltbox's tag step still runs after a
+      failure of the permissions step or Sandbox's step (its listing
+      needs nothing of Sandbox's), since the next update would
+      otherwise skip a rebuild its moved-or-missing rule no longer
+      sees as due, and what moved would lose Saltbox's tag comparison;
+      the HEAD each entry records is the one its checkout step read
+      after the pull, not read again (nothing moves HEAD in between).
 
 ## Known limits
 
