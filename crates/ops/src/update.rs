@@ -184,6 +184,9 @@ pub struct Update<'a> {
     pub python: &'a Env<'a>,
     /// `ansible-playbook`, for the tags caches and the migrations.
     pub ansible: &'a Ansible,
+    /// How many checkouts' git phases run at once (ops spec, step 7);
+    /// `None` is host's rule, one per physical core sb may run on.
+    pub git_at_once: Option<std::num::NonZeroUsize>,
     /// validate-config's settings, its root this one.
     pub settings: &'a Settings,
     /// The directory motd.yml's migration backs the original up into.
@@ -217,13 +220,13 @@ struct Opened {
 ///    its local changes question ([`discard::decide`], decision 40);
 ///    under `--skip-git` none, both checkouts left as they are;
 /// 5. "Updating apt package cache"; each checkout's announcements read;
-///    "Updating Saltbox" (the fetch and reset, the runtime, the tags when
-///    the commit moved or none are cached); "Securing Saltbox
-///    configuration permissions"; "Updating Sandbox" (the same but the
-///    runtime); "Checking for new announcements". A checkout that
-///    couldn't be opened or read fails its own step (`error updating
-///    <Repo>: ...`), after the steps before it, as sb-go's
-///    `requireDirectory` does;
+///    "Updating Saltbox and Sandbox" (both fetches and resets, at once
+///    where the host has the cores, then Saltbox's runtime: decision
+///    46); "Securing Saltbox configuration permissions"; the tags caches
+///    when a commit moved or none are cached; "Checking for new
+///    announcements". A checkout that couldn't be opened or read fails
+///    the checkouts' step (`error updating <Repo>: ...`), Sandbox's after
+///    Saltbox's git phase, as sb-go's `requireDirectory` does;
 /// 6. the new announcements: on stdout's terminal tui's viewer (the tree
 ///    paused over it), every entry that applies marked new or not, else
 ///    the new ones inline; then their [`migrations`];
@@ -446,31 +449,12 @@ async fn checkouts_onward(
             tags: &mut tags,
             pulled,
         };
-        let saltbox_due =
-            checkout_step(steps, Checkout::Saltbox, saltbox, update, &mut cache).await?;
-        let rest = async {
-            secure_step(steps, update.root).await?;
-            checkout_step(steps, Checkout::Sandbox, sandbox, update, &mut cache).await
-        }
-        .await;
-        // The tag caches after both checkouts' git steps (step 9a,
-        // decision 46): Saltbox's even when the permissions or Sandbox's
-        // step failed, Sandbox's only when its step succeeded; the run's
-        // error the first in the steps' order.
-        let (sandbox_due, rest) = match rest {
-            Ok(due) => (due, Ok(())),
-            Err(exit) => (None, Err(exit)),
-        };
-        let tagged = tag_steps(
-            steps,
-            &mut cache,
-            update.ansible,
-            shutdown,
-            [saltbox_due, sandbox_due],
-        )
-        .await;
-        rest?;
-        tagged?;
+        // Both checkouts' git phases, then Saltbox's runtime (step 7),
+        // the permissions (step 8), and only then, nothing having failed,
+        // the tag caches (step 9a, decision 46).
+        let dues = checkouts_step(steps, [saltbox, sandbox], update, &mut cache).await?;
+        secure_step(steps, update.root).await?;
+        tag_steps(steps, &mut cache, update.ansible, shutdown, dues).await?;
         if skip_git {
             // The step says so, its one notice where to see them
             // (decision 41): nothing is compared, so nothing is shown or
@@ -939,7 +923,7 @@ struct Cache<'a> {
 struct Due {
     checkout: Checkout,
     playbooks: sb_ansible::Repo,
-    /// The HEAD its checkout step read after the pull, which the entry
+    /// The HEAD its git phase read after the pull, which the entry
     /// records.
     head: String,
     /// Left as it is: rebuilt always, nothing compared (decision 41).
@@ -1059,108 +1043,256 @@ fn compared(cache: &mut Cache<'_>, due: &Due, done: Result<Vec<String>, Exit>) -
     Ok(())
 }
 
-/// "Updating <Repo>" (success "<Repo> updated"), sb-go's sub-steps: the
-/// branch notices, the Saltbox user from the Saltbox root's accounts.yml,
-/// the HEAD commit, the checkout fetched and reset to the resolved branch
-/// and owned by that user, the HEAD commit again (the pull recorded in
-/// `cache.pulled`, and in the run log), and for Saltbox python-env's
-/// `reconcile_runtime` (deadsnakes, venv, fact, as `update-venv`). Its
-/// tags rebuild, when the commit moved or the cache has no tags for the
-/// checkout, is due for step 9a ([`tag_steps`], decision 46), with the
-/// old entry when valid for the HEAD before the pull (ansible's
-/// `fresh`), read now, before the rebuild writes over it (ops spec,
-/// "What moved, and the closing hint"). A checkout that couldn't be
-/// opened fails here with its error (sb-go's `error updating <Repo>:
-/// inspect required directory ...`).
-async fn checkout_step(
+/// Step 7 (decision 46): "Updating Saltbox and Sandbox" (success
+/// "Saltbox and Sandbox updated"): both checkouts' notices (Saltbox's
+/// first), the Saltbox user from the Saltbox root's accounts.yml, each
+/// checkout's git phase ([`git_phases`]: fetched and reset to its
+/// resolved branch and owned by that user, at once where the host has
+/// the cores, each pull recorded in `cache.pulled` and the run log), then
+/// python-env's `reconcile_runtime` for Saltbox (deadsnakes, venv, fact,
+/// as `update-venv`). What it hands on is each checkout's tags rebuild,
+/// when the commit moved or the cache has no tags for the checkout, due
+/// for step 9a ([`tag_steps`]), with the old entry when valid for the
+/// HEAD before the pull (ansible's `fresh`), read now, before the rebuild
+/// writes over it (ops spec, "What moved, and the closing hint"). A
+/// checkout that couldn't be opened fails here with its error (sb-go's
+/// `error updating <Repo>: inspect required directory ...`): Saltbox's
+/// before anything runs, Sandbox's after Saltbox's git phase.
+async fn checkouts_step(
     runner: &mut Runner,
-    checkout: Checkout,
-    plan: anyhow::Result<(Repo, Planned)>,
+    [saltbox, sandbox]: [anyhow::Result<(Repo, Planned)>; 2],
     update: &Update<'_>,
     cache: &mut Cache<'_>,
-) -> Result<Option<Due>, Exit> {
-    let name = checkout.name();
-    let labels = Labels::new(format!("Updating {name}"), format!("{name} updated"))
-        .failure(format!("{name} update"));
+) -> Result<[Option<Due>; 2], Exit> {
+    let labels = Labels::new(
+        "Updating Saltbox and Sandbox",
+        "Saltbox and Sandbox updated",
+    )
+    .failure("Saltbox and Sandbox update");
     runner
         .step(labels, async |step: &mut Step| {
-            let (repo, planned) = plan.with_context(|| format!("error updating {name}"))?;
-            for notice in &planned.notices {
+            let saltbox = saltbox.context("error updating Saltbox")?;
+            let planned = std::iter::once(&saltbox).chain(sandbox.as_ref().ok());
+            for notice in planned.flat_map(|(_, planned)| &planned.notices) {
                 step.info(notice);
             }
-            let token = step.token();
             let user =
                 sb_config::user::saltbox_user(update.root).context("error getting saltbox user")?;
-            let old = repo
-                .head(&token)
-                .await
-                .context("error getting old commit hash")?;
-            let at = cache.pulled.len();
-            let new = match &planned.git {
-                Git::Update(branch) => {
-                    branch::update(step, &repo, branch, &user).await?;
-                    // Read before the runtime: HEAD doesn't move there, and
-                    // what moved is then known if the runtime fails
-                    // (decision 38).
-                    let new = repo
-                        .head(&token)
-                        .await
-                        .context("error getting new commit hash")?;
-                    tracing::info!(repo = name, old = %old, new = %new, "checkout pulled");
-                    cache.pulled.push(Moved {
-                        checkout,
-                        old: old.clone(),
-                        new: new.clone(),
-                        tags: None,
-                        left: None,
-                    });
-                    new
-                }
-                Git::Left(reason) => {
-                    let left = left_as_is(&repo, reason, &old, step).await?;
-                    cache.pulled.push(Moved {
-                        checkout,
-                        old: old.clone(),
-                        new: old.clone(),
-                        tags: None,
-                        left: Some(left),
-                    });
-                    old.clone()
-                }
-            };
-            if checkout == Checkout::Saltbox {
-                reconcile_runtime(step, update.python, Some(&user)).await?;
-            }
-            let playbooks = checkout.playbooks(update.root);
-            // sb-go's rule for update (ops spec, step 7): rebuilt when the
-            // commit moved or no tags are cached. Why not `TagCache::tags`,
-            // which also rebuilds an entry cached at another commit: that
-            // isn't sb-go's update rule. A checkout left as it is is
-            // rebuilt always (decision 41): its HEAD can't move, and its
-            // roles may have changed by hand; no tags are compared then.
-            let cached = cache
-                .tags
-                .entry(&playbooks)
-                .is_some_and(|entry| !entry.tags.is_empty());
-            let left = matches!(planned.git, Git::Left(_));
-            if !left && old == new && cached {
-                return Ok(None);
-            }
-            // The old entry only when valid for the commit before the
-            // pull (decision 37), read before the rebuild writes over it.
-            let before = (!left)
-                .then(|| cache.tags.fresh(&playbooks, &old))
-                .flatten();
-            Ok(Some(Due {
-                checkout,
-                playbooks,
-                head: new,
-                left,
-                before,
-                at,
-            }))
+            let phases = git_phases(step, saltbox, sandbox, update, &user, cache).await?;
+            reconcile_runtime(step, update.python, Some(&user)).await?;
+            Ok(phases.map(|phase| due(cache, update.root, phase)))
         })
         .await
+}
+
+/// What a checkout's git phase left: its HEAD before and after, whether
+/// it was left as it is, and its place in `pulled`.
+#[derive(Debug)]
+struct Phase {
+    checkout: Checkout,
+    old: String,
+    new: String,
+    left: bool,
+    at: usize,
+}
+
+/// Both checkouts' git phases under `step`, Saltbox's drawn first. With
+/// both to update on 2 or more physical cores ([`Update::git_at_once`],
+/// else host's `cores` rule) they run at once as term-ui's `group_all`
+/// (each to its end: a failure doesn't stop the other's reset half-way),
+/// both pulls recorded that finished, the first failure, Saltbox's
+/// first, returned; otherwise in turn, a failure stopping before the
+/// next. A checkout left as it is reads its branch and changes instead.
+///
+/// # Errors
+///
+/// Sandbox's checkout that couldn't be opened (after Saltbox's git
+/// phase), git's reads, or a failed git phase's quiet `Exit`.
+async fn git_phases(
+    step: &mut Step,
+    saltbox: (Repo, Planned),
+    sandbox: anyhow::Result<(Repo, Planned)>,
+    update: &Update<'_>,
+    user: &str,
+    cache: &mut Cache<'_>,
+) -> anyhow::Result<[Phase; 2]> {
+    if let Ok(sandbox) = &sandbox
+        && let (Git::Update(saltbox_branch), Git::Update(sandbox_branch)) =
+            (&saltbox.1.git, &sandbox.1.git)
+        && git_at_once(update)
+    {
+        let olds = [
+            old_head(&saltbox.0, step).await?,
+            old_head(&sandbox.0, step).await?,
+        ];
+        // Each sibling reads its HEAD after its own pull, so a pull that
+        // finished is known (and recorded below) even when the other is
+        // interrupted or fails afterwards (decision 38), as in turn.
+        let mut group = step.group_all::<String>();
+        for (repo, branch) in [(&saltbox.0, saltbox_branch), (&sandbox.0, sandbox_branch)] {
+            let (repo, branch, user) = (repo.clone(), branch.clone(), user.to_owned());
+            group.spawn(
+                branch::repository_labels(repo.name(), &branch),
+                async move |mut step| {
+                    repo.fetch_and_reset(&branch, &user, &mut step).await?;
+                    repo.head(&step.token())
+                        .await
+                        .context("error getting new commit hash")
+                },
+            );
+        }
+        let ended = group.join().await;
+        // Every finished pull recorded before the first failure returns
+        // (why not `collect::<Result<_, _>>`: it would stop at Saltbox's
+        // failure, before Sandbox's finished pull).
+        let checkouts = [
+            (Checkout::Saltbox, &saltbox.0),
+            (Checkout::Sandbox, &sandbox.0),
+        ];
+        let mut phases = Vec::new();
+        let mut first = None;
+        for ((checkout, _), (old, ended)) in checkouts.into_iter().zip(olds.into_iter().zip(ended))
+        {
+            match ended {
+                Ok(new) => phases.push(pulled(cache, checkout, old, new)),
+                Err(exit) => {
+                    first.get_or_insert(exit);
+                }
+            }
+        }
+        if let Some(exit) = first {
+            return Err(exit.into());
+        }
+        let [saltbox, sandbox]: [Phase; 2] = phases
+            .try_into()
+            .expect("group_all gives one result for each of its two siblings");
+        return Ok([saltbox, sandbox]);
+    }
+    let saltbox = phase(step, Checkout::Saltbox, saltbox, user, cache).await?;
+    let sandbox = sandbox.context("error updating Sandbox")?;
+    let sandbox = phase(step, Checkout::Sandbox, sandbox, user, cache).await?;
+    Ok([saltbox, sandbox])
+}
+
+/// Whether both checkouts' git phases run at once: [`Update::git_at_once`],
+/// or one per physical core sb may run on (host's `cores`, the rule the
+/// tag listings and python-env's probes take), noted in the run log.
+fn git_at_once(update: &Update<'_>) -> bool {
+    let cores = update
+        .git_at_once
+        .unwrap_or_else(sb_host::cores::children_at_once);
+    let at_once = cores.get() >= 2;
+    tracing::info!(cores, at_once, "git phases at once");
+    at_once
+}
+
+/// One checkout's git phase in turn under `step`: its HEAD before, then
+/// "Updating <Repo> repository" and its pull recorded, or, left as it is,
+/// its branch and changes read.
+///
+/// # Errors
+///
+/// git's reads, or the repository step's quiet `Exit`.
+async fn phase(
+    step: &mut Step,
+    checkout: Checkout,
+    (repo, planned): (Repo, Planned),
+    user: &str,
+    cache: &mut Cache<'_>,
+) -> anyhow::Result<Phase> {
+    let old = old_head(&repo, step).await?;
+    match &planned.git {
+        Git::Update(branch) => {
+            branch::update(step, &repo, branch, user).await?;
+            let new = repo
+                .head(&step.token())
+                .await
+                .context("error getting new commit hash")?;
+            Ok(pulled(cache, checkout, old, new))
+        }
+        Git::Left(reason) => {
+            let left = left_as_is(&repo, reason, &old, step).await?;
+            let at = cache.pulled.len();
+            cache.pulled.push(Moved {
+                checkout,
+                old: old.clone(),
+                new: old.clone(),
+                tags: None,
+                left: Some(left),
+            });
+            Ok(Phase {
+                checkout,
+                new: old.clone(),
+                old,
+                left: true,
+                at,
+            })
+        }
+    }
+}
+
+/// A checkout's HEAD before its git phase.
+///
+/// # Errors
+///
+/// The HEAD's read, as `error getting old commit hash`.
+async fn old_head(repo: &Repo, step: &Step) -> anyhow::Result<String> {
+    repo.head(&step.token())
+        .await
+        .context("error getting old commit hash")
+}
+
+/// A finished pull, its HEAD after it read right after the fetch and
+/// reset (HEAD doesn't move in the runtime, and what moved is then known
+/// if the runtime fails: decision 38), recorded in `cache.pulled` and the
+/// run log.
+fn pulled(cache: &mut Cache<'_>, checkout: Checkout, old: String, new: String) -> Phase {
+    tracing::info!(repo = checkout.name(), old = %old, new = %new, "checkout pulled");
+    let at = cache.pulled.len();
+    cache.pulled.push(Moved {
+        checkout,
+        old: old.clone(),
+        new: new.clone(),
+        tags: None,
+        left: None,
+    });
+    Phase {
+        checkout,
+        old,
+        new,
+        left: false,
+        at,
+    }
+}
+
+/// A checkout's tags rebuild after its git phase, if one is due: sb-go's
+/// rule for update (ops spec, step 9a), rebuilt when the commit moved or
+/// no tags are cached. Why not `TagCache::tags`, which also rebuilds an
+/// entry cached at another commit: that isn't sb-go's update rule. A
+/// checkout left as it is is rebuilt always (decision 41): its HEAD can't
+/// move, and its roles may have changed by hand; no tags are compared
+/// then. The old entry only when valid for the commit before the pull
+/// (decision 37), read before the rebuild writes over it.
+fn due(cache: &Cache<'_>, root: &Path, phase: Phase) -> Option<Due> {
+    let playbooks = phase.checkout.playbooks(root);
+    let cached = cache
+        .tags
+        .entry(&playbooks)
+        .is_some_and(|entry| !entry.tags.is_empty());
+    if !phase.left && phase.old == phase.new && cached {
+        return None;
+    }
+    let before = (!phase.left)
+        .then(|| cache.tags.fresh(&playbooks, &phase.old))
+        .flatten();
+    Some(Due {
+        checkout: phase.checkout,
+        playbooks,
+        head: phase.new,
+        left: phase.left,
+        before,
+        at: phase.at,
+    })
 }
 
 /// A checkout left as it is, for what moved (decisions 40 and 41): its

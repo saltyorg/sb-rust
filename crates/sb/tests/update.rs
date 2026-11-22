@@ -178,11 +178,10 @@ fn update_is_shown_with_sb_gos_flags_and_migrations() {
         .success();
 }
 
-/// Piped with every flag, every step in sb-go's order but the tags:
-/// self-update off (a raw build), apt, Saltbox reset with its runtime,
-/// the config permissions, Sandbox reset, both tags caches after it (ops
-/// spec, decision 46), the announcements the pull brought printed inline
-/// on stdout, validate-config's checks.
+/// Piped with every flag: self-update off (a raw build), apt, both
+/// checkouts reset, then Saltbox's runtime, the config permissions, both
+/// tags caches (ops spec, decision 46), the announcements the pull
+/// brought printed inline on stdout, validate-config's checks.
 #[test]
 fn piped_with_every_flag_every_step_runs_in_order() {
     if !root_gate::requested() {
@@ -206,19 +205,29 @@ fn piped_with_every_flag_every_step_runs_in_order() {
         &[
             "Self-update is disabled in this build",
             "Updating apt package cache",
-            "Updating Saltbox",
+            "Updating Saltbox and Sandbox",
             "Saltbox repository updated (master)",
             "Ansible virtual environment ready",
             "saltbox.fact is ready",
             "Saltbox configuration permissions secured",
-            "Updating Sandbox",
-            "Sandbox repository updated (master)",
             "Updating Saltbox tags cache",
             "Updating Sandbox tags cache",
             "Displaying new announcements",
             "Validating Saltbox configuration",
             "Saltbox configuration validated",
             "Shell completions checked",
+        ],
+    );
+    // Piped, at once, the two repository steps' lines interleave, each
+    // prefixed with its step (term-ui's plain output), so Sandbox's may
+    // end first; both before the runtime.
+    in_order(
+        &stderr,
+        &[
+            "- Updating Saltbox repository",
+            "- Updating Sandbox repository",
+            "Sandbox repository updated (master)",
+            "Ansible virtual environment ready",
         ],
     );
     assert!(
@@ -268,6 +277,7 @@ fn sigint_during_the_saltbox_fetch_ends_sb_by_the_signal() {
         std::fs::set_permissions(&pack, std::fs::Permissions::from_mode(0o755)).expect("chmod");
     }
     let before = sb_ops::testing::git(&world.saltbox(), &["rev-parse", "HEAD"]);
+    let sandbox_before = sb_ops::testing::git(&world.sandbox(), &["rev-parse", "HEAD"]);
     let sb = test_build();
     // sb is the process started: unshare and sh exec into it.
     let child = world
@@ -298,7 +308,11 @@ fn sigint_during_the_saltbox_fetch_ends_sb_by_the_signal() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert_eq!(out.status.signal(), Some(2), "{:?}: {stderr}", out.status);
     assert!(stderr.contains("interrupted"), "{stderr}");
-    assert!(!stderr.contains("Updating Sandbox"), "{stderr}");
+    // Sandbox's fetch, at once or not, didn't move it either.
+    assert_eq!(
+        sb_ops::testing::git(&world.sandbox(), &["rev-parse", "HEAD"]),
+        sandbox_before
+    );
     assert_eq!(
         sb_ops::testing::git(&world.saltbox(), &["rev-parse", "HEAD"]),
         before

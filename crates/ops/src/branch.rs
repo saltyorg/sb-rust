@@ -321,6 +321,16 @@ pub(crate) async fn tags(
         .context("error running and caching ansible tags")
 }
 
+/// The labels of [`update`]'s step for `repo_name` updated to `branch`
+/// (update's concurrent git phases take them too: ops spec, step 7).
+pub(crate) fn repository_labels(repo_name: &str, branch: &str) -> Labels {
+    Labels::new(
+        format!("Updating {repo_name} repository"),
+        format!("{repo_name} repository updated ({branch})"),
+    )
+    .failure(format!("{repo_name} repository update"))
+}
+
 /// "Updating <Repo> repository" (success "<Repo> repository updated
 /// (<branch>)"), repo's `fetch_and_reset` to `branch`, owned by `owner`:
 /// sb-go's step in the branch commands and in setup over a checkout
@@ -335,13 +345,7 @@ pub(crate) async fn update(
     branch: &str,
     owner: &str,
 ) -> Result<(), Exit> {
-    let repo_name = repo.name();
-    let updating = Labels::new(
-        format!("Updating {repo_name} repository"),
-        format!("{repo_name} repository updated ({branch})"),
-    )
-    .failure(format!("{repo_name} repository update"));
-    step.step(updating, async |step| {
+    step.step(repository_labels(repo.name(), branch), async |step| {
         repo.fetch_and_reset(branch, owner, step).await
     })
     .await

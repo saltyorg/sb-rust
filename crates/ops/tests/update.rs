@@ -61,6 +61,10 @@ struct World {
     /// The run is interrupted (Ctrl-C) once every one of these files is
     /// there, or after 30 s.
     ctrl_c_once: std::cell::RefCell<Vec<PathBuf>>,
+    /// Each question asked appends `ask <question>` to this file.
+    events: std::cell::RefCell<Option<PathBuf>>,
+    /// How long the Ctrl-C waits once its files are there.
+    ctrl_c_delay: std::cell::Cell<Duration>,
 }
 
 impl World {
@@ -81,6 +85,8 @@ impl World {
             broken_completion: std::cell::Cell::new(false),
             cores: std::cell::Cell::new(None),
             ctrl_c_once: std::cell::RefCell::new(Vec::new()),
+            events: std::cell::RefCell::new(None),
+            ctrl_c_delay: std::cell::Cell::new(Duration::ZERO),
         }
     }
 
@@ -119,6 +125,18 @@ impl World {
             .collect()
     }
 
+    /// sb's stand-in executable for the completion refresh, or one that
+    /// isn't there when [`World::broken_completion`] is set.
+    fn executable(&self) -> PathBuf {
+        self.completion
+            .path()
+            .join(if self.broken_completion.get() {
+                "missing"
+            } else {
+                "opt/sb/sb"
+            })
+    }
+
     /// The stand-in `ansible-playbook`, on [`World::cores`] physical cores.
     fn ansible(&self) -> Ansible {
         let ansible = Ansible::with_program(self.host.stand_ins().join("ansible-playbook"));
@@ -134,6 +152,7 @@ impl World {
     /// once its files are there (30 s at most), by a task of its own.
     fn ctrl_c(&self, shutdown: &Shutdown) {
         let waited = self.ctrl_c_once.take();
+        let delay = self.ctrl_c_delay.get();
         if !waited.is_empty() {
             let shutdown = shutdown.clone();
             drop(tokio::spawn(async move {
@@ -143,6 +162,7 @@ impl World {
                 {
                     tokio::time::sleep(Duration::from_millis(10)).await;
                 }
+                tokio::time::sleep(delay).await;
                 shutdown.signalled(2);
             }));
         }
@@ -183,14 +203,7 @@ impl World {
         let ansible = self.ansible();
         let settings = self.settings();
         let completion_paths = Paths::under(self.completion.path());
-        let executable = Ok(self
-            .completion
-            .path()
-            .join(if self.broken_completion.get() {
-                "missing"
-            } else {
-                "opt/sb/sb"
-            }));
+        let executable = Ok(self.executable());
         let update = Update {
             root: &root,
             disk,
@@ -201,6 +214,7 @@ impl World {
             args,
             python: &python,
             ansible: &ansible,
+            git_at_once: self.cores.get().and_then(std::num::NonZeroUsize::new),
             settings: &settings,
             backups: self.backups.path(),
             // Piped, as the harness's runs are.
@@ -216,11 +230,15 @@ impl World {
         let asked = Arc::new(Mutex::new(Vec::new()));
         let record = Arc::clone(&asked);
         let mut replies = replies.iter().copied();
+        let events = self.events.borrow().clone();
         let ask = move |shown: &str, question: &str, flag: &'static str| {
             record
                 .lock()
                 .expect("asked")
                 .push(format!("{shown} | {question}"));
+            if let Some(events) = &events {
+                append(events, &format!("ask {question}"));
+            }
             replies.next().ok_or_else(|| PromptError::NoTerminal {
                 question: question.to_owned(),
                 reason: "no terminal".to_owned(),
@@ -468,16 +486,15 @@ async fn piped_with_every_flag_every_step_runs_in_order() {
         &[
             "Updating apt package cache",
             "Refreshing apt package lists",
-            "Saltbox updated",
+            "├── ✓ Saltbox and Sandbox updated",
             "Saltbox: Currently on branch 'develop'",
-            "Saltbox repository updated (master)",
+            "Sandbox: Currently on branch 'develop'",
+            "│   ├── ✓ Saltbox repository updated (master)",
+            "│   ├── ✓ Sandbox repository updated (master)",
             "Checking for old deadsnakes Python packages",
             "Ansible virtual environment ready",
             "saltbox.fact is ready",
             "├── ✓ Saltbox configuration permissions secured",
-            "├── ✓ Sandbox updated",
-            "Sandbox: Currently on branch 'develop'",
-            "Sandbox repository updated (master)",
             "├── ✓ Updating Saltbox tags cache",
             "├── ✓ Updating Sandbox tags cache",
             "Checked for new announcements",
@@ -897,10 +914,10 @@ async fn a_missing_checkout_fails_its_own_step() {
         &ran.screen,
         &[
             "Updating apt package cache",
-            "Saltbox updated",
-            "Sandbox update",
+            "✗ Saltbox and Sandbox update",
             "error updating Sandbox",
             "inspect required directory",
+            "Saltbox repository updated (master)",
         ],
     );
     assert_eq!(
@@ -941,9 +958,8 @@ async fn both_questions_are_asked_in_order_before_any_step() {
     in_order(
         &ran.screen,
         &[
-            "Saltbox updated",
+            "Saltbox and Sandbox updated",
             "› Saltbox: Reset from branch 'develop' to 'master' (your answer)",
-            "Sandbox updated",
             "› Sandbox: Kept branch 'develop' (your answer)",
         ],
     );
@@ -980,7 +996,11 @@ async fn a_failing_apt_stops_before_the_checkouts() {
         "{}",
         ran.screen
     );
-    assert!(!ran.screen.contains("Updating Saltbox"), "{}", ran.screen);
+    assert!(
+        !ran.screen.contains("Saltbox and Sandbox"),
+        "{}",
+        ran.screen
+    );
     assert_eq!(
         World::branch(&world.saltbox()),
         ("develop".into(), "develop".into())
@@ -1041,7 +1061,11 @@ async fn self_update_replaced_ends_the_run_with_exit_0() {
     );
     assert_eq!(std::fs::read(&target).expect("target"), body);
     assert!(world.host.calls().is_empty(), "{:?}", world.host.calls());
-    assert!(!ran.screen.contains("Updating Saltbox"), "{}", ran.screen);
+    assert!(
+        !ran.screen.contains("Saltbox and Sandbox"),
+        "{}",
+        ran.screen
+    );
 
     let world = World::new("master", "master");
     let raw = BuildInfo::from_env("0.1.0", None, None, Channel::Release);
@@ -1060,8 +1084,9 @@ async fn self_update_replaced_ends_the_run_with_exit_0() {
         &ran.screen,
         &[
             "Self-update is disabled in this build",
-            "Saltbox updated",
-            "Sandbox updated",
+            "Saltbox and Sandbox updated",
+            "Saltbox repository updated",
+            "Sandbox repository updated",
         ],
     );
 }
@@ -1562,7 +1587,10 @@ async fn a_failed_rebuild_shows_the_range_only_and_no_hint() {
     assert!(ran.error.is_some(), "{}", ran.screen);
     in_order(
         &ran.screen,
-        &["├── ✓ Sandbox updated", "── ✗ Updating Saltbox tags cache"],
+        &[
+            "├── ✓ Saltbox and Sandbox updated",
+            "── ✗ Updating Saltbox tags cache",
+        ],
     );
     // Sandbox didn't move and its entry is valid: no rebuild is due.
     assert!(
@@ -1581,8 +1609,9 @@ async fn a_failed_rebuild_shows_the_range_only_and_no_hint() {
 }
 
 /// Saltbox's runtime failing after its pull (decision 38): the pull is
-/// named (its HEAD is read before the runtime), the range only, no
-/// Sandbox line, no hint.
+/// named (its HEAD is read before the runtime), the range only, no hint.
+/// Since decision 46 the runtime comes after both git phases, so
+/// Sandbox's pull is named too.
 #[tokio::test]
 async fn a_runtime_failure_after_the_pull_still_names_it() {
     let _spawns = SPAWNS.lock().await;
@@ -1617,7 +1646,11 @@ async fn a_runtime_failure_after_the_pull_still_names_it() {
     );
     assert_eq!(
         ran.lines,
-        format!("\nSaltbox  {saltbox} → {}\n", short(&world.saltbox()))
+        format!(
+            "\nSaltbox  {saltbox} → {}\nSandbox  already up to date ({})\n",
+            short(&world.saltbox()),
+            short(&world.sandbox())
+        )
     );
 }
 
@@ -1644,23 +1677,12 @@ async fn a_failure_after_saltboxs_pull_shows_what_moved_without_the_hint() {
         "{}",
         ran.screen
     );
-    // Saltbox's rebuild still runs after Sandbox's failed step, Sandbox's
-    // doesn't (decision 46).
-    in_order(
-        &ran.screen,
-        &["✗ Sandbox update", "── ✓ Updating Saltbox tags cache"],
-    );
-    assert!(
-        !ran.screen.contains("Updating Sandbox tags cache"),
-        "{}",
-        ran.screen
-    );
+    // No listing after a failed git phase (decision 46): Saltbox's range
+    // only.
+    assert!(!ran.screen.contains("tags cache"), "{}", ran.screen);
     assert_eq!(
         ran.lines,
-        format!(
-            "\nSaltbox  {saltbox} → {}, no tag changes\n",
-            short(&world.saltbox())
-        )
+        format!("\nSaltbox  {saltbox} → {}\n", short(&world.saltbox()))
     );
 }
 
@@ -1786,9 +1808,8 @@ async fn a_declined_local_changes_question_leaves_the_checkout_as_it_is() {
     in_order(
         &ran.screen,
         &[
-            "Saltbox updated",
+            "Saltbox and Sandbox updated",
             &format!("› Saltbox: Left as is, keeping {DIRTY} (your answer)"),
-            "Sandbox updated",
             "Sandbox repository updated (master)",
             "├── ✓ Updating Saltbox tags cache",
             "├── ✓ Updating Sandbox tags cache",
@@ -1832,7 +1853,7 @@ async fn an_accepted_local_changes_question_discards_them() {
     in_order(
         &ran.screen,
         &[
-            "Saltbox updated",
+            "Saltbox and Sandbox updated",
             &format!("› Saltbox: Discarding {DIRTY} (your answer)"),
             "Saltbox repository updated (master)",
         ],
@@ -1982,10 +2003,9 @@ async fn skip_git_leaves_both_checkouts_as_they_are() {
         &ran.screen,
         &[
             "Updating apt package cache",
-            "Saltbox updated",
+            "Saltbox and Sandbox updated",
             "Ansible virtual environment ready",
             "Saltbox configuration permissions secured",
-            "Sandbox updated",
             "├── ✓ Updating Saltbox tags cache",
             "├── ✓ Updating Sandbox tags cache",
             update::NOT_COMPARED,
@@ -2114,9 +2134,9 @@ async fn a_checkout_git_cant_read_fails_its_own_step_untouched() {
     in_order(
         &ran.screen,
         &[
-            "Saltbox repository updated (master)",
-            "Sandbox update",
+            "✗ Saltbox and Sandbox update",
             "error updating Sandbox",
+            "Saltbox repository updated (master)",
         ],
     );
     assert!(
@@ -2229,9 +2249,9 @@ async fn the_tag_listings_start_after_both_pulls_at_once_on_two_cores() {
         in_order(
             &ran.screen,
             &[
-                "├── ✓ Saltbox updated",
-                "├── ✓ Sandbox updated",
-                "Sandbox repository updated (master)",
+                "├── ✓ Saltbox and Sandbox updated",
+                "│   ├── ✓ Saltbox repository updated (master)",
+                "│   ├── ✓ Sandbox repository updated (master)",
                 "├── ✓ Updating Saltbox tags cache",
                 "├── ✓ Updating Sandbox tags cache",
                 "Checked for new announcements",
@@ -2285,7 +2305,7 @@ async fn at_once_saltboxs_tag_failure_comes_first() {
     in_order(
         &ran.screen,
         &[
-            "├── ✓ Sandbox updated",
+            "├── ✓ Saltbox and Sandbox updated",
             "✗ Updating Saltbox tags cache",
             "saltbox broke",
             "✗ Updating Sandbox tags cache",
@@ -2338,4 +2358,322 @@ async fn ctrl_c_during_both_tag_listings_stops_and_reaps_both() {
             "{name}'s listing is gone"
         );
     }
+}
+
+/// A line appended to `file`.
+fn append(file: &Path, line: &str) {
+    use std::io::Write as _;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(file)
+        .expect("events");
+    writeln!(file, "{line}").expect("an event");
+}
+
+/// Each checkout's fetch goes through a wrapper of `git-upload-pack` (its
+/// `remote.origin.uploadpack`), which appends `start <repo>` to
+/// `<meet>/log`, waits until both fetches have started or `ticks` times
+/// 0.05 s have passed, then appends `end <repo>` and serves the fetch.
+fn meeting_fetches(world: &World, meet: &Path, ticks: u32) {
+    let saltbox_remote = world.sb.saltbox_remote.url.trim_start_matches("file://");
+    let dir = meet.display();
+    let script = meet.join("upload-pack");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh
+             case \"$*\" in *'{saltbox_remote}'*) name=saltbox ;; *) name=sandbox ;; esac
+             echo \"start $name\" >> '{dir}/log'
+             : > '{dir}/'\"$name.started\"
+             i=0
+             while [ \"$i\" -lt {ticks} ]; do
+               [ -e '{dir}/saltbox.started' ] && [ -e '{dir}/sandbox.started' ] && break
+               sleep 0.05
+               i=$((i + 1))
+             done
+             echo \"end $name\" >> '{dir}/log'
+             exec git-upload-pack \"$@\"
+"
+        ),
+    )
+    .expect("the wrapper");
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    for checkout in [world.saltbox(), world.sandbox()] {
+        let _ = sb_ops::testing::git(
+            &checkout,
+            &[
+                "config",
+                "remote.origin.uploadpack",
+                &script.display().to_string(),
+            ],
+        );
+    }
+}
+
+/// Both checkouts' git phases (ops spec, step 7; decision 46): at once on
+/// 2 physical cores (each fetch sees the other start), in turn on 1
+/// (Saltbox's fetch ends before Sandbox's starts); the same tree either
+/// way, Saltbox's repository step drawn first.
+#[tokio::test]
+async fn both_git_phases_run_at_once_on_two_cores_in_turn_on_one() {
+    let _spawns = SPAWNS.lock().await;
+    for (cores, ticks) in [(2, 400), (1, 4)] {
+        let world = World::new("master", "master");
+        world.cores.set(Some(cores));
+        let meet = tempfile::tempdir().expect("meet");
+        meeting_fetches(&world, meet.path(), ticks);
+        upstream(&world);
+        let ran = world
+            .run(&args(&PIPED), Err("piped".to_owned()), &[], None, &roomy())
+            .await;
+        assert_eq!(ran.error, None, "{cores}: {}", ran.screen);
+        let log = std::fs::read_to_string(meet.path().join("log")).expect("log");
+        let log: Vec<&str> = log.lines().collect();
+        if cores == 2 {
+            assert_eq!(log.len(), 4, "{log:?}");
+            assert!(
+                log[..2].iter().all(|line| line.starts_with("start ")),
+                "{log:?}"
+            );
+            assert!(
+                log[2..].iter().all(|line| line.starts_with("end ")),
+                "{log:?}"
+            );
+        } else {
+            assert_eq!(
+                log,
+                [
+                    "start saltbox",
+                    "end saltbox",
+                    "start sandbox",
+                    "end sandbox"
+                ]
+            );
+        }
+        in_order(
+            &ran.screen,
+            &[
+                "├── ✓ Saltbox and Sandbox updated",
+                "│   ├── ✓ Saltbox repository updated (master)",
+                "│   │   ├── ✓ Fetching repository changes",
+                "│   ├── ✓ Sandbox repository updated (master)",
+                "│   │   ├── ✓ Fetching repository changes",
+                "Ansible virtual environment ready",
+                "├── ✓ Saltbox configuration permissions secured",
+                "├── ✓ Updating Saltbox tags cache",
+            ],
+        );
+        assert_eq!(
+            (
+                World::branch(&world.saltbox()).0,
+                World::branch(&world.sandbox()).0
+            ),
+            ("master".to_owned(), "master".to_owned())
+        );
+    }
+}
+
+/// Every question for both checkouts is asked before either checkout's
+/// git phase starts a fetch (ops spec, step 7): no git child of one
+/// checkout waits on the other's question, both branch questions and
+/// Sandbox's local changes question included.
+#[tokio::test]
+async fn every_question_is_asked_before_any_fetch() {
+    let _spawns = SPAWNS.lock().await;
+    let world = World::new("develop", "develop");
+    world.cores.set(Some(2));
+    dirty(&world.sandbox());
+    let meet = tempfile::tempdir().expect("meet");
+    meeting_fetches(&world, meet.path(), 400);
+    *world.events.borrow_mut() = Some(meet.path().join("log"));
+    upstream(&world);
+    let flags = args(&["--migrations", "skip", "--skip-self-update"]);
+    // Reset both to master, then discard Sandbox's local changes.
+    let ran = world
+        .run(&flags, Ok(()), &[true, true, true], None, &roomy())
+        .await;
+    assert_eq!(ran.error, None, "{}", ran.screen);
+    let log = std::fs::read_to_string(meet.path().join("log")).expect("log");
+    let log: Vec<&str> = log.lines().collect();
+    let asks = log.iter().filter(|line| line.starts_with("ask ")).count();
+    assert_eq!(asks, 3, "{log:?}");
+    assert!(
+        log[..asks].iter().all(|line| line.starts_with("ask ")),
+        "a fetch before a question: {log:?}"
+    );
+    assert_eq!(log.len(), asks + 4, "both fetches, at once: {log:?}");
+}
+
+/// At once, a failed git phase lets the other run to its end, is drawn in
+/// its place (Saltbox's first) and stops the run before the runtime and
+/// any listing; the pull that finished is named, without the hint
+/// (decisions 38 and 46).
+#[tokio::test]
+async fn at_once_a_failed_git_phase_stops_before_any_listing() {
+    let _spawns = SPAWNS.lock().await;
+    for failing in [Checkout::Saltbox, Checkout::Sandbox] {
+        let world = World::new("master", "master");
+        world.cores.set(Some(2));
+        upstream(&world);
+        let (broken, other) = match failing {
+            Checkout::Saltbox => (world.saltbox(), world.sandbox()),
+            Checkout::Sandbox => (world.sandbox(), world.saltbox()),
+        };
+        let other_before = short(&other);
+        let _ = sb_ops::testing::git(
+            &broken,
+            &[
+                "remote",
+                "set-url",
+                "origin",
+                "file:///nonexistent/remote.git",
+            ],
+        );
+        let ran = world
+            .run(&args(&PIPED), Err("piped".to_owned()), &[], None, &roomy())
+            .await;
+        assert!(ran.error.is_some(), "{failing:?}: {}", ran.screen);
+        let (failed, done) = match failing {
+            Checkout::Saltbox => (
+                "✗ Updating Saltbox repository",
+                "✓ Sandbox repository updated",
+            ),
+            Checkout::Sandbox => (
+                "✓ Saltbox repository updated",
+                "✗ Updating Sandbox repository",
+            ),
+        };
+        in_order(
+            &ran.screen,
+            &["✗ Updating Saltbox and Sandbox", failed, done],
+        );
+        for absent in ["Ansible virtual environment", "tags cache", "permissions"] {
+            assert!(!ran.screen.contains(absent), "{absent}: {}", ran.screen);
+        }
+        let name = match failing {
+            Checkout::Saltbox => "Sandbox",
+            Checkout::Sandbox => "Saltbox",
+        };
+        assert_eq!(
+            ran.lines,
+            format!("\n{name:<9}{other_before} → {}\n", short(&other)),
+            "{failing:?}"
+        );
+    }
+}
+
+/// Ctrl-C while both checkouts fetch at once: both fetches are stopped
+/// (their group gets SIGTERM), and the run ends interrupted before the
+/// runtime and any listing.
+#[tokio::test]
+async fn ctrl_c_during_both_fetches_stops_both() {
+    let _spawns = SPAWNS.lock().await;
+    let world = World::new("master", "master");
+    world.cores.set(Some(2));
+    upstream(&world);
+    let meet = tempfile::tempdir().expect("meet");
+    let saltbox_remote = world.sb.saltbox_remote.url.trim_start_matches("file://");
+    let dir = meet.path().display();
+    let script = meet.path().join("upload-pack");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\n\
+             case \"$*\" in *'{saltbox_remote}'*) name=saltbox ;; *) name=sandbox ;; esac\n\
+             trap 'echo term > \"{dir}/$name.term\"; exit 143' TERM\n\
+             : > '{dir}/'\"$name.started\"\n\
+             while :; do sleep 0.05; done\n"
+        ),
+    )
+    .expect("the wrapper");
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    for checkout in [world.saltbox(), world.sandbox()] {
+        let _ = sb_ops::testing::git(
+            &checkout,
+            &[
+                "config",
+                "remote.origin.uploadpack",
+                &script.display().to_string(),
+            ],
+        );
+    }
+    *world.ctrl_c_once.borrow_mut() = ["saltbox", "sandbox"]
+        .iter()
+        .map(|name| meet.path().join(format!("{name}.started")))
+        .collect();
+    let ran = world
+        .run(&args(&PIPED), Err("piped".to_owned()), &[], None, &roomy())
+        .await;
+    assert!(ran.error.is_some(), "{}", ran.screen);
+    assert!(ran.requested.is_some(), "{}", ran.screen);
+    for name in ["saltbox", "sandbox"] {
+        assert!(
+            meet.path().join(format!("{name}.term")).exists(),
+            "{name}'s fetch got SIGTERM: {}",
+            ran.screen
+        );
+    }
+    for absent in ["Ansible virtual environment", "tags cache"] {
+        assert!(!ran.screen.contains(absent), "{absent}: {}", ran.screen);
+    }
+}
+
+/// Ctrl-C while Sandbox's fetch still runs at once, Saltbox's pull already
+/// finished: Saltbox's pull is still recorded, and what moved names it
+/// (decision 38), though the run ends interrupted.
+#[tokio::test]
+async fn ctrl_c_after_saltboxs_pull_still_names_it() {
+    let _spawns = SPAWNS.lock().await;
+    let world = World::new("master", "master");
+    world.cores.set(Some(2));
+    upstream(&world);
+    let saltbox_before = short(&world.saltbox());
+    let meet = tempfile::tempdir().expect("meet");
+    let dir = meet.path().display();
+    let script = meet.path().join("upload-pack");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\n\
+             : > '{dir}/sandbox.started'\n\
+             while :; do sleep 0.05; done\n"
+        ),
+    )
+    .expect("the wrapper");
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    let _ = sb_ops::testing::git(
+        &world.sandbox(),
+        &[
+            "config",
+            "remote.origin.uploadpack",
+            &script.display().to_string(),
+        ],
+    );
+    // Once Sandbox's fetch hangs and Saltbox's reset has brought the new
+    // file, with time for its ownership step and HEAD read to end.
+    *world.ctrl_c_once.borrow_mut() = vec![
+        meet.path().join("sandbox.started"),
+        world.saltbox().join("upstream.txt"),
+    ];
+    world.ctrl_c_delay.set(Duration::from_millis(1500));
+    let ran = world
+        .run(&args(&PIPED), Err("piped".to_owned()), &[], None, &roomy())
+        .await;
+    assert!(ran.error.is_some(), "{}", ran.screen);
+    assert!(ran.requested.is_some(), "{}", ran.screen);
+    assert!(
+        ran.screen.contains("✓ Saltbox repository updated (master)"),
+        "{}",
+        ran.screen
+    );
+    assert_eq!(
+        ran.lines,
+        format!(
+            "\nSaltbox  {saltbox_before} → {}\n",
+            short(&world.saltbox())
+        ),
+        "{}",
+        ran.screen
+    );
 }

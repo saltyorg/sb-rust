@@ -79,6 +79,7 @@ pub fn update(args: &UpdateArgs, shutdown: &Shutdown, log: Option<&RunLog>) -> a
             args,
             python,
             ansible: &ansible,
+            git_at_once: None,
             settings: &settings,
             backups: &backups,
             // The new announcements in tui's viewer on a terminal (M87).
