@@ -8,6 +8,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use indicatif::InMemoryTerm;
+use rustix::process::{Resource, Rlimit, getrlimit, setrlimit};
 use sb_cli_core::cancel::Shutdown;
 use sb_release::testing::{Answer, Fake};
 use sb_release::{Error, GithubRepo, Query, Releases, Stage, Staged, activate};
@@ -333,12 +334,26 @@ async fn a_failed_write_fails_the_download() {
             .expect_err("short on disk");
         assert!(err.to_string().contains("write staged file: "), "{err}");
         assert_eq!(files(dir.path()), Vec::<String>::new());
+        // The limit off again (to the hard limit, which the parent left
+        // as it was), so the files written at exit aren't cut short: the
+        // coverage profile of the gate's coverage run, which outgrew 60
+        // KiB and then merged nothing.
+        let limit = getrlimit(Resource::Fsize);
+        setrlimit(
+            Resource::Fsize,
+            Rlimit {
+                current: limit.maximum,
+                maximum: limit.maximum,
+            },
+        )
+        .expect("raise the file-size limit");
         println!("child checked");
         return;
     }
     let me = std::env::current_exe().expect("test binary");
     let out = std::process::Command::new("bash")
-        .args(["-c", "trap '' XFSZ; ulimit -f 60; exec \"$0\" \"$@\""])
+        // The soft limit only, so the child can lift it before it ends.
+        .args(["-c", "trap '' XFSZ; ulimit -S -f 60; exec \"$0\" \"$@\""])
         .arg(me)
         .args([
             "a_failed_write_fails_the_download",

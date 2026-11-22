@@ -3815,6 +3815,7 @@ dependencies = [
  "object",
  "rcgen",
  "reqwest",
+ "rustix",
  "rustls",
  "sb-cli-core",
  "sb-exec",

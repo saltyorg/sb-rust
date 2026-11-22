@@ -52,6 +52,9 @@ hex.workspace = true
 sb-term-ui = { workspace = true, features = ["testing"] }
 indicatif.workspace = true
 tokio = { workspace = true, features = ["macros", "net", "rt", "sync", "time"] }
+# The failed-write test's child lifts its file-size limit before it ends
+# (`setrlimit`), so its coverage profile is written whole.
+rustix.workspace = true
 
 [lints]
 workspace = true
