@@ -236,6 +236,25 @@ appears only under CI, redirection or `TERM=dumb` (no `-v`: decision 9).
   never shrinks while running (decision 2), so shrinking the terminal
   mid-run can leave stale lines (the tree drawn in the area still fits
   the new height, as above).
+  *Amended 2026-11-22 (the maintainer):* each live row ends with a line
+  end, not the terminal's wrap (`Rows`, under indicatif), so a terminal
+  that rewraps its lines on a resize keeps them apart when it widens;
+  after a narrowing past the tree's width, the next redraw also moves up
+  over, and clears, the rows those lines were rewrapped onto. Measured
+  with tmux 3.2a; VTE, kitty, Alacritty, `WezTerm`, Konsole, iTerm2 and
+  Windows Terminal are said to rewrap the same way (UNVERIFIED). Known
+  limits: rows a terminal moves into its history on the rewrap stay
+  there (tmux keeps the cursor's row and pushes what the area grew by
+  out of the screen); a wide character pushed to the next row at the
+  wrap isn't counted, so a row can stay behind then. On a terminal that
+  cuts lines on a resize instead of rewrapping them (xterm, `PuTTY`, the
+  Linux console, by their documentation; UNVERIFIED here), a narrowing
+  past the tree's width makes that redraw start as many rows higher and
+  overwrite as many lines above the live area (for `sb bench`, the end
+  of a section it printed); before 2026-11-22 those terminals redrew
+  correctly and the rewrapping ones showed the title and steps twice.
+  Which a terminal does can't be asked without reading its replies from
+  the input. The maintainer chose this side: most terminals rewrap.
 - **Run log:** every step's start, outcome and elapsed time, its notices,
   and its output lines go to the run log (capability map, decision 11),
   in the run's span (carried onto other threads for concurrent steps).
