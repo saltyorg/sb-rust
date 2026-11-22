@@ -143,7 +143,13 @@ pass; and confirms that their Cloudflare and Docker Hub credentials work.
     as for motd.yml's migration) or the copy fails, the same issue,
     after a warning notice `<file> not copied from Saltbox's default:
     <cause>`, a run-log warning, and the warning among the file's
-    `--json` issues;
+    `--json` issues. *Amended 2026-11-22 (the maintainer): a root
+    reached through a link warns for a missing file alone; a file that
+    is there is checked with no warning, as under any root. These checks
+    support Saltbox as `sb setup` installs it (a clone at
+    /srv/git/saltbox); neither Saltbox's nor Sandbox's CI runs them, so
+    they give a linked root no handling beyond this (`sb gha`'s linked
+    root is ops' contract);*
   - runs wherever a missing file would be the file's issue:
     validate-config, `sb update`'s validation step, and `sb edit`
     (before the editor opens, and after it when the editor removed the

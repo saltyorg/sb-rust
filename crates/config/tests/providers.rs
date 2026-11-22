@@ -438,6 +438,40 @@ async fn a_root_through_a_link_is_a_warning() {
     assert!(!real.path().join("providers.yml").exists());
 }
 
+/// Through a linked root, only a missing file is warned about: the five
+/// files there are checked with no warning (config spec, "A missing file
+/// Saltbox ships a default for"; the maintainer, 2026-11-22), and with
+/// every file there the run has none.
+#[tokio::test]
+async fn a_root_through_a_link_warns_only_for_a_missing_file() {
+    let real = saltbox_root();
+    std::fs::remove_file(real.path().join("providers.yml")).expect("remove");
+    write_default(real.path(), "providers.yml", "duckdns:\n  token:\n");
+    let links = tempfile::tempdir().expect("links");
+    let linked = links.path().join("saltbox");
+    std::os::unix::fs::symlink(real.path(), &linked).expect("link");
+    let (_, screen, results) = run_on(&linked).await;
+    assert_eq!(
+        screen.matches("not copied from Saltbox's default").count(),
+        1,
+        "{screen}"
+    );
+    assert!(
+        screen.contains("! providers.yml not copied from Saltbox's default: "),
+        "{screen}"
+    );
+    for file in results
+        .files
+        .iter()
+        .filter(|file| file.file != "providers.yml")
+    {
+        assert_eq!(file.warnings, [] as [String; 0], "{}", file.file);
+    }
+    std::fs::write(real.path().join("providers.yml"), "duckdns:\n  token:\n").expect("write");
+    let (_, screen, _) = run_on(&linked).await;
+    assert!(!screen.contains("not copied"), "{screen}");
+}
+
 /// A link in the way, even a broken one, is never followed or replaced:
 /// nothing is copied, its target isn't made, and the file's check
 /// reports it.

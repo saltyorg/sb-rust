@@ -10,7 +10,9 @@
 //! `openat`, `statat`, `linkat`, `unlinkat`, `fsync`;
 //! <https://docs.rs/rustix/1.1.6/rustix/fs/fn.linkat.html>), and std's
 //! `fchown` and `File::set_permissions` on the new file's handle
-//! (<https://doc.rust-lang.org/std/os/unix/fs/fn.fchown.html>). Why not
+//! (<https://doc.rust-lang.org/std/os/unix/fs/fn.fchown.html>); a root
+//! that can't be opened that way has its files looked at by path with
+//! std's `fs::symlink_metadata` (`lstat`), never written. Why not
 //! ops' `copy_default_configs` (sb setup's copy): it lives in sb-ops,
 //! which sb-config can't depend on (the capability map), writes in place
 //! by path and keeps root as the owner; this copy keeps the default's
@@ -78,8 +80,9 @@ pub enum CopyOutcome {
 /// that needs it: one root for a run's files, so each file's look costs
 /// its `statat` alone, where opening the root for each file cost an
 /// `openat2`, a `statat` and a `close` a file on every run (performance
-/// round 5). The outcome of that open, a failure included, is every
-/// file's.
+/// round 5). The outcome of that open is every file's; when it fails,
+/// each file is looked at by its path instead ([`copy_default_in`]), and
+/// only a missing one is refused.
 #[derive(Debug)]
 pub struct Root<'a> {
     path: &'a Path,
@@ -114,8 +117,11 @@ pub fn copy_default(root: &Path, file: File) -> CopyOutcome {
 /// and mode 0600, synced, then linked to the file's name, which never
 /// replaces anything; the temporary name removed and the folder synced.
 /// A file that appears meanwhile is kept ([`CopyOutcome::NotNeeded`]).
-/// A root reached through a link isn't written in (motd.yml's
-/// migration's rule): the copy fails, saying why. Logged.
+/// A root reached through a link, or one that can't be opened at all,
+/// isn't written in (motd.yml's migration's rule): a missing file's copy
+/// fails, saying why; a file that is there, or whose path can't be
+/// looked at (its check reports it), needs none, as under a root that
+/// opens. Logged.
 #[must_use]
 pub fn copy_default_in(root: &Root<'_>, file: File) -> CopyOutcome {
     let Some(default) = file.default else {
@@ -129,6 +135,20 @@ pub fn copy_default_in(root: &Root<'_>, file: File) -> CopyOutcome {
     let dir = match root.opened() {
         Ok(dir) => dir,
         Err(Errno::NOENT) => return CopyOutcome::NotNeeded,
+        // A root reached through a link, or one that can't be opened at
+        // all: only a missing file is refused (the maintainer,
+        // 2026-11-22). Anything else at its path, or an error looking
+        // (the file's check reports it), needs no copy and no warning, as
+        // `statat` decides below. The path is only looked at (`lstat`),
+        // never written through.
+        Err(_)
+            if !matches!(
+                fs::symlink_metadata(root.path.join(file.path)),
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound
+            ) =>
+        {
+            return CopyOutcome::NotNeeded;
+        }
         Err(errno) => {
             let why = format!(
                 "the Saltbox root can't be opened without following a link: {}",
@@ -352,6 +372,35 @@ mod tests {
         let gone = root.path().join("gone");
         assert_eq!(copy_default(&gone, providers()), CopyOutcome::NotNeeded);
         assert!(!gone.exists());
+    }
+
+    /// A Saltbox root reached through a link is never written in, and
+    /// says so only for a file that is missing: one that is there needs
+    /// no copy (the maintainer, 2026-11-22).
+    #[test]
+    fn a_root_through_a_link_fails_only_for_a_missing_file() {
+        let real = with_default("duckdns:\n  token:\n");
+        let links = tempfile::tempdir().expect("links");
+        let linked = links.path().join("saltbox");
+        std::os::unix::fs::symlink(real.path(), &linked).expect("link");
+        let shared = Root::new(&linked);
+        std::fs::write(real.path().join("providers.yml"), "mine\n").expect("mine");
+        assert_eq!(
+            copy_default_in(&shared, providers()),
+            CopyOutcome::NotNeeded
+        );
+        assert_eq!(
+            std::fs::read_to_string(real.path().join("providers.yml")).expect("mine"),
+            "mine\n"
+        );
+        std::fs::remove_file(real.path().join("providers.yml")).expect("remove");
+        let refused = copy_default_in(&shared, providers());
+        assert!(
+            matches!(&refused, CopyOutcome::Failed(why)
+                if why.starts_with("the Saltbox root can't be opened without following a link: ")),
+            "{refused:?}"
+        );
+        assert!(!real.path().join("providers.yml").exists());
     }
 
     #[test]
