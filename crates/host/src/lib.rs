@@ -7,12 +7,14 @@
 //! - the systemd service list ([`systemd`]);
 //! - disk space ([`disk`]);
 //! - the setup checks ([`setup`]), setup's release check and apt's
-//!   installed-state query ([`apt`]).
+//!   installed-state query ([`apt`]);
+//! - how many CPU-bound children run at once ([`cores`]).
 
 // Output goes through `Write`; `print!`/`eprint!` panic on a closed pipe.
 #![deny(clippy::print_stdout, clippy::print_stderr)]
 
 pub mod apt;
+pub mod cores;
 pub mod disk;
 pub mod journal;
 pub mod owner;

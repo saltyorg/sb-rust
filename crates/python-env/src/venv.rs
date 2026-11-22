@@ -82,7 +82,7 @@ type Ran = Result<Result<String, String>, IsolateError>;
 fn turns(env: &Env<'_>) -> Semaphore {
     let at_once = env
         .probes_at_once
-        .unwrap_or_else(crate::cores::probes_at_once);
+        .unwrap_or_else(sb_host::cores::children_at_once);
     tracing::info!(at_once, "the environment check's probes take turns");
     Semaphore::new(at_once.get())
 }

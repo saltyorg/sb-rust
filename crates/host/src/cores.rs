@@ -1,9 +1,11 @@
-//! How many of the environment check's probes run at once: one per
-//! physical core sb may run on, and no more than the CPUs it may use.
+//! How many CPU-bound children sb runs at once: one per physical core sb
+//! may run on, and no more than the CPUs it may use. Its users are
+//! python-env's environment check (its probes) and ansible's tag
+//! listings (Saltbox's and Sandbox's at once).
 //!
-//! A probe is a Python process, busy on a CPU for its whole run, so two
-//! of them on SMT siblings of one core only share that core: a 1-core,
-//! 2-thread CPU (an Atom N450 or D410) runs them in turn, as before.
+//! Each such child is a Python process, busy on a CPU for its whole run,
+//! so two of them on SMT siblings of one core only share that core: a
+//! 1-core, 2-thread CPU (an Atom N450 or D410) runs them in turn.
 //! `std::thread::available_parallelism` counts logical CPUs (the affinity
 //! mask and a cgroup's CPU quota,
 //! <https://doc.rust-lang.org/std/thread/fn.available_parallelism.html>);
@@ -27,12 +29,13 @@ use std::path::Path;
 /// Where sysfs lists the CPUs.
 const SYSFS_CPUS: &str = "/sys/devices/system/cpu";
 
-/// The probes at once on this host: [`cap`] of the logical CPUs and the
-/// physical cores of the CPUs sb may run on.
-pub(crate) fn probes_at_once() -> NonZeroUsize {
+/// The children at once on this host: [`cap`] of the logical CPUs and
+/// the physical cores of the CPUs sb may run on.
+#[must_use]
+pub fn children_at_once() -> NonZeroUsize {
     let logical = std::thread::available_parallelism().ok();
     // Fails (EINVAL) on a kernel built for more than rustix's 1024 CPUs:
-    // the probes then run in turn.
+    // the children then run in turn.
     let allowed = rustix::thread::sched_getaffinity(None)
         .ok()
         .map(|set| cpus_in(&set));
@@ -66,7 +69,7 @@ fn physical_cores(root: &Path, cpus: &[usize]) -> Option<NonZeroUsize> {
     NonZeroUsize::new(cores.len())
 }
 
-/// The probes at once: the physical cores, at most the logical CPUs
+/// The children at once: the physical cores, at most the logical CPUs
 /// (a CPU quota below them, say); in turn when the cores can't be read.
 fn cap(logical: Option<NonZeroUsize>, physical: Option<NonZeroUsize>) -> NonZeroUsize {
     match (logical, physical) {
@@ -172,6 +175,6 @@ mod tests {
         let mask = rustix::thread::sched_getaffinity(None).expect("mask");
         let cores = physical_cores(Path::new(SYSFS_CPUS), &cpus_in(&mask)).expect("cores");
         let logical = std::thread::available_parallelism().expect("cpus");
-        assert_eq!(probes_at_once(), logical.min(cores));
+        assert_eq!(children_at_once(), logical.min(cores));
     }
 }

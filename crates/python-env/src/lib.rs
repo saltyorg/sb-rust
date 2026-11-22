@@ -16,7 +16,6 @@
 #![deny(clippy::print_stdout, clippy::print_stderr)]
 
 pub mod activate;
-mod cores;
 pub mod deadsnakes;
 pub mod fact;
 mod isolate;

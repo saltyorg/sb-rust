@@ -47,8 +47,9 @@ jiff.workspace = true
 tokio = { workspace = true, features = ["macros"] }
 # The follow's wake wait (`journal::FollowWait`): `event`'s `poll` on the
 # wake descriptor and a stop `eventfd`, under `spawn_blocking`, in place
-# of tokio's `AsyncFd` (journal spec, decision 12).
-rustix = { workspace = true, features = ["event"] }
+# of tokio's `AsyncFd` (journal spec, decision 12); `thread`'s
+# `sched_getaffinity`, the CPUs sb may run on (`cores`).
+rustix = { workspace = true, features = ["event", "thread"] }
 
 [dev-dependencies]
 # The crafted journal files the helpers' tests page and follow.
