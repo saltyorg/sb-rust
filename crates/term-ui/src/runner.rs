@@ -28,6 +28,7 @@ use sb_cli_core::theme::{self, Role};
 use tokio::task::JoinSet;
 use tracing::Instrument;
 
+use crate::block::{BLOCK_FRAME, Block, BlockArea};
 use crate::child::ChildFailure;
 use crate::rows::Rows;
 use crate::style::paint;
@@ -173,10 +174,12 @@ impl Area {
     }
 }
 
-/// Live (the tree redrawn in place) or plain (start and end lines).
+/// Live (the tree redrawn in place) or plain (start and end lines), or
+/// a live block drawn in place of the tree (`Runner::start_block`).
 enum Mode {
     Live(Area),
     Plain,
+    Block(BlockArea),
 }
 
 struct State {
@@ -343,6 +346,10 @@ impl State {
         if self.stop.load(Ordering::SeqCst) || self.ended || self.paused {
             return;
         }
+        if let Mode::Block(block) = &mut self.mode {
+            block.draw();
+            return;
+        }
         let Mode::Live(area) = &mut self.mode else {
             return;
         };
@@ -390,7 +397,7 @@ impl State {
                     }
                     Title::Shown
                 }
-                Mode::Live(_) => Title::Due(title),
+                Mode::Live(_) | Mode::Block(_) => Title::Due(title),
             };
         }
     }
@@ -440,6 +447,11 @@ impl State {
             self.ended = true;
             return;
         }
+        if matches!(self.mode, Mode::Block(_)) {
+            self.end_block();
+            self.ended = true;
+            return;
+        }
         // The last draw, then nothing more (see `redraw`).
         self.redraw();
         self.ended = true;
@@ -449,6 +461,65 @@ impl State {
         {
             area.clear();
         }
+    }
+}
+
+impl State {
+    /// A frame: the spinner moves and the live part is drawn again; a
+    /// block's tick waits while the size changes (`BlockArea::tick`).
+    fn tick(&mut self) {
+        self.frame += 1;
+        let drawing = self.drawing();
+        match &mut self.mode {
+            Mode::Block(block) => {
+                if drawing {
+                    block.tick();
+                }
+            }
+            Mode::Live(_) | Mode::Plain => self.redraw(),
+        }
+    }
+
+    /// Whether the live part is drawn: not after the restore hook ran,
+    /// the run's end, or while paused (as `redraw` checks).
+    fn drawing(&self) -> bool {
+        !(self.stop.load(Ordering::SeqCst) || self.ended || self.paused)
+    }
+
+    /// A block run's end (term-ui spec, "Live block"): interrupted by a
+    /// signal, its last frame stays, and the tree isn't printed
+    /// (cli-core's block says "interrupted"); else the block is cleared
+    /// and what the tree prints at its end is printed: a failed run's
+    /// whole tree, with its error and pointer, and nothing for transient
+    /// steps that all succeeded. Nothing after the restore hook ran.
+    fn end_block(&mut self) {
+        if self.stop.load(Ordering::SeqCst) {
+            return;
+        }
+        let (rows, width) = self.size.get();
+        let d = Draw {
+            theme: theme::current(),
+            colour: self.sink.colour,
+            width,
+            rows,
+            frame: self.frame,
+            now: self.clock.now(),
+        };
+        let Mode::Block(block) = &mut self.mode else {
+            return;
+        };
+        if block.interrupted() {
+            block.keep();
+            return;
+        }
+        block.clear();
+        let mut printed = self.tree.take_printable(&d);
+        match std::mem::replace(&mut self.title, Title::Shown) {
+            Title::Held(title) if printed.is_empty() => self.title = Title::Held(title),
+            Title::Held(title) | Title::Due(title) => printed.insert(0, title),
+            Title::Shown => {}
+        }
+        block.print(&printed);
     }
 }
 
@@ -535,6 +606,38 @@ impl Runner {
         log: Option<&RunLog>,
         options: Options,
     ) -> Runner {
+        Self::begin(title, shutdown, log, options, None)
+    }
+
+    /// Start a run whose live part is `block`'s text instead of the tree
+    /// (term-ui spec, "Live block"; decision 15), as [`Runner::start`]
+    /// otherwise: the same steps, run log, cancellation and endings. On a
+    /// terminal the block is drawn in place at each frame; plain, it is
+    /// never rendered. At its end the block is cleared, or, interrupted,
+    /// kept; a failed run prints its tree as any run does. With
+    /// [`Target::InMemory`], a block without a test screen is left out
+    /// and the tree drawn.
+    ///
+    /// # Panics
+    ///
+    /// As [`Runner::start`].
+    pub fn start_block(
+        title: &str,
+        shutdown: &Shutdown,
+        log: Option<&RunLog>,
+        options: Options,
+        block: Block,
+    ) -> Runner {
+        Self::begin(title, shutdown, log, options, Some(block))
+    }
+
+    fn begin(
+        title: &str,
+        shutdown: &Shutdown,
+        log: Option<&RunLog>,
+        options: Options,
+        block: Option<Block>,
+    ) -> Runner {
         let pointer = log.map(RunLog::pointer);
         // The title is held back until the first line printed
         // (`State::title`). Live, it heads the live area meanwhile, so the
@@ -544,6 +647,23 @@ impl Runner {
         let Options { target } = options;
         let kept = target.clone();
         let (mode, colour, size, clock, terminal, throttle) = match target {
+            // A block on its test screen: always live, its clock still,
+            // whatever the target.
+            #[cfg(any(test, feature = "testing"))]
+            _ if block.as_ref().is_some_and(|b| b.screen().is_some()) => {
+                let block = block.expect("checked");
+                let screen = block.screen().expect("checked").clone();
+                let (rows, cols) = screen.size();
+                let size = Size::Fixed {
+                    rows: usize::from(rows),
+                    width: usize::from(cols),
+                };
+                let colour = screen.colour();
+                let clock = Clock::Frozen(Instant::now());
+                let mode = Mode::Block(BlockArea::new(block, shutdown, colour));
+                // The throttle is the tree's; a block draws every frame.
+                (mode, colour, size, clock, true, false)
+            }
             Target::Stderr => {
                 // indicatif hides its stderr target when stderr isn't a
                 // terminal or `TERM` is dumb or unset (draw_target.rs,
@@ -552,20 +672,16 @@ impl Runner {
                 let target = ProgressDrawTarget::stderr();
                 // The live target (`draw_target`, a `TermLike` one) has
                 // no such check of its own, so this one stays.
+                let colour = crate::colour_on(crate::Stream::Stderr);
                 let mode = if target.is_hidden() {
                     Mode::Plain
+                } else if let Some(block) = block {
+                    Mode::Block(BlockArea::new(block, shutdown, colour))
                 } else {
                     Mode::Live(Area::new(draw_target(&Target::Stderr)))
                 };
                 let terminal = console::Term::stderr().is_term();
-                (
-                    mode,
-                    crate::colour_on(crate::Stream::Stderr),
-                    Size::Stderr,
-                    Clock::System,
-                    terminal,
-                    true,
-                )
+                (mode, colour, Size::Stderr, Clock::System, terminal, true)
             }
             // Always live: the in-memory screen is for the live snapshots.
             #[cfg(any(test, feature = "testing"))]
@@ -645,14 +761,24 @@ impl Runner {
     /// hidden) before the first frame, hook its restore to a second
     /// Ctrl-C, and start the frames. At the start and after a pause.
     fn draw_live(&mut self) {
-        let (live, stop) = {
+        let (live, on_stderr, pace, stop) = {
             let state = lock(&self.shared);
-            (matches!(state.mode, Mode::Live(_)), Arc::clone(&state.stop))
+            // A block draws on stderr only from a stderr target.
+            let (on_stderr, pace) = match &state.mode {
+                Mode::Block(block) => (block.on_stderr(), BLOCK_FRAME),
+                Mode::Live(_) | Mode::Plain => (matches!(self.target, Target::Stderr), FRAME),
+            };
+            (
+                !matches!(state.mode, Mode::Plain),
+                on_stderr,
+                pace,
+                Arc::clone(&state.stop),
+            )
         };
         if !live {
             return;
         }
-        if matches!(self.target, Target::Stderr) {
+        if on_stderr {
             self.saved = Saved::quiet();
         }
         // cli-core puts the terminal back on a second Ctrl-C: drawing stops
@@ -676,7 +802,7 @@ impl Runner {
                 saved.clone().restore_for_exit();
             })
         });
-        self.frames = Some(tokio::spawn(frames(Arc::clone(&self.shared), stop)));
+        self.frames = Some(tokio::spawn(frames(Arc::clone(&self.shared), stop, pace)));
     }
 
     /// Pause for something on the alternate screen (a question asked
@@ -723,6 +849,12 @@ impl Runner {
             }
             if clears && let Mode::Live(area) = &state.mode {
                 area.clear();
+            }
+            if how == Pause::Below
+                && self.paused != Some(Pause::Below)
+                && let Mode::Block(block) = &mut state.mode
+            {
+                block.clear();
             }
             state.paused = true;
         }
@@ -807,6 +939,24 @@ impl Runner {
     /// the live area. Dropping the runner does the same.
     pub fn finish(mut self) {
         self.stop();
+    }
+
+    /// Hide the live part, run `f` (which writes on stdout: a section of
+    /// a command's report) and draw the live part again: a block's in one
+    /// synchronized update (term-ui spec, "Live block"), the tree's with
+    /// indicatif's `MultiProgress::suspend`
+    /// (<https://docs.rs/indicatif/0.18.6/indicatif/struct.MultiProgress.html#method.suspend>).
+    /// Plain, paused or ended, `f` alone (paused over the alternate
+    /// screen, what `f` writes lands there). Between steps: the state's
+    /// lock is held while `f` runs.
+    pub fn suspend<R>(&mut self, f: impl FnOnce() -> R) -> R {
+        let mut state = lock(&self.shared);
+        let drawing = state.drawing();
+        match &mut state.mode {
+            Mode::Block(block) if drawing => block.suspend(f),
+            Mode::Live(area) if drawing => area.multi.suspend(f),
+            Mode::Block(_) | Mode::Live(_) | Mode::Plain => f(),
+        }
     }
 
     fn stop(&mut self) {
@@ -1711,8 +1861,8 @@ fn live_target(term: impl indicatif::TermLike + 'static) -> ProgressDrawTarget {
 /// `stop` is set by the restore hook on a second Ctrl-C, before it puts the
 /// terminal back; the frame task then ends (and `State::redraw` draws
 /// nothing more either).
-async fn frames(shared: Shared, stop: Arc<AtomicBool>) {
-    let mut tick = tokio::time::interval(FRAME);
+async fn frames(shared: Shared, stop: Arc<AtomicBool>, pace: Duration) {
+    let mut tick = tokio::time::interval(pace);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         tick.tick().await;
@@ -1723,8 +1873,7 @@ async fn frames(shared: Shared, stop: Arc<AtomicBool>) {
         if state.ended {
             return;
         }
-        state.frame += 1;
-        state.redraw();
+        state.tick();
     }
 }
 
@@ -3834,5 +3983,78 @@ mod tests {
         │   › Migrations run: Saltbox migrate-a
         ╰── ✓ Validated                                               0.0s
         ");
+    }
+
+    /// A live block whose every render differs, on `screen`.
+    fn changing_block(screen: &crate::block::Screen) -> Block {
+        let renders = AtomicUsize::new(0);
+        Block::new(move |_| format!("frame {}", renders.fetch_add(1, Ordering::SeqCst)))
+            .on(screen.clone())
+    }
+
+    /// A block's frame tick draws only while the live part is drawn: not
+    /// once the restore hook ran, the run ended, or while paused.
+    #[tokio::test]
+    async fn a_blocks_tick_draws_only_while_drawing() {
+        for flag in ["stop", "ended", "paused"] {
+            let screen = crate::block::Screen::new(8, 40);
+            let block = changing_block(&screen);
+            let run =
+                Runner::start_block("sb demo", &Shutdown::new(), None, Options::default(), block);
+            {
+                let mut state = lock(&run.shared);
+                let before = screen.block_bytes();
+                state.tick();
+                assert!(screen.block_bytes() > before, "{flag}: a tick draws");
+                match flag {
+                    "stop" => state.stop.store(true, Ordering::SeqCst),
+                    "ended" => state.ended = true,
+                    _ => state.paused = true,
+                }
+                let before = screen.block_bytes();
+                state.tick();
+                assert_eq!(screen.block_bytes(), before, "{flag}: no frame");
+            }
+            run.finish();
+        }
+    }
+
+    /// Once the restore hook ran, `suspend` runs its closure alone.
+    #[tokio::test]
+    async fn suspend_after_the_restore_hook_runs_the_closure_alone() {
+        let screen = crate::block::Screen::new(8, 40);
+        let mut run = Runner::start_block(
+            "sb demo",
+            &Shutdown::new(),
+            None,
+            Options::default(),
+            changing_block(&screen),
+        );
+        lock(&run.shared).stop.store(true, Ordering::SeqCst);
+        let before = screen.block_bytes();
+        let mut ran = false;
+        run.suspend(|| ran = true);
+        assert!(ran);
+        assert_eq!(screen.block_bytes(), before);
+        run.finish();
+    }
+
+    /// A tree runner paused over the alternate screen: `suspend` runs its
+    /// closure alone, the live area left as drawn (no move, no redraw).
+    #[tokio::test]
+    async fn a_paused_tree_runners_suspend_runs_the_closure_alone() {
+        let (term, options) = screen();
+        let mut run = Runner::start("sb demo", &Shutdown::new(), None, options);
+        run.step(Labels::new("Reading", "Read"), async |_| Ok(()))
+            .await
+            .expect("step");
+        run.pause_over();
+        let _ = term.moves_since_last_check();
+        let mut ran = false;
+        run.suspend(|| ran = true);
+        assert!(ran);
+        assert_eq!(term.moves_since_last_check(), "");
+        run.resume(false);
+        run.finish();
     }
 }

@@ -1,6 +1,7 @@
 //! sb's inline terminal output (term-ui spec): colour on every inline
 //! path, theme adapters, and later the task runner and tables.
 
+mod block;
 mod child;
 mod heading;
 mod prompt;
@@ -14,6 +15,9 @@ mod text;
 mod tree;
 mod tty;
 
+#[cfg(any(test, feature = "testing"))]
+pub use block::Screen;
+pub use block::{Block, BlockFrame};
 pub use child::ChildFailure;
 pub use heading::{Heading, rule};
 pub use prompt::{PromptError, can_ask, confirm, confirm_over};

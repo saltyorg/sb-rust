@@ -232,6 +232,53 @@ appears only under CI, redirection or `TERM=dumb` (no `-v`: decision 9).
   role instead, M counting the failed steps among the N (a parent that
   reads "sub-step failed" isn't counted again), so a failure doesn't
   vanish from view (the maintainer, hardening plan decision 35; Task 57).
+- **Live block** (decision 15, 2026-11-22): a runner started with
+  `Runner::start_block` draws a command's own text in its live part
+  instead of the tree (`sb bench`'s report as its results arrive). The
+  steps run, are logged, are cancelled and are interrupted exactly as
+  any runner's; only the tree isn't drawn while the run goes on. On a
+  terminal, the block's render is called at each frame with the
+  screen's width and height, stderr's colour choice, the spinner's
+  glyph and whether a signal interrupted the run; its text goes through
+  `DisplayText` as every line term-ui draws from given text ("Escape
+  handling": only SGR kept, under the profile's rule), and its lines are
+  drawn in place through console_static_text 0.9.0 (D. Sherret's, the
+  live text of Deno's CLI), each frame one synchronized update (DEC
+  2026, crossterm's command), the cursor hidden and the echoes off as
+  for the tree. `Runner::suspend` clears the block, runs a closure that
+  writes on stdout (a finished section) and draws the block again, in
+  one synchronized update, so nothing between shows a blank frame
+  (indicatif's `MultiProgress::suspend` for the tree).
+  - **Pace:** a block's frame moves every 120 ms, console_static_text's
+    own example's and Deno's pace (the tree's spinner stays at 80 ms);
+    console_static_text writes nothing when a frame's lines are the
+    same as the last's, so the bytes sent follow what changes. A frame
+    tick that finds the size changed draws nothing and waits for the
+    next one, as the crate's example and Deno debounce a resize.
+  - **Endings:** at a happy end the block is cleared and what the tree
+    prints at a run's end is printed (nothing, for a run of transient
+    steps that all succeeded; for a failed run, the whole tree, with
+    the failure block and the pointer, as any failed run's). Interrupted
+    by a signal, the block's last frame stays, drawn with the
+    interruption, and the tree isn't printed (cli-core's block says
+    "interrupted" and the pointer). Plain (stderr
+    not a terminal), the render is never called and the runner prints
+    as any runner does.
+  - **Resize:** each frame reads the screen's size. console_static_text
+    wraps the last frame at the new width to count the rows it now
+    takes, moves up over them and clears down, so on a terminal that
+    rewraps its lines (tmux, VTE, kitty, iTerm2, Windows Terminal,
+    WezTerm, foot) the block is drawn again in place at the new width,
+    with no copy. Its lines are never padded, so nothing is left to the
+    terminal's own wrap. Known limit, measured on vt100 (which, as
+    xterm and the Linux console, cuts lines rather than rewrapping
+    them): narrowed below the block's widest line, the count overshoots,
+    and as many rows above the block as its lines gained are cleared
+    from the screen, never duplicated (bench's lines end at its rules,
+    two columns past the report's widest line, about 62 columns). Taller than the screen, only its
+    bottom rows are drawn (the crate cuts from the top), so the row
+    being measured stays in view, and a height shrink leaves no copy
+    while the block still fits the screen (measured in tmux).
 - **Resize:** known limit from proto-runner: the live area's line count
   never shrinks while running (decision 2), so shrinking the terminal
   mid-run can leave stale lines (the tree drawn in the area still fits
@@ -271,7 +318,8 @@ appears only under CI, redirection or `TERM=dumb` (no `-v`: decision 9).
 
 Every line term-ui draws from text it was given (a step's output and
 notices, error lines, a child's last lines and reason, a table's headings
-and cells), and every output and notice line it logs, goes through one
+and cells, a live block's text: decision 15), and every output and
+notice line it logs, goes through one
 public sanitizer, `DisplayText`, shared with the log viewer (journal
 spec, "Display (decision 2)"). A step's error record is logged as is,
 through the run log's event formatter, which escapes every control
@@ -539,6 +587,8 @@ Pinned in the workspace when added, each confirmed at source in its task:
 | Step errors (runner API, approved 2026-11-01) | `anyhow` (already the binary's) | cli-core's binary |
 | Step records in the run's span (approved 2026-11-01) | `tracing` with `Instrument` (already cli-core's) | cli-core |
 | In-memory screen for snapshots (approved 2026-11-01; dev only, term-ui's `testing` feature) | indicatif's `in_memory` feature (pulls `vt100`) | indicatif docs |
+| A live block's in-place redraw (decision 15; the maintainer, 2026-11-22) | `console_static_text` 0.9.0, without its `sized` feature (the size is passed in) | the bench-live prototype A' |
+| A live block's test screen (dev only, term-ui's `testing` feature) | `vt100` 0.16 (already under indicatif's `in_memory`) | indicatif docs |
 
 The binary is expected to grow past the 5% ratchet; the ADR comes with
 the commit that crosses it (Task 11 records it), as ADR-004 did.
@@ -557,6 +607,7 @@ crates/term-ui/            → sb-term-ui (library)
   src/lib.rs               → the colour hook-up called from sb's main
   src/style.rs             → theme adapters (anstyle text, tabled)
   src/runner.rs            → the task runner
+  src/block.rs             → the runner's live block (decision 15)
   src/text.rs              → `DisplayText`, the shared sanitizer
   src/table.rs             → tables
   src/prompt.rs            → prompts (with their first user)
@@ -615,6 +666,44 @@ impl Runner {
     /// a panic): it does the same without panicking and stops the frame
     /// task first, so no frame lands after the last lines.
     pub fn finish(self);
+
+    /// A runner whose live part is `block`'s text instead of the tree
+    /// (decision 15): the same steps, log, cancellation and endings,
+    /// the tree printed only for a failed run.
+    pub fn start_block(
+        title: &str,
+        shutdown: &Shutdown,
+        log: Option<&RunLog>,
+        options: Options,
+        block: Block,
+    ) -> Runner;
+
+    /// Hide the live part, run `f` (which writes on stdout), and draw
+    /// the live part again, in one synchronized update; plain, `f` alone.
+    pub fn suspend<R>(&mut self, f: impl FnOnce() -> R) -> R;
+}
+
+/// A live block's text, rendered at each frame (decision 15).
+pub struct Block { /* the render; with `testing`, a test screen */ }
+
+impl Block {
+    pub fn new(render: impl FnMut(&BlockFrame) -> String + Send + 'static) -> Self;
+    /// With term-ui's `testing` feature: drawn on `screen` (a vt100
+    /// screen whose size the test sets), always live, its spinner still.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn on(self, screen: Screen) -> Self;
+}
+
+/// What a block's render gets: the screen's width and rows, stderr's
+/// colour choice, the spinner's glyph, and whether a signal interrupted
+/// the run.
+#[derive(Clone, Copy, Debug)]
+pub struct BlockFrame {
+    pub width: usize,
+    pub rows: usize,
+    pub colour: bool,
+    pub spinner: &'static str,
+    pub interrupted: bool,
 }
 
 /// Whether a `Runner` is live in this process (started, not yet finished
@@ -1192,3 +1281,30 @@ Choices behind it:
       runner per check of its edit-again loop: each check's tree is what
       its question asks about, so it is printed before the question, and
       the editor takes the whole screen in between.
+15. **A live block for a command's own report (the maintainer,
+    2026-11-22, from the bench-live research, after "research
+    alternatives to our tree task, since it doesn't really fit well
+    with bench specifically"):** `sb bench` shows its ruled report as
+    results arrive, drawn by the runner (prototype A', the "option 4"
+    policy: each section printed when it ends, only the one in progress
+    live; ops decision 45). The runner gains a live-block mode beside
+    the tree's ("Live block" above); the tree's own drawing, on
+    indicatif, is unchanged. Why console_static_text and not the tree's
+    indicatif area: indicatif pads each live line to the width and
+    moves up by its line count, so on a terminal that rewraps, a
+    narrowing doubles its rows and leaves copies (measured in tmux
+    3.2a), and it stops drawing at the screen's height, cutting the
+    bottom, where the row being measured is. Why not ratatui's inline
+    viewport (0.30.2): it clears the whole screen on a narrowing (tmux
+    kept four copies of the report), its height is fixed, and crossterm
+    writes its cursor query on stdout, into a pipe. Why not a
+    hand-written area (prototype A): console_static_text does the same
+    (no padding, the last frame re-wrapped at a new width to count its
+    rows, cut from the top to the height, silent when nothing changed)
+    and is maintained and shipped by Deno. Decided: the
+    120 ms pace and the resize debounce (the crate's example and Deno);
+    `Runner::suspend` for the hand-over to stdout; the endings above (an
+    interrupted run keeps the frame and prints no tree, as the
+    prototype; a failed one clears it, since its spinner would say the
+    measurement goes on, and prints the tree, so its error and pointer
+    show); the measured limit on terminals that cut lines.

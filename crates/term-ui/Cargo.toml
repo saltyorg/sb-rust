@@ -8,8 +8,9 @@ license.workspace = true
 publish.workspace = true
 
 [features]
-# The in-memory screen for snapshot tests (pulls vt100); never in sb.
-testing = ["indicatif/in_memory"]
+# The in-memory screen for snapshot tests (pulls vt100), and the live
+# block's test screen on vt100 itself; never in sb.
+testing = ["indicatif/in_memory", "dep:vt100"]
 
 [dependencies]
 sb-cli-core.workspace = true
@@ -31,6 +32,11 @@ dialoguer.workspace = true
 crossterm.workspace = true
 tabled.workspace = true
 termtree.workspace = true
+# The live block's in-place redraw (term-ui decision 15).
+console_static_text.workspace = true
+# The live block's test screen (`Screen`), with `testing` only; already
+# in the tree through indicatif's `in_memory`.
+vt100 = { workspace = true, optional = true }
 
 [dev-dependencies]
 insta.workspace = true
@@ -43,8 +49,8 @@ tempfile.workspace = true
 fastrand.workspace = true
 indicatif = { workspace = true, features = ["in_memory"] }
 tokio = { workspace = true, features = ["macros", "test-util"] }
-# The reflowing screen of the live area's resize tests (src/reflow.rs);
-# already under indicatif's in-memory screen.
+# The reflowing screen of the live area's resize tests (src/reflow.rs) and
+# the live block's test screen; already under indicatif's in-memory screen.
 vt100.workspace = true
 
 [lints]

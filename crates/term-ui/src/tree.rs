@@ -32,7 +32,7 @@ pub(crate) const TAIL: usize = 8;
 /// so each step keeps that many.
 const KEPT: usize = 10;
 /// The braille spinner (decision 7).
-const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+pub(crate) const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 /// termtree's glyphs with a rounded last branch, the reviewed tree.
 /// termtree draws only a finished tree in one go, so the runner borrows
