@@ -728,14 +728,42 @@ migrations question) and below for the migrations' playbooks.
    reads `head()` once.
    *Amended 2026-11-22 (decision 46):* the tags cache is no longer
    rebuilt in this step; it is step 9a's.
+   *Replaced 2026-11-22 (decision 46, its second part):* steps 7 to 9
+   are now:
+7. **"Updating Saltbox and Sandbox"** (success "Saltbox and Sandbox
+   updated", failure "Saltbox and Sandbox update"), one top-level step
+   for both checkouts' git phases and Saltbox's runtime:
+   - the `›` notices of both checkouts (branch answers, local changes),
+     Saltbox's first; the Saltbox user; each checkout's `head()` before;
+   - **the git phases:** each checkout's "Updating <Repo> repository"
+     (repo's `fetch_and_reset`, as before: fetch, reset or checkout,
+     submodules, ownership), Saltbox's drawn first. With both checkouts
+     to update (neither left as it is, both opened) and 2 or more
+     physical cores (host's `cores`), both run at once (term-ui's
+     `group_all`: each runs to its end, so a failure never interrupts
+     the other's reset); otherwise one after the other, Saltbox's
+     first, and a failure stops before the next, as before. Every
+     question has been asked by then (steps 1 and 4): they read only
+     the checkouts as they are, the upstream as last fetched, so no
+     answer waits on a fetch, and no git child of one checkout waits on
+     the other's question;
+   - each checkout's `head()` after its pull, the pull recorded
+     (decision 38) whether or not the other's failed; a checkout left
+     as it is reads its branch and changes instead; a checkout that
+     couldn't be opened fails here, after Saltbox's git phase when it
+     is Sandbox's, with `error updating <Repo>: ...`;
+   - then, both git phases finished, Saltbox's runtime (python-env's
+     `reconcile_runtime`: deadsnakes, venv, fact), its steps under this
+     one; and the old cache entries read before step 9a writes over
+     them.
 8. **"Securing Saltbox configuration permissions"** / "Saltbox
    configuration permissions secured": `secure_existing_configs`
-   (`sb setup`, above).
-9. **"Updating Sandbox"**: the same without the runtime.
+   (`sb setup`, above), now after both checkouts.
+9. *(Merged into step 7 on 2026-11-22.)*
 9a. **"Updating Saltbox tags cache", then "Updating Sandbox tags
    cache"** (*added 2026-11-22, decision 46*), top-level steps after
-   Sandbox's, so neither listing starts before both checkouts' git
-   steps have ended. Each rebuild is due, as sb-go's rule in step 7
+   step 8, so neither listing starts before both checkouts' git phases
+   have ended. Each rebuild is due, as sb-go's rule in step 7
    was, when its checkout's hash changed or its cache entry or its tags
    are missing, and always for a checkout left as it is ("Local
    changes", below); a step that isn't due isn't drawn. Each lists with
@@ -749,17 +777,14 @@ migrations question) and below for the migrations' playbooks.
      Sandbox's. Otherwise (one due, 1 core, or 1 core with SMT
      siblings) they run one after the other, as the steps are drawn.
      The tree is the same either way.
-   - **Which run after a failure:** Saltbox's runs once Saltbox's step
-     has succeeded, even when the permissions step or Sandbox's step
-     failed, so its cache and its comparison are what they were when it
-     ran inside Saltbox's step; Sandbox's only when Sandbox's step
-     succeeded; neither after Ctrl-C. Each runs whatever the other's
-     result.
+   - **After a failure:** neither runs when step 7 or 8 failed or was
+     interrupted (the maintainer: a failure in either git phase stops
+     before any listing). Each runs whatever the other's result.
    - **Failures:** the run fails with the first failure in the steps'
-     order: the permissions' or Sandbox's step before either tag step,
-     Saltbox's tag step before Sandbox's, whichever listing ended first.
-     A Saltbox tag failure no longer stops the update before Sandbox's
-     pull (it did while the rebuild was in Saltbox's step).
+     order, Saltbox's tag step before Sandbox's, whichever listing
+     ended first. A Saltbox tag failure no longer stops the update
+     before Sandbox's pull (it did while the rebuild was in Saltbox's
+     step).
    - **Ctrl-C** stops both listings (exec's group stop), and sb waits
      for both before it goes on to end.
 10. **Announcements after**, the diff, then the announcements shown and
@@ -1457,7 +1482,6 @@ Local changes (the maintainer, 2026-11-19; decisions 40 to 42):
     runs the rest, the tags caches always rebuilt; sb-go had no way to
     update without resetting the checkouts.
 
-
 `bench`, the ruled layout (the maintainer, 2026-11-21; decision 43):
 67. bench's output is sb list's look: bold section headings over a
     rule, label and value rows with no separator, and a footer under a
@@ -1505,10 +1529,15 @@ The system's CA bundle (the maintainer, 2026-11-21; decision 44):
 The tag caches after both checkouts (the maintainer, 2026-11-22;
 decision 46):
 72. `update` rebuilds the tag caches as two top-level steps after
-    Sandbox's step, both listings at once on 2 or more physical cores.
+    both checkouts, both listings at once on 2 or more physical cores.
     sb-go rebuilds each inside its checkout's task, always one after the
     other (cmd/update.go:301 and :378), so a Saltbox tag failure stopped
     its update before Sandbox's pull.
+73. `update` updates both checkouts in one step, "Updating Saltbox and
+    Sandbox", both fetches and resets at once on 2 or more physical
+    cores, Saltbox's runtime after both, the permissions step after it.
+    sb-go has a task per checkout, Saltbox's (with its runtime and
+    tags), the permissions, then Sandbox's, one after the other.
 
 ## Scope
 
@@ -2313,13 +2342,37 @@ the real services.
     - **Accepted:** a Saltbox tag failure no longer stops the update
       before Sandbox's pull. Sandbox is pulled, and what moved shows
       its line too.
-    - **Decided:** Saltbox's tag step still runs after a
-      failure of the permissions step or Sandbox's step (its listing
-      needs nothing of Sandbox's), since the next update would
-      otherwise skip a rebuild its moved-or-missing rule no longer
-      sees as due, and what moved would lose Saltbox's tag comparison;
-      the HEAD each entry records is the one its checkout step read
-      after the pull, not read again (nothing moves HEAD in between).
+    - **Decided:** the HEAD each entry records is the one
+      its checkout's git phase read after the pull, not read again
+      (nothing moves HEAD in between).
+    - **The git phases at once too** (the maintainer, 2026-11-22, the
+      scope widened the same day; it supersedes the 2026-11-18 decline
+      of overlapping Sandbox's fetch, capability map): every question
+      for both checkouts first (already so: they read local state
+      only), then both git phases at once on 2 or more physical cores,
+      then, once both have ended, both listings at once, then the rest
+      as before. Kept: Saltbox drawn and its failure reported first, a
+      failure in either git phase stops before any listing, Ctrl-C
+      stops both, 1 core runs everything in turn, `--discard-local` and
+      `--skip-git` unchanged. Step 7 above, difference 73. It
+      withdraws the first choice that Saltbox's tag step runs
+      after a failed permissions or Sandbox step. Accepted with it: when
+      one checkout's pull finished and a later part of step 7 or 8
+      failed (the other's git phase, the runtime), that checkout's cache
+      entry stays at its old commit and the next update, whose
+      moved-or-missing rule (sb-go's) sees nothing moved, doesn't
+      rebuild it; `sb list` and `sb install` do (an entry for another
+      commit is stale there), and what moved loses that pull's tag
+      comparison.
+    - **Decided** for the git phases: one parent step for
+      both checkouts, since term-ui draws concurrent steps only as
+      siblings under a parent (`group_all`), and the fetches' live
+      progress stays visible (the 2026-11-18 objection to overlapping
+      them); `group_all`, so one checkout's failure never interrupts
+      the other's reset half-way; Saltbox's runtime after both git
+      phases, not beside Sandbox's, so the venv probes' cores rule
+      still sees an idle host; the same tree on every host, in turn on
+      1 core.
 
 ## Known limits
 

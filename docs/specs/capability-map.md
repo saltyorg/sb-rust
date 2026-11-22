@@ -445,7 +445,9 @@ To discuss with the maintainer once every module is done, not before:
   - **Declined after measuring** (2026-11-18):
     - Overlapping Sandbox's fetch in `sb update`: about 0.4 to 0.6 s
       saved per update, but it needs changes in three crates and loses
-      the fetch's live progress.
+      the fetch's live progress. *Superseded 2026-11-22 by the
+      maintainer (ops decision 46): both git phases run at once, as
+      concurrent steps, so the progress stays visible.*
     - Parsing the schemas in parallel: six threads took 0.84 ms off the
       wall time and added 2.6 ms of CPU time (+35%); one thread for
       motd's schema alone took 1.2 ms off and added 8% CPU. Both are a
