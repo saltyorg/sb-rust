@@ -369,6 +369,35 @@ mod tests {
         assert_eq!(screen.rows(), ["above", "one", "two", "three"]);
     }
 
+    /// A call on the recorder through `Rows`.
+    type Op = fn(&Rows<Bytes>) -> io::Result<()>;
+
+    /// The cursor's other moves, a whole line and a cleared row pass
+    /// through as they are, and each ends the row written here: the next
+    /// text starts where the cursor is, with no line end before it.
+    #[test]
+    fn moves_and_whole_lines_pass_through() {
+        let rows = Rows::new(Bytes::default());
+        assert_eq!(rows.width(), 10);
+        assert_eq!(rows.height(), 20);
+        let ops: [(&str, Op); 5] = [
+            ("<down 1>", |rows| rows.move_cursor_down(1)),
+            ("<right 2>", |rows| rows.move_cursor_right(2)),
+            ("<left 3>", |rows| rows.move_cursor_left(3)),
+            ("whole\n", |rows| rows.write_line("whole")),
+            ("<clear>", TermLike::clear_line),
+        ];
+        for (written, op) in ops {
+            rows.write_str("ten chars!").expect("line");
+            rows.write_str("").expect("no padding");
+            op(&rows).expect("op");
+            rows.write_str("x").expect("x");
+            rows.flush().expect("flush");
+            assert_eq!(rows.term.take(), format!("ten chars!{written}x"));
+            rows.moved();
+        }
+    }
+
     /// Spaces that don't end the row are text; after a cursor move the
     /// next text starts where the cursor is.
     #[test]

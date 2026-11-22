@@ -194,6 +194,38 @@ impl indicatif::TermLike for Screen {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use indicatif::TermLike as _;
+
+    /// console's moves and line writes land as on a terminal: a gap the
+    /// cursor jumped over is kept as blanks through a resize, a move of
+    /// none is nothing, and a cleared row is empty.
+    #[test]
+    fn the_screen_takes_consoles_moves() {
+        let screen = Screen::new(10);
+        screen.write_str("a").expect("a");
+        screen.move_cursor_right(2).expect("right");
+        screen.write_str("b").expect("b");
+        screen.move_cursor_left(1).expect("left");
+        screen.write_str("B").expect("B");
+        screen.write_line("").expect("line");
+        screen.write_str("zz").expect("zz");
+        screen.clear_line().expect("clear");
+        screen.move_cursor_down(1).expect("down");
+        for none in [
+            screen.move_cursor_up(0),
+            screen.move_cursor_down(0),
+            screen.move_cursor_right(0),
+            screen.move_cursor_left(0),
+            screen.flush(),
+        ] {
+            none.expect("nothing");
+        }
+        screen.write_str("c").expect("c");
+        assert_eq!(screen.rows(), ["a  B", "", "c"]);
+        screen.resize(20);
+        assert_eq!(screen.rows(), ["a  B", "", "c"]);
+        assert_eq!(format!("{screen:?}"), "Screen { .. }");
+    }
 
     /// A line written past the width wraps; widened, it is one row again;
     /// lines ended by line ends stay apart; the cursor stays on its cell.
