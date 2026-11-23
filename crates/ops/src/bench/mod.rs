@@ -1607,7 +1607,8 @@ mod tests {
 
     /// The roles of the failure and skip cells: a failed node, a failed
     /// disk run and a run that couldn't parse in Problem; every
-    /// `Skipped` reason in Warn; `Average` bold.
+    /// `Skipped` reason in Warn; `Average` Muted and bold, in the
+    /// printed section and the live block.
     #[test]
     fn failures_take_problem_and_skips_take_warn() {
         use sb_term_ui::style::paint;
@@ -1632,9 +1633,21 @@ mod tests {
             runs.contains(&paint(&theme, Role::Problem, true, disk::FAILED)),
             "{runs:?}"
         );
+        // `Average` Muted as every label, and bold; the runs' labels
+        // Muted (the count rules out bold on them, as bold Muted text
+        // contains the Muted text); the value bold in the terminal's
+        // colour.
         let bold = theme.style(Role::Muted).bold();
-        assert!(!runs.contains(&bold.to_string()), "{runs:?}");
-        assert!(runs.contains("\x1b[1mAverage\x1b[0m"), "{runs:?}");
+        let average = format!("{bold}Average{bold:#}");
+        assert!(runs.contains(&average), "{runs:?}");
+        assert!(
+            runs.contains(&paint(&theme, Role::Muted, true, "1st run")),
+            "{runs:?}"
+        );
+        assert_eq!(runs.matches(&bold.to_string()).count(), 1, "{runs:?}");
+        // The live block draws `Average` the same way.
+        let live = render(&disk::live_table(&[Some(1.0)], Cell::new("running")));
+        assert!(live.contains(&average), "{live:?}");
         // The padding outside the codes, as tabled pads (decision 43).
         assert!(runs.contains("    \x1b[1m1.0 MB/s\x1b[0m"), "{runs:?}");
         for why in [disk::NO_SPACE, disk::NO_FREE_SPACE, disk::NO_WRITE] {

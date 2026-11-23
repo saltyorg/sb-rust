@@ -538,7 +538,9 @@ shows it:
   the width;
 - Disk write's rates right-aligned in a column 14 wide, which ends
   where Speedtest's Upload column ends, over 1 Gbps too; `Average`, label and value,
-  bold; a run's `Test failed` right-aligned there too, in Problem;
+  bold, the label Muted as the other labels (the maintainer,
+  2026-11-23); a run's `Test failed`
+  right-aligned there too, in Problem;
 - Speedtest's `Upload`, `Download` and `Latency` right-aligned in
   columns 14, 14 and 11 wide (two spaces before the widest value at
   the least), under muted headings aligned as their columns (`Node`

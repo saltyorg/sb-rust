@@ -137,10 +137,11 @@ pub enum Outcome {
 }
 
 /// The Disk write section's rows (bench's ruled layout): `1st run` to
-/// `3rd run` and `Average` (of the runs that measured, label and value
-/// bold), one decimal, right-aligned in a column 14 wide (`RATE`), a
-/// failed run's `Test failed` in Problem; or the one `Skipped` row saying
-/// why it didn't run, in Warn.
+/// `3rd run` and `Average` (of the runs that measured), one decimal,
+/// right-aligned in a column 14 wide (`RATE`), a failed run's `Test
+/// failed` in Problem; or the one `Skipped` row saying why it didn't run,
+/// in Warn. `Average`'s label and value are bold, its label Muted as
+/// every label.
 #[must_use]
 pub fn table(outcome: &Outcome) -> Table {
     match outcome {
@@ -159,7 +160,7 @@ pub fn table(outcome: &Outcome) -> Table {
                 measured.iter().sum::<f64>()
                     / f64::from(u32::try_from(measured.len()).unwrap_or(u32::MAX))
             });
-            table.row([Cell::new("Average").bold(), shown(average).bold()]);
+            table.row([label("Average").bold(), shown(average).bold()]);
             table
         }
     }
@@ -195,7 +196,7 @@ pub fn live_table(runs: &[Option<f64>], running: Cell) -> Table {
         };
         table.row([label(text), cell]);
     }
-    table.row([Cell::new("Average").bold(), Cell::new("")]);
+    table.row([label("Average").bold(), Cell::new("")]);
     table
 }
 
