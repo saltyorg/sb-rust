@@ -15,6 +15,9 @@
 use std::fmt;
 use std::fs::{File, OpenOptions};
 use std::io::Write as _;
+use std::os::fd::{AsRawFd, RawFd};
+use std::sync::{Arc, Mutex, PoisonError, mpsc};
+use std::time::{Duration, Instant};
 
 use crossterm::cursor::MoveTo;
 use crossterm::execute;
@@ -48,6 +51,8 @@ pub enum PromptError {
     /// sb by the signal, however late the signals thread reads it. Also
     /// when a signal ended the run before the confirm took the terminal
     /// (a Ctrl-C a moment before the question, say); it isn't asked then.
+    /// And when a signal from outside (SIGTERM, SIGHUP, `kill -INT`)
+    /// ended the run while the question waited, or its terminal hung up.
     #[error("interrupted")]
     Interrupted,
     /// Reading or drawing failed.
@@ -291,26 +296,133 @@ fn confirm_on(
     // terminal's input queue is one, whichever descriptor reads it.
     let _ = rustix::termios::tcflush(&tty, rustix::termios::QueueSelector::IFlush);
     // Held until the question ends, whichever way.
-    let _raw = RawMode::hold(&tty, shutdown).map_err(|err| failed(err.to_string()))?;
+    let raw = RawMode::hold(&tty, shutdown).map_err(|err| failed(err.to_string()))?;
     unasked_if_interrupted(shutdown)?;
-    let write = tty.try_clone().map_err(|err| failed(err.to_string()))?;
-    let term = console::Term::read_write_pair(tty, write);
+    let modes = (
+        raw.tty.try_clone().map_err(|err| failed(err.to_string()))?,
+        raw.original.clone(),
+    );
+    let gate = Gate::new(tty.try_clone().map_err(|err| failed(err.to_string()))?);
+    let open = Arc::clone(&gate.open);
+    let still_open = Arc::clone(&open);
+    let term = console::Term::read_write_pair(tty, gate);
     let theme = YesNo {
         palette: Palette {
             colour: console::colors_enabled_stderr(),
         },
     };
-    // dialoguer's text input reads the whole line, empty allowed
-    // (<https://docs.rs/dialoguer/0.12.0/dialoguer/struct.Input.html#method.interact_text_on>,
-    // `allow_empty`). Why not its `Confirm`: with `wait_for_newline` it
-    // keeps the last `y` or `n` typed and ignores other keys, so `nay`
-    // accepts (0.12.0 `src/prompts/confirm.rs`). Why no validator: one
-    // would ask again, and anything but `y`/`yes` is a plain no.
-    Input::<String>::with_theme(&theme)
+    let prompt = question.to_owned();
+    let (answer, answered) = mpsc::channel();
+    sb_cli_core::spawn::thread(
+        std::thread::Builder::new().name("question".into()),
+        move || {
+            only_consoles_signal();
+            let read = read_answer(&term, &theme, &prompt);
+            // Left (a signal ended the run): a key that woke it had
+            // console put back the raw mode it found; the terminal's own
+            // modes go back, as the confirm put them back when it left.
+            // Accepted limit: a key dialoguer draws nothing for (an
+            // arrow, Esc), typed in the moments between the confirm
+            // leaving and sb's exit, leaves console's raw mode with
+            // dialoguer reading on; an interactive shell puts its own
+            // modes back after a job a signal ended.
+            if_left(&still_open, || {
+                let (tty, original) = &modes;
+                put_back(tty, original);
+            });
+            let _ = answer.send(read);
+        },
+    )
+    .map_err(|err| failed(err.to_string()))?;
+    match wait_for_answer(&answered, shutdown, POLL) {
+        Waited::Answer(read) => answered_with(question, read, shutdown, HANGUP),
+        Waited::Signalled => {
+            // The question is left waiting on its thread for a key that
+            // won't matter: sb ends by the signal. Its drawing is shut
+            // off first, then its line ended here, as after a Ctrl-C.
+            abandon(&open, &raw.tty);
+            Err(PromptError::Interrupted)
+        }
+    }
+}
+
+/// Run `put_back` if the confirm has left the question (`open`, the
+/// [`Gate`]'s flag, shut).
+fn if_left(open: &Mutex<bool>, put_back: impl FnOnce()) {
+    if !*open.lock().unwrap_or_else(PoisonError::into_inner) {
+        put_back();
+    }
+}
+
+/// The confirm's ending from the question's `read`: the answer, Ctrl-C,
+/// a gone terminal (its hangup's signal waited for up to `hangup`), or a
+/// failed read.
+fn answered_with(
+    question: &str,
+    read: std::io::Result<String>,
+    shutdown: &Shutdown,
+    hangup: Duration,
+) -> Result<bool, PromptError> {
+    let failed = |err: std::io::Error| PromptError::Failed {
+        question: question.to_owned(),
+        error: err.to_string(),
+    };
+    match read {
+        Ok(line) => Ok(accepts(&line)),
+        Err(err) if err.kind() == std::io::ErrorKind::Interrupted => {
+            // console raised SIGINT before returning (UNVERIFIED as
+            // API, checked in its source: `read_single_key`,
+            // <https://docs.rs/console/0.16.6/src/console/unix_term.rs.html>),
+            // for Ctrl-C (a key here, [`RawMode`]) or for a signal that
+            // interrupted its `poll` (only a SIGINT can: the question's
+            // thread blocks the others, [`only_consoles_signal`]); both
+            // are a SIGINT. Recorded now, not when the signals thread gets
+            // to it, or the run could end with exit 1 before the thread
+            // records it. Why not console's `Term::read_key_raw`, which
+            // returns `Key::CtrlC` without raising: dialoguer 0.12.0's
+            // `Input` reads with `read_key` (`src/prompts/input.rs`), and
+            // replacing `Input` would mean line editing of our own.
+            let _ = shutdown.interrupt_raised();
+            Err(PromptError::Interrupted)
+        }
+        Err(err) => {
+            // A terminal that is gone (a hangup: its reads end or fail
+            // with EIO) is a SIGHUP on its way, which nothing orders
+            // before the read's end: the run is interrupted by it if it
+            // comes within `hangup` ([`HANGUP`]).
+            if gone(&err) && signalled_within(shutdown, hangup, POLL) {
+                Err(PromptError::Interrupted)
+            } else {
+                Err(failed(err))
+            }
+        }
+    }
+}
+
+/// How often the waiting confirm looks for a signal that ended the run:
+/// the bound on how long sb takes to end at a question once its signals
+/// thread has read one, as cli-core's run lock waits (`run_lock`'s
+/// `POLL`).
+const POLL: Duration = Duration::from_millis(100);
+
+/// How long a read that found the terminal gone waits for its hangup's
+/// SIGHUP (see `confirm_on`). The session leader's shell (or sudo) passes
+/// it on within milliseconds; the bound only delays a run whose read failed
+/// with no signal coming (under `nohup`).
+const HANGUP: Duration = Duration::from_secs(1);
+
+/// The question on its thread: dialoguer's text input reads the whole
+/// line, empty allowed
+/// (<https://docs.rs/dialoguer/0.12.0/dialoguer/struct.Input.html#method.interact_text_on>,
+/// `allow_empty`). Why not its `Confirm`: with `wait_for_newline` it keeps
+/// the last `y` or `n` typed and ignores other keys, so `nay` accepts
+/// (0.12.0 `src/prompts/confirm.rs`). Why no validator: one would ask
+/// again, and anything but `y`/`yes` is a plain no.
+fn read_answer(term: &console::Term, theme: &YesNo, question: &str) -> std::io::Result<String> {
+    Input::<String>::with_theme(theme)
         .with_prompt(question)
         .allow_empty(true)
-        .interact_text_on(&term)
-        .map(|line| accepts(&line))
+        .interact_text_on(term)
         .map_err(|dialoguer::Error::IO(err)| {
             // dialoguer's `Input` never hides the cursor (its `Confirm`
             // did); still, after Ctrl-C or a failed read, the cursor is
@@ -322,22 +434,176 @@ fn confirm_on(
             let _ = term.show_cursor();
             // And the question's line ended, so what follows starts clean.
             let _ = term.write_line("");
-            if err.kind() == std::io::ErrorKind::Interrupted {
-                // console raised SIGINT before returning (UNVERIFIED, from
-                // its source: `read_single_key`,
-                // <https://docs.rs/console/0.16.6/src/console/unix_term.rs.html>):
-                // recorded now, not when the signals thread gets to it, or
-                // the run could end with exit 1 before the thread records
-                // it. Why not console's `Term::read_key_raw`, which returns
-                // `Key::CtrlC` without raising: dialoguer 0.12.0's `Input`
-                // reads with `read_key` (`src/prompts/input.rs`), and
-                // replacing `Input` would mean line editing of our own.
-                let _ = shutdown.interrupt_raised();
-                PromptError::Interrupted
-            } else {
-                failed(err.to_string())
-            }
+            err
         })
+}
+
+/// What the confirm waited for: the question's answer, or a signal that
+/// ended the run while it waited.
+#[derive(Debug)]
+enum Waited {
+    Answer(std::io::Result<String>),
+    Signalled,
+}
+
+/// Wait for the question's thread's answer on `answered`, or for a signal
+/// to end the run (`shutdown`), looked for every `poll`.
+///
+/// Why a thread: console reads each key with a `poll` on the terminal
+/// that nothing else can wake (0.16.6 `src/unix_term.rs`,
+/// `read_single_key`; no timeout or cancel in its API), so a signal sb
+/// handles only cancels the run's token while the question waits on; and
+/// a signal that does interrupt that `poll` (EINTR) is taken for Ctrl-C:
+/// console raises SIGINT, so a SIGTERM or SIGHUP ended sb by SIGINT. Here
+/// the question waits on its own thread, which blocks every signal but
+/// console's own SIGINT ([`only_consoles_signal`]), and the main thread,
+/// which the kernel offers a signal sent to sb first (see [`RawMode`]),
+/// waits on std's channel (`Receiver::recv_timeout`,
+/// <https://doc.rust-lang.org/std/sync/mpsc/struct.Receiver.html#method.recv_timeout>).
+/// Why not wake console's `poll`: only a signal directed at the thread
+/// can (nix's `pthread_kill`), and console takes the EINTR for Ctrl-C. Why not wait on the run's token (its
+/// `cancelled` future): a command's own request to end cancels it too,
+/// and that isn't a signal: the question waits on then, as before
+/// (`Shutdown` has no wait that only a signal ends).
+fn wait_for_answer(
+    answered: &mpsc::Receiver<std::io::Result<String>>,
+    shutdown: &Shutdown,
+    poll: Duration,
+) -> Waited {
+    loop {
+        match answered.recv_timeout(poll) {
+            Ok(answer) => return Waited::Answer(answer),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                if shutdown.interrupted() {
+                    return Waited::Signalled;
+                }
+            }
+            // The thread ended without an answer (a panic in dialoguer).
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return Waited::Answer(Err(std::io::Error::other(
+                    "the question ended without an answer",
+                )));
+            }
+        }
+    }
+}
+
+/// Whether a signal ends the run within `bound`, looked for every `poll`.
+fn signalled_within(shutdown: &Shutdown, bound: Duration, poll: Duration) -> bool {
+    let deadline = Instant::now() + bound;
+    while !shutdown.interrupted() {
+        let Some(left) = deadline.checked_duration_since(Instant::now()) else {
+            return false;
+        };
+        std::thread::sleep(left.min(poll));
+    }
+    true
+}
+
+/// Whether a read's `err` says the terminal is gone: once it hung up, a
+/// read ends (console: "Reached end of file") and a mode switch fails
+/// with EIO, which console's per-key switch meets first (UNVERIFIED as
+/// API, read in Linux 6.8's `drivers/tty/tty_io.c`, `hung_up_tty_read`
+/// and `hung_up_tty_ioctl`; seen as "Input/output error" in
+/// `a_hangup_at_the_question_ends_sb`).
+fn gone(err: &std::io::Error) -> bool {
+    err.kind() == std::io::ErrorKind::UnexpectedEof
+        || err.raw_os_error() == Some(rustix::io::Errno::IO.raw_os_error())
+}
+
+/// Block the signals on the calling thread (the question's) that a
+/// handler could take there: every one but SIGINT, which console raises
+/// at it for Ctrl-C. The kernel then never chooses this thread for a
+/// signal sent to sb, so console's `poll` is never interrupted by one (it
+/// would raise SIGINT for it, see [`wait_for_answer`]), and the signal goes
+/// to a thread that handles it as cli-core's handlers expect. The job
+/// control signals stay open too (SIGTSTP, SIGTTIN, SIGTTOU: sb handles
+/// none, so they can't interrupt the `poll`): a terminal treats a blocked
+/// SIGTTIN as ignored and fails a background read with EIO rather than
+/// stop sb (UNVERIFIED as API, read in Linux 6.8's
+/// `drivers/tty/tty_jobctrl.c`, `__tty_check_change`). nix's
+/// `SigSet::thread_block`, `pthread_sigmask(SIG_BLOCK)`
+/// (<https://docs.rs/nix/0.31.3/nix/sys/signal/struct.SigSet.html#method.thread_block>),
+/// the way signal-hook says its handlers combine with masks (0.4.5's
+/// crate docs, "Signal masks",
+/// <https://docs.rs/signal-hook/0.4.5/signal_hook/#signal-masks>); why
+/// not rustix's: its `sigprocmask` is `unsafe`. SIGKILL and SIGSTOP can't
+/// be blocked and stay as they are, and a fault signal is delivered
+/// whatever the mask (`pthread_sigmask(3)`).
+fn only_consoles_signal() {
+    use nix::sys::signal::{SigSet, Signal};
+    let mut blocked = SigSet::all();
+    for open in [
+        Signal::SIGINT,
+        Signal::SIGTSTP,
+        Signal::SIGTTIN,
+        Signal::SIGTTOU,
+    ] {
+        blocked.remove(open);
+    }
+    if let Err(err) = blocked.thread_block() {
+        tracing::warn!(error = %err, "the question's thread can't block signals");
+    }
+}
+
+/// The question's drawing, shut off once the confirm stops waiting for
+/// it: its writes then fail, so dialoguer, should a key wake it, ends
+/// instead of drawing over what sb writes next. The flag's lock is held
+/// for each write, so the confirm's own ending ([`abandon`]) comes after
+/// any write in progress. Why not console's `Term`: it has no way to stop
+/// a prompt drawing; dialoguer draws on the `Term` it is given
+/// (`read_write_pair`, a `Write` of ours).
+#[derive(Debug)]
+struct Gate {
+    tty: File,
+    open: Arc<Mutex<bool>>,
+}
+
+impl Gate {
+    fn new(tty: File) -> Self {
+        Self {
+            tty,
+            open: Arc::new(Mutex::new(true)),
+        }
+    }
+}
+
+impl std::io::Write for Gate {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let open = self.open.lock().unwrap_or_else(PoisonError::into_inner);
+        if !*open {
+            return Err(std::io::Error::other("the question was left"));
+        }
+        self.tty.write(buf)
+    }
+
+    /// As a write: dialoguer flushes after drawing too.
+    fn flush(&mut self) -> std::io::Result<()> {
+        let open = self.open.lock().unwrap_or_else(PoisonError::into_inner);
+        if !*open {
+            return Err(std::io::Error::other("the question was left"));
+        }
+        self.tty.flush()
+    }
+}
+
+/// console asks the writer's descriptor whether it is a terminal.
+impl AsRawFd for Gate {
+    fn as_raw_fd(&self) -> RawFd {
+        self.tty.as_raw_fd()
+    }
+}
+
+/// Shut the question's drawing off ([`Gate`]) and end its line on `tty`,
+/// the cursor shown, as the question's own ending after Ctrl-C does
+/// (crossterm's `Show`, written to the terminal); nothing better to do if
+/// the terminal fails.
+fn abandon(open: &Mutex<bool>, tty: &File) {
+    let mut open = open.lock().unwrap_or_else(PoisonError::into_inner);
+    *open = false;
+    let mut out = tty;
+    let _ = execute!(out, crossterm::cursor::Show);
+    let _ = out.write_all(b"\n");
 }
 
 /// The terminal held in raw mode for the whole question.
@@ -369,15 +635,15 @@ fn confirm_on(
 /// first, unless that thread blocks it or has another signal pending
 /// (UNVERIFIED as API: signal(7) says "an arbitrary thread"; checked in
 /// Linux 6.8's `kernel/signal.c`, `complete_signal` and `wants_signal`),
-/// the questions are asked on the main thread, and a handler runs before
-/// a system call returns to the thread's code. So the delivery flag is
-/// set by then, for [`Shutdown::interrupt_raised`]. One window is left
-/// (UNVERIFIED, read in Linux 6.8's `drivers/tty/n_tty.c`, `isig`): the
-/// line discipline decides on a Ctrl-C under the old modes, then lets go
-/// of the modes' lock before it sends the signal, so a switch taking the
-/// lock in those microseconds returns before the SIGINT exists. The
-/// question then waits as before this hold, and a second Ctrl-C (a key
-/// now, a second signal) ends sb by SIGINT.
+/// the hold is taken on the thread that asks (sb's main thread), and a
+/// handler runs before a system call returns to the thread's code. So the
+/// delivery flag is set by then, for [`Shutdown::interrupt_raised`]. One
+/// window is left (UNVERIFIED, read in Linux 6.8's
+/// `drivers/tty/n_tty.c`, `isig`): the line discipline decides on a
+/// Ctrl-C under the old modes, then lets go of the modes' lock before it
+/// sends the signal, so a switch taking the lock in those microseconds
+/// returns before the SIGINT exists. That SIGINT then ends the question
+/// while it waits, as any signal does ([`wait_for_answer`]).
 struct RawMode {
     tty: File,
     original: Termios,
@@ -660,6 +926,204 @@ mod tests {
                 unasked_if_interrupted(&signalled),
                 Err(PromptError::Interrupted)
             ));
+        }
+    }
+
+    /// The terminal's modes go back after the question only once the
+    /// confirm has left it.
+    #[test]
+    fn the_modes_go_back_only_after_leaving() {
+        let open = Mutex::new(true);
+        let mut put = 0;
+        if_left(&open, || put += 1);
+        assert_eq!(put, 0);
+        *open.lock().expect("lock") = false;
+        if_left(&open, || put += 1);
+        assert_eq!(put, 1);
+    }
+
+    /// The question's read decides the confirm's ending: the line's
+    /// answer; Ctrl-C (console's raise) interrupted at once; a gone
+    /// terminal interrupted when its hangup's signal comes, else failed;
+    /// any other failure failed at once.
+    #[test]
+    fn the_read_decides_the_ending() {
+        let question = "Do you want to update";
+        let none = Duration::ZERO;
+        let quiet = Shutdown::new();
+        assert!(answered_with(question, Ok("yes".to_owned()), &quiet, none).expect("yes"));
+        assert!(!answered_with(question, Ok("nay".to_owned()), &quiet, none).expect("no"));
+        let ctrl_c = std::io::Error::new(std::io::ErrorKind::Interrupted, "read interrupted");
+        assert!(matches!(
+            answered_with(question, Err(ctrl_c), &quiet, Duration::from_secs(10)),
+            Err(PromptError::Interrupted)
+        ));
+        let eio = || std::io::Error::from_raw_os_error(5);
+        let hung_up = Shutdown::new();
+        hung_up.signalled(rustix::process::Signal::HUP.as_raw());
+        assert!(matches!(
+            answered_with(question, Err(eio()), &hung_up, none),
+            Err(PromptError::Interrupted)
+        ));
+        let err = answered_with(question, Err(eio()), &quiet, Duration::from_millis(10))
+            .expect_err("failed");
+        assert!(matches!(err, PromptError::Failed { .. }), "{err}");
+        let err = answered_with(
+            question,
+            Err(std::io::Error::other("other")),
+            &hung_up,
+            Duration::from_secs(10),
+        )
+        .expect_err("failed");
+        assert_eq!(
+            err.to_string(),
+            "can't ask \"Do you want to update\": other"
+        );
+    }
+
+    /// The confirm waits for the question's answer, whatever comes first.
+    #[test]
+    fn the_answer_is_waited_for() {
+        let (answer, answered) = mpsc::channel();
+        let sent = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(30));
+            answer.send(Ok("yes".to_owned())).expect("send");
+        });
+        let waited = wait_for_answer(&answered, &Shutdown::new(), Duration::from_millis(5));
+        assert!(matches!(waited, Waited::Answer(Ok(ref line)) if line == "yes"));
+        sent.join().expect("sender");
+    }
+
+    /// A signal that ends the run while the question waits ends the wait
+    /// (the question is left on its thread), however late it comes.
+    #[test]
+    fn a_signal_ends_the_wait() {
+        let shutdown = Shutdown::new();
+        let (_answer, answered) = mpsc::channel::<std::io::Result<String>>();
+        let signalled = shutdown.clone();
+        let signal = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            signalled.signalled(rustix::process::Signal::TERM.as_raw());
+        });
+        let started = Instant::now();
+        let waited = wait_for_answer(&answered, &shutdown, Duration::from_millis(5));
+        assert!(matches!(waited, Waited::Signalled), "{waited:?}");
+        assert!(started.elapsed() >= Duration::from_millis(50));
+        signal.join().expect("signal");
+    }
+
+    /// A command's own request to end isn't a signal: the question is
+    /// still waited for (as [`unasked_if_interrupted`] still asks it).
+    #[test]
+    fn a_request_to_end_does_not_end_the_wait() {
+        let shutdown = Shutdown::new();
+        let _ = shutdown.request(3);
+        let (answer, answered) = mpsc::channel();
+        let sent = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(30));
+            answer.send(Ok(String::new())).expect("send");
+        });
+        let waited = wait_for_answer(&answered, &shutdown, Duration::from_millis(5));
+        assert!(matches!(waited, Waited::Answer(Ok(_))), "{waited:?}");
+        sent.join().expect("sender");
+    }
+
+    /// A question's thread that ends without an answer is a failure, not
+    /// a wait forever.
+    #[test]
+    fn a_question_that_ends_unanswered_fails() {
+        let (answer, answered) = mpsc::channel::<std::io::Result<String>>();
+        drop(answer);
+        let waited = wait_for_answer(&answered, &Shutdown::new(), Duration::from_millis(5));
+        assert!(matches!(waited, Waited::Answer(Err(_))), "{waited:?}");
+    }
+
+    /// A gone terminal's read waits for its hangup's signal, within the
+    /// bound; with no signal it gives up at the bound.
+    #[test]
+    fn a_hangup_is_waited_for_within_the_bound() {
+        let shutdown = Shutdown::new();
+        let started = Instant::now();
+        assert!(!signalled_within(
+            &shutdown,
+            Duration::from_millis(40),
+            Duration::from_millis(5)
+        ));
+        assert!(started.elapsed() >= Duration::from_millis(40));
+        let signalled = shutdown.clone();
+        let signal = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(20));
+            signalled.signalled(rustix::process::Signal::HUP.as_raw());
+        });
+        assert!(signalled_within(
+            &shutdown,
+            Duration::from_secs(10),
+            Duration::from_millis(5)
+        ));
+        signal.join().expect("signal");
+    }
+
+    /// The end of a read, and EIO, say the terminal is gone; other errors
+    /// don't.
+    #[test]
+    fn eof_and_eio_say_the_terminal_is_gone() {
+        assert!(gone(&std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "Reached end of file"
+        )));
+        assert!(gone(&std::io::Error::from_raw_os_error(5)));
+        assert!(!gone(&std::io::Error::from_raw_os_error(4)));
+        assert!(!gone(&std::io::Error::other("other")));
+    }
+
+    /// Once left, the question's writes fail and the confirm's own ending
+    /// is written: the drawing is shut off.
+    #[test]
+    fn a_left_question_draws_nothing_more() {
+        let file = tempfile::tempfile().expect("file");
+        let mut gate = Gate::new(file.try_clone().expect("clone"));
+        gate.write_all(b"? Do you want to update [y/N] ")
+            .expect("drawn while open");
+        gate.flush().expect("flushed while open");
+        abandon(&gate.open, &file);
+        assert!(gate.write_all(b"y").is_err());
+        assert!(gate.flush().is_err());
+        let mut text = String::new();
+        let mut read = file;
+        std::io::Seek::rewind(&mut read).expect("rewind");
+        std::io::Read::read_to_string(&mut read, &mut text).expect("read");
+        assert_eq!(text, "? Do you want to update [y/N] \u{1b}[?25h\n");
+    }
+
+    /// The question's thread blocks every signal but SIGINT (console's
+    /// raise for Ctrl-C) and the job control ones, read back from its
+    /// `SigBlk` line (`proc_pid_status(5)`: signal `n` is bit `n - 1`).
+    #[test]
+    fn the_questions_thread_takes_only_sigint() {
+        use rustix::process::Signal;
+        let mask = std::thread::spawn(|| {
+            only_consoles_signal();
+            let status = std::fs::read_to_string("/proc/thread-self/status").expect("status");
+            let mask = status
+                .lines()
+                .find_map(|line| line.strip_prefix("SigBlk:"))
+                .expect("SigBlk");
+            u64::from_str_radix(mask.trim(), 16).expect("hex")
+        })
+        .join()
+        .expect("thread");
+        let bit = |signal: Signal| 1u64 << (signal.as_raw() - 1);
+        for signal in [Signal::INT, Signal::TSTP, Signal::TTIN, Signal::TTOU] {
+            assert_eq!(mask & bit(signal), 0, "{signal:?} {mask:x}");
+        }
+        for signal in [
+            Signal::TERM,
+            Signal::HUP,
+            Signal::QUIT,
+            Signal::CHILD,
+            Signal::WINCH,
+        ] {
+            assert_ne!(mask & bit(signal), 0, "{signal:?} {mask:x}");
         }
     }
 

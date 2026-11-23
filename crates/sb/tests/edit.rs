@@ -1036,6 +1036,182 @@ fn ctrl_c_at_the_question_interrupts() {
     pty.assert_restored();
 }
 
+/// `signal` sent to sb from outside while it waits at the question: sb
+/// ends by that signal (cli-core spec, "Cancellation"), within 2 s, with
+/// "interrupted" on the screen, the run log's ending written, the
+/// terminal restored and the editor not run again.
+fn a_signal_at_the_question_ends_sb(signal: Signal, name: &str) {
+    let world = World::new();
+    let broken = format!("{}{UNKNOWN}", world.text("settings.yml"));
+    let mut pty = asked(&world, &[&broken]);
+    let sb = pty.child.process_id().expect("sb's pid");
+    let pid = Pid::from_raw(i32::try_from(sb).expect("pid")).expect("pid");
+    kill_process(pid, signal).expect("kill");
+    let sent = Instant::now();
+    let status = pty.exit();
+    // Promptly: the question looks for a signal every 100 ms; the bound
+    // leaves room for a loaded host.
+    assert!(
+        sent.elapsed() < Duration::from_secs(2),
+        "{:?}",
+        sent.elapsed()
+    );
+    assert_eq!(
+        status.signal(),
+        Some(name),
+        "{status:?}\n{}",
+        pty.contents()
+    );
+    assert!(pty.contents().contains("interrupted"), "{}", pty.contents());
+    let code = 128 + signal.as_raw();
+    let log = world.log();
+    assert!(
+        log.contains(&format!("outcome=\"interrupted (exit {code})\"")),
+        "{log}"
+    );
+    assert_eq!(world.runs(), 1);
+    pty.assert_restored();
+}
+
+/// `kill -TERM` at the question ends sb by SIGTERM (143 to a shell).
+#[test]
+fn a_sigterm_at_the_question_ends_sb() {
+    if !root_gate::requested() {
+        return;
+    }
+    a_signal_at_the_question_ends_sb(Signal::TERM, "Terminated");
+}
+
+/// `kill -INT` at the question ends sb by SIGINT, as a Ctrl+C there does.
+#[test]
+fn a_sigint_from_outside_at_the_question_ends_sb() {
+    if !root_gate::requested() {
+        return;
+    }
+    a_signal_at_the_question_ends_sb(Signal::INT, "Interrupt");
+}
+
+/// `kill -HUP` at the question ends sb by SIGHUP, as SIGTERM does.
+#[test]
+fn a_sighup_at_the_question_ends_sb() {
+    if !root_gate::requested() {
+        return;
+    }
+    a_signal_at_the_question_ends_sb(Signal::HUP, "Hangup");
+}
+
+/// `script` and, once its pid is known, sb, killed (SIGKILL) if the test
+/// fails before they end: SIGKILL to `script` doesn't reach sb. The
+/// signal tests' `processes::KillOnDrop`, not included here: that module's
+/// other helpers would go unused in this binary.
+struct Session(std::process::Child, Option<i32>);
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        if let Some(pid) = self.1.and_then(Pid::from_raw) {
+            let _ = kill_process(pid, Signal::KILL);
+        }
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// A real hangup at the question (the SSH session dropped): the terminal
+/// is gone, sb ends by SIGHUP with the run log's ending written. The
+/// terminal is util-linux's `script`'s; killing `script` closes its
+/// master, and the kernel hangs up the session (sb is its foreground
+/// process, under a non-interactive `sh` that leaves the hangup to it).
+#[test]
+fn a_hangup_at_the_question_ends_sb() {
+    if !root_gate::requested() {
+        return;
+    }
+    let world = World::new();
+    let broken = format!("{}{UNKNOWN}", world.text("settings.yml"));
+    let saves = world.saves(&[&broken]);
+    let base = world.sb("settings");
+    let pid_file = world.dir.path().join("sb.pid");
+    let exit_file = world.dir.path().join("exit");
+    // By its path: `PATH` is the world's `bin` alone.
+    let mut cmd = Command::new("/usr/bin/script");
+    for (key, value) in base.get_envs() {
+        match value {
+            Some(value) => cmd.env(key, value),
+            None => cmd.env_remove(key),
+        };
+    }
+    // `; :` keeps the shell from exec'ing the wrapper (as hangup.rs's
+    // test); the wrapper records sb's exit status as a shell sees it.
+    let wrapper = world.dir.path().join("run.sh");
+    sb_cli_core::testing::write_program(
+        &wrapper,
+        "#!/bin/sh\ntrap : HUP\n\
+         /bin/sh -c 'echo $$ > \"$1\"; exec \"$0\" edit settings' \"$SB\" \"$PID_FILE\"\n\
+         echo \"EXIT=$?\" > \"$EXIT_FILE\"\n",
+    );
+    cmd.args(["-qec", &format!("{}; :", wrapper.display()), "/dev/null"])
+        .env("SHELL", "/bin/sh")
+        .env("TERM", "xterm-256color")
+        .env("NO_COLOR", "1")
+        .env("VISUAL", world.fake())
+        .env("FAKE_SAVES", &saves)
+        .env("SB", base.get_program())
+        .env("PID_FILE", &pid_file)
+        .env("EXIT_FILE", &exit_file)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null());
+    // Under `nohup` sb would leave SIGHUP ignored (cli-core decision 8),
+    // and this would wait out its bound: say so instead. `SigIgn` in
+    // `/proc/self/status` (`proc_pid_status(5)`): SIGHUP is bit 0.
+    let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+    assert!(
+        status
+            .lines()
+            .find_map(|line| line.strip_prefix("SigIgn:"))
+            .and_then(|mask| u64::from_str_radix(mask.trim(), 16).ok())
+            .is_none_or(|mask| mask & 1 == 0),
+        "the tests run with SIGHUP ignored (under nohup?): sb leaves it ignored"
+    );
+    let mut session = Session(cmd.spawn().expect("run script"), None);
+    let mut out = session.0.stdout.take().expect("script's output");
+    let (tx, shown) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut seen = Vec::new();
+        let mut buf = [0; 4096];
+        while let Ok(n @ 1..) = out.read(&mut buf) {
+            seen.extend_from_slice(&buf[..n]);
+            if String::from_utf8_lossy(&seen).contains("Edit settings.yml again? [y/N]") {
+                let _ = tx.send(());
+            }
+        }
+    });
+    assert!(shown.recv_timeout(WAIT).is_ok(), "sb didn't ask");
+    session.1 = std::fs::read_to_string(&pid_file)
+        .ok()
+        .and_then(|text| text.trim().parse().ok());
+    assert!(session.1.is_some(), "sb's pid");
+    // The master closes with `script`.
+    session.0.kill().expect("kill script");
+    let _ = session.0.wait();
+    let deadline = Instant::now() + WAIT;
+    while !exit_file.exists() {
+        assert!(
+            Instant::now() < deadline,
+            "sb didn't end at the hangup:\n{}",
+            world.log()
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    // sb has ended and been reaped: its pid may be another's now.
+    session.1 = None;
+    let exit = std::fs::read_to_string(&exit_file).expect("exit");
+    assert_eq!(exit.trim(), "EXIT=129", "{}", world.log());
+    let log = world.log();
+    assert!(log.contains("outcome=\"interrupted (exit 129)\""), "{log}");
+    assert_eq!(world.runs(), 1);
+}
+
 /// Ctrl+C while the question is being put up, before a key is read: sb
 /// still ends by SIGINT. The terminal's output is stopped first (XOFF,
 /// Ctrl+S, which the terminal's `IXON` acts on); the Ctrl+C is sent once

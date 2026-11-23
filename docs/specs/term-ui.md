@@ -509,6 +509,26 @@ sequence.
   the run is interrupted before the confirm returns, without a wait.
   M50's bounded wait in `sb edit` is gone; self-update's confirm gets
   the same. *Amended 2026-11-15 (maintainer).*
+- A signal from outside while the confirm waits (`kill -TERM`, `kill
+  -INT`, a SIGHUP, the terminal hung up) ends the question within a
+  tenth of a second, and sb ends as cli-core's "Cancellation" says for
+  that signal: by it, the run log's ending written, the terminal's modes
+  and screen put back. console waits for each key in a `poll` nothing
+  else can wake, and takes a signal that interrupts it for Ctrl-C (it
+  raises SIGINT), so a SIGTERM or SIGHUP there ended sb by SIGINT, and
+  one that came between two of its reads left the question waiting.
+  The question is asked on a thread of its own, which blocks every
+  signal but SIGINT (console's raise for Ctrl-C; nix's
+  `SigSet::thread_block`), while the main thread, which the kernel
+  offers sb's signals first, waits for its answer or for a signal to
+  end the run (looked for every 100 ms); a question left so stops
+  drawing. A read that finds the terminal gone (a hangup) waits up to a
+  second for the hangup's SIGHUP, which nothing orders before it.
+  Accepted limit: a key dialoguer draws nothing for (an arrow, Esc)
+  typed between the question being left and sb's exit has console put
+  its raw mode back, which the left question can't undo; an interactive
+  shell puts its modes back after a job a signal ended.
+  *Amended 2026-11-23 (maintainer's follow-up to the Ctrl-C fix).*
 - **A question during a run opens on the alternate screen**
   (`confirm_over(question, context, answer, flag, shutdown)`; the
   maintainer, 2026-11-18, decision 14): the command pauses its runner

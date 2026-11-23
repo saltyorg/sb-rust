@@ -30,6 +30,10 @@ dialoguer.workspace = true
 # `LeaveAlternateScreen`; dialoguer and console have none. Already in sb
 # through ratatui (sb-tui).
 crossterm.workspace = true
+# The question's thread blocks every signal but SIGINT and job control, so
+# console's key read is never interrupted by a signal sb handles (prompt.rs,
+# `only_consoles_signal`); already in sb through sb-host.
+nix.workspace = true
 tabled.workspace = true
 termtree.workspace = true
 # The live block's in-place redraw (term-ui decision 15).

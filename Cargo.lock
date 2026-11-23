@@ -3878,6 +3878,7 @@ dependencies = [
  "fastrand",
  "indicatif",
  "insta",
+ "nix 0.31.3",
  "rustix",
  "sb-cli-core",
  "tabled",
