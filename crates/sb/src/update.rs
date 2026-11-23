@@ -1,5 +1,5 @@
 //! `sb update`: sb-ops' update (ops spec, "`sb update`") on the host's
-//! apt and disks, the Saltbox checkout at the Saltbox root
+//! disks, the Saltbox checkout at the Saltbox root
 //! (`SB_SALTBOX_DIR`, else `/srv/git/saltbox`), the Sandbox checkout under
 //! the inventory's appdata path, python-env's layout for Saltbox's
 //! runtime, `ansible-playbook` for the tags, validate-config's settings,
@@ -13,7 +13,6 @@ use sb_cli_core::cancel::Shutdown;
 use sb_cli_core::config;
 use sb_cli_core::exit;
 use sb_cli_core::log::RunLog;
-use sb_host::apt::Apt;
 use sb_host::disk::Disk;
 use sb_ops::completions::Refresh;
 use sb_ops::update::{RERUN, Update, UpdateArgs};
@@ -57,7 +56,6 @@ pub fn update(args: &UpdateArgs, shutdown: &Shutdown, log: Option<&RunLog>) -> a
     // playbook, apt, git), as `sb install` registers it (exec decision 12).
     let _children = sb_exec::on_forced_exit(shutdown);
     super::python_env::with_env(log, args.verify_venv, |python, releases| {
-        let apt = Apt::new();
         let self_update = target.as_deref().map(|target| SelfUpdate {
             repo: SB_REPO,
             build: &build,
@@ -73,7 +71,6 @@ pub fn update(args: &UpdateArgs, shutdown: &Shutdown, log: Option<&RunLog>) -> a
             root: &root,
             disk: &disk,
             disk_paths: &disk_paths,
-            apt: &apt,
             releases,
             self_update,
             args,

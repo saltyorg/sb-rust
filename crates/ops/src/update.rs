@@ -1,7 +1,7 @@
 //! `sb update` (ops spec, "`sb update`"; sb-go's cmd/update.go; module
 //! build M84 and M85): before anything changes, the checkouts' branches
 //! read, the up-front flag check and the disk space; then self-update,
-//! the branch questions, apt, Saltbox (its runtime and tags), the config
+//! the branch questions, Saltbox (its runtime and tags), the config
 //! permissions, Sandbox (its tags), the new announcements (tui's viewer
 //! on a terminal, inline piped; M87), their migrations (M86), and
 //! validation, then completion's refresh (M87).
@@ -17,7 +17,6 @@ use sb_cli_core::exit::{self, Exit};
 use sb_cli_core::theme;
 use sb_config::run::Settings;
 use sb_exec::Ending;
-use sb_host::apt::Apt;
 use sb_host::disk::Disk;
 use sb_python_env::{Env, reconcile_runtime};
 use sb_release::{Outcome, Releases, SelfUpdate};
@@ -172,8 +171,6 @@ pub struct Update<'a> {
     /// path, `/srv`).
     pub disk: &'a Disk,
     pub disk_paths: &'a [PathBuf],
-    /// host's apt.
-    pub apt: &'a Apt,
     /// The release client for self-update.
     pub releases: &'a Releases,
     /// Self-update with its answer given; `None` for `--skip-self-update`.
@@ -219,10 +216,10 @@ struct Opened {
 ///    each answer a notice under its checkout's step, each followed by
 ///    its local changes question ([`discard::decide`], decision 40);
 ///    under `--skip-git` none, both checkouts left as they are;
-/// 5. "Updating apt package cache"; each checkout's announcements read;
-///    "Updating Saltbox and Sandbox" (both fetches and resets, at once
-///    where the host has the cores, then Saltbox's runtime: decision
-///    46); "Securing Saltbox configuration permissions"; the tags caches
+/// 5. each checkout's announcements read (no apt refresh of its own:
+///    ops decision 49); "Updating Saltbox and Sandbox" (both fetches and
+///    resets, at once where the host has the cores, then Saltbox's
+///    runtime: decision 46); "Securing Saltbox configuration permissions"; the tags caches
 ///    when a commit moved or none are cached; "Checking for new
 ///    announcements". A checkout that couldn't be opened or read fails
 ///    the checkouts' step (`error updating <Repo>: ...`), Sandbox's after
@@ -271,8 +268,8 @@ pub async fn run(
     };
     update.disk.check_disk_space(update.disk_paths)?;
     // One tree for the run (decision 39), started by its first step:
-    // self-update's, or apt's, so a run refused at a branch question with
-    // no self-update draws no title. std's `LazyCell`
+    // self-update's, or the checkouts', so a run refused at a branch
+    // question with no self-update draws no title. std's `LazyCell`
     // (<https://doc.rust-lang.org/std/cell/struct.LazyCell.html#method.force_mut>),
     // as ansible's `LazyRunner`.
     let mut tree = LazyCell::new(runner);
@@ -431,9 +428,11 @@ async fn checkouts_onward(
 ) -> anyhow::Result<()> {
     let skip_git = update.args.skip_git;
     let found = async {
-        apt_cache(steps, update.apt).await?;
+        // No `apt-get update` here (ops decision 49): nothing in update
+        // installs with apt; the deadsnakes cleanup refreshes for itself.
         // Each checkout's announcements before its pull (sb-go reads both
-        // here, after apt); none under `--skip-git`, which compares none.
+        // here, after its apt refresh); none under `--skip-git`, which
+        // compares none.
         let before: Vec<_> = if skip_git {
             Vec::new()
         } else {
@@ -890,24 +889,6 @@ async fn plan(
         }
     };
     Ok(Ok((opened.repo, planned)))
-}
-
-/// "Updating apt package cache", its sub-step "Refreshing apt package
-/// lists": host's `update_lists` (sb-go's `UpdatePackageLists`).
-async fn apt_cache(runner: &mut Runner, apt: &Apt) -> Result<(), Exit> {
-    let updating = "Updating apt package cache";
-    runner
-        .step(Labels::new(updating, updating), async |step| {
-            let refreshing = "Refreshing apt package lists";
-            step.step(Labels::new(refreshing, refreshing), async |step| {
-                apt.update_lists(step)
-                    .await
-                    .context("error updating apt cache")
-            })
-            .await?;
-            Ok(())
-        })
-        .await
 }
 
 /// The tags cache the tag steps rebuild, and what the checkouts' pulls

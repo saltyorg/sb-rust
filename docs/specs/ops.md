@@ -738,6 +738,10 @@ migrations question) and below for the migrations' playbooks.
    `--discard-local` nor `--skip-git` is given ("Local changes", below).
 5. **"Updating apt package cache"** with the sub-step "Refreshing apt
    package lists": host's `update_lists`.
+   *Removed 2026-11-23 (decision 49, difference 75):* `update` refreshes
+   no apt lists of its own. The deadsnakes cleanup in step 7's runtime
+   still refreshes them after it moves a source aside (python-env,
+   "Deadsnakes cleanup"), the only apt refresh an update can run.
 6. **Announcements before:** both files read (below).
 7. **"Updating Saltbox"**, sub-steps as sb-go (cmd/update.go:173-312):
    the Saltbox user (config's `saltbox_user()`), `head()` before,
@@ -877,7 +881,7 @@ The maintainer's decisions of 2026-11-19 (decisions 40 and 41).
   left exactly as they are: no refspec write, fetch, clean, reset,
   checkout, submodule update or branch question, and no up-front branch
   flag or `--migrations` without a terminal. Everything else runs as
-  before: the run lock, self-update, the disk check, apt, the runtime
+  before: the run lock, self-update, the disk check, the runtime
   (venv, fact, deadsnakes; the venv step's recursive chown of the
   checkout included), the config permissions, validation and
   completions. Besides:
@@ -1063,7 +1067,7 @@ the mock-ups; decisions 36 to 38). sb-go printed none of this.
   error as before. No hint: it is the next step after a finished
   update, and after a failure the next step is the error's. Nothing is
   printed when no pull finished (a refusal before any step, a failed
-  self-update or apt step, a replaced sb).
+  self-update, a replaced sb).
 
 ### `sb branch <name>` and `sb branch-sandbox <name>`
 
@@ -1575,6 +1579,14 @@ bench's retired Speedtest nodes (the maintainer, 2026-11-23; decision
     report; bench.sh's `Test failed`, in Problem, stays for a test
     that ran and failed (the network, the server's own error).
 
+No apt refresh in `update` (the maintainer, 2026-11-23; decision 49):
+75. `update` runs no `apt-get update` of its own and has no "Updating
+    apt package cache" step; an apt source that fails no longer fails
+    the update. sb-go refreshes the lists on every update, before the
+    checkouts (`cmd/update.go:90-97`). sb refreshes them only before an
+    apt install or after moving a source aside: `setup` and `gha`
+    (twice, as sb-go), and the deadsnakes cleanup on 22.04.
+
 ## Scope
 
 **In:**
@@ -1895,7 +1907,10 @@ the real services.
       working directory), skipped with `skip` (the warning);
     - an invalid `announcements.yml` before and after: the warnings, the
       update completes;
-    - self-update replaced: the warning and exit 0, no apt step started;
+    - self-update replaced: the warning and exit 0, no later step
+      started;
+    - no `apt-get update` (decision 49): the stand-in apt-get records
+      no call, and the tree has no "Updating apt package cache" step;
     - SIGINT during the Saltbox fetch: "interrupted", death by the signal;
     - a failed migration (and Ansible's own Ctrl-C exit 99): the error
       naming it and those after it as `sb install` lines, exit 1; sb
@@ -2039,7 +2054,8 @@ the real services.
 19. `sb branch <name>` ends on `<name>` with no prompt; an invalid name
    changes nothing.
 20. A successful self-update ends `update` with exit 0 and the "Re-run"
-   warning, before apt.
+   warning, before either checkout (before apt until 2026-11-23,
+   decision 49).
 21. Inline announcements go to stdout, sanitized, when stdout isn't a
    terminal.
 22. `update` ends with the block and the hint of "What moved, and the
@@ -2458,6 +2474,40 @@ the real services.
     was found at all, which stays `Test failed` (the code review's
     finding). An id that never existed gives the same line, so a
     mistyped id would show `Server gone` too.
+49. **`update` runs no `apt-get update` of its own** (the maintainer,
+    2026-11-23, from the apt research of round 5). It supersedes the
+    maintainer's choice of 2026-11-22 to keep the refresh on every run,
+    which no decision recorded: the commit that dropped libpq-dev
+    (decision 45) said only that the step "still runs every time".
+    Step 5 is removed, difference 75.
+    - **Why it was there:** sb-go added it (be83099, 2026-01-18) when
+      every update ran `apt-get install libpq-dev` unconditionally, and
+      an install from stale lists can fail. With libpq-dev gone
+      (decision 45, python-env decision 26), nothing sb itself runs in
+      `update` installs with apt: the deadsnakes cleanup refreshes for itself
+      after moving a source aside and only removes packages, and a
+      plain update runs Ansible only for `--list-tags` (and the
+      migrations an announcement names).
+    - **What it cost:** 1.6 to 1.8 s and about two thirds of a warm
+      update's CPU on every run, 14 to 18 s on a slow mirror, and any
+      configured source's error, even an unrelated third-party one,
+      failed the whole update (`error updating apt cache`).
+    - **Accepted:** the lists are no longer left fresh for whatever
+      runs next. Saltbox roles that install from Ubuntu's archive
+      without a refresh of their own (`sb install` of those tags, the
+      start of a `core` run, and the migrations an update runs when an
+      announcement names one) rely on the apt daily timer, which stock
+      Ubuntu enables (`apt-daily.timer`, `APT::Periodic::Update-Package-Lists
+      "1"`); before, they relied on the timer or on a recent update,
+      and an update's migrations on its own refresh.
+      Option C of the research, a refresh when the lists are older
+      than a day, was not chosen.
+    - **Kept:** every refresh that comes before an install or follows a
+      source change in the same command: `setup`'s and `gha`'s two
+      (`prereq`), and the deadsnakes cleanup's (python-env). python-env
+      installs nothing with apt, so `reinstall-python` has none (sb-go's
+      58e7cf3 gave it one, which sb-go dropped in 1651dba). Host's
+      refreshed-lists record went with libpq-dev on 2026-11-21.
 
 ## Known limits
 
@@ -2682,8 +2732,9 @@ in the tui spec's Scope (this spec's decision 26).
    with `sb announcements` printing inline (the viewer on a terminal
    follows with tui's viewer).
 11. **`update` skeleton (M):** the up-front flag check, disk space,
-   self-update, branch questions, apt, both repositories, secure files,
-   validation; announcements inline.
+   self-update, branch questions, apt (removed 2026-11-23, decision
+   49), both repositories, secure files, validation; announcements
+   inline.
 12. **Migrations (S):** the table, the confirm, ansible's `run`.
 13. **Viewer and completion (S):** tui's viewer on a terminal and the
    completion refresh, when those modules exist.

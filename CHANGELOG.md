@@ -199,6 +199,12 @@ you could trip over.
 - **libpq-dev isn't installed any more,** by `sb setup`, `sb gha` or
   the Ansible virtual environment's update: Saltbox's `psycopg[binary]`
   brings its own libpq. A host that has it keeps it.
+- **`sb update` doesn't run `apt-get update` any more** (sb-go's
+  "Updating apt package cache" step): nothing sb itself runs in it
+  installs with apt. A warm update takes about 1.8 s less and half the
+  CPU, and a broken apt source no longer fails it. `sb setup`, `sb gha`
+  and the deadsnakes cleanup still refresh the lists before they need
+  them.
 
 [Unreleased]: https://github.com/saltyorg/sb-rust/compare/1.0.0...HEAD
 [1.0.0]: https://github.com/saltyorg/sb-rust/releases/tag/1.0.0

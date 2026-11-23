@@ -1,7 +1,7 @@
 //! `sb update` in process (ops spec, "`sb update`"; module build M84 and
 //! M85): sb-ops' `update::run` on the harness's Saltbox host (stand-in
-//! apt and `ansible-playbook`, python-env's stand-in tree, Saltbox and
-//! Sandbox checkouts of stand-in remotes with real git, `file://` only,
+//! apt, which update never runs, and `ansible-playbook`, python-env's
+//! stand-in tree, Saltbox and Sandbox checkouts of stand-in remotes with real git, `file://` only,
 //! sb-config's fixtures and its fake for the credential checks), release's
 //! fake GitHub for self-update, and runners drawing to memory, as any user
 //! (the fixtures' Saltbox user is one no host has, so ownership is
@@ -199,7 +199,6 @@ impl World {
         let root = self.saltbox();
         let paths = [self.sb.tree.root.path().to_path_buf()];
         let python = self.sb.tree.env();
-        let apt = self.host.apt();
         let ansible = self.ansible();
         let settings = self.settings();
         let completion_paths = Paths::under(self.completion.path());
@@ -208,7 +207,6 @@ impl World {
             root: &root,
             disk,
             disk_paths: &paths,
-            apt: &apt,
             releases: &self.releases,
             self_update,
             args,
@@ -461,11 +459,12 @@ const PIPED: [&str; 4] = [
     "--skip-self-update",
 ];
 
-/// Without a terminal and with every flag, sb-go's order but the tags:
-/// apt; Saltbox reset to master and its runtime (deadsnakes, venv,
-/// fact); the config permissions; Sandbox reset; then both tags caches
-/// rebuilt, top-level steps after Sandbox's (decision 46); the
-/// announcements; validate-config's checks, each file validated.
+/// Without a terminal and with every flag, sb-go's order but the tags
+/// and apt (no refresh of its own, decision 49): Saltbox reset to
+/// master and its runtime (deadsnakes, venv, fact); the config
+/// permissions; Sandbox reset; then both tags caches rebuilt, top-level
+/// steps after Sandbox's (decision 46); the announcements;
+/// validate-config's checks, each file validated.
 #[tokio::test]
 async fn piped_with_every_flag_every_step_runs_in_order() {
     let _spawns = SPAWNS.lock().await;
@@ -483,8 +482,6 @@ async fn piped_with_every_flag_every_step_runs_in_order() {
     in_order(
         &ran.screen,
         &[
-            "Updating apt package cache",
-            "Refreshing apt package lists",
             "├── ✓ Saltbox and Sandbox updated",
             "Saltbox: Currently on branch 'develop'",
             "Sandbox: Currently on branch 'develop'",
@@ -521,7 +518,7 @@ async fn piped_with_every_flag_every_step_runs_in_order() {
     );
     assert_eq!(
         world.programs(),
-        ["apt-get", "ansible-playbook", "ansible-playbook"],
+        ["ansible-playbook", "ansible-playbook"],
         "{:?}",
         world.host.calls()
     );
@@ -546,10 +543,12 @@ async fn piped_with_every_flag_every_step_runs_in_order() {
     assert_eq!(mode & 0o777, 0o600);
 }
 
-/// A run refreshes the apt lists in its own step only: the runtime
-/// installs nothing with apt (libpq-dev dropped, 2026-11-21).
+/// A run refreshes no apt lists (ops decision 49, the maintainer
+/// 2026-11-23): no "Updating apt package cache" step, and neither the
+/// host's apt-get nor the runtime's runs; the runtime installs nothing
+/// with apt (libpq-dev dropped, 2026-11-21).
 #[tokio::test]
-async fn a_run_refreshes_the_apt_lists_once() {
+async fn a_run_refreshes_no_apt_lists() {
     let _spawns = SPAWNS.lock().await;
     let world = World::new("master", "master");
     let ran = world
@@ -562,19 +561,20 @@ async fn a_run_refreshes_the_apt_lists_once() {
         )
         .await;
     assert_eq!(ran.error, None, "{}", ran.screen);
-    assert!(
-        !ran.screen.contains("native Python build prerequisites"),
-        "{}",
-        ran.screen
-    );
-    assert_eq!(ran.screen.matches("Updating apt package cache").count(), 1);
-    let updates = |calls: Vec<String>| {
-        calls
-            .iter()
-            .filter(|call| call.starts_with("apt-get") && call.ends_with(" update"))
-            .count()
-    };
-    assert_eq!(updates(world.host.calls()), 1, "{:?}", world.host.calls());
+    for absent in [
+        "native Python build prerequisites",
+        "Updating apt package cache",
+        "Refreshing apt package lists",
+    ] {
+        assert!(!ran.screen.contains(absent), "{absent}:\n{}", ran.screen);
+    }
+    let host_apt: Vec<String> = world
+        .host
+        .calls()
+        .into_iter()
+        .filter(|call| call.starts_with("apt-get"))
+        .collect();
+    assert_eq!(host_apt, Vec::<String>::new());
     let tree_apt: Vec<String> = world
         .sb
         .tree
@@ -583,6 +583,56 @@ async fn a_run_refreshes_the_apt_lists_once() {
         .filter(|call| call.contains("apt-get"))
         .collect();
     assert_eq!(tree_apt, Vec::<String>::new());
+}
+
+/// On 22.04 with a deadsnakes source, the runtime's cleanup still moves
+/// it aside and refreshes the lists, the one `apt-get update` an update
+/// runs (ops decision 49; python-env, "Deadsnakes cleanup").
+#[tokio::test]
+async fn the_deadsnakes_cleanup_still_refreshes_the_lists() {
+    let _spawns = SPAWNS.lock().await;
+    let world = World::new("master", "master");
+    world.sb.tree.release("22.04");
+    let ppa = "deb https://ppa.launchpadcontent.net/deadsnakes/ppa/ubuntu jammy main\n";
+    std::fs::write(world.sb.tree.sources_d().join("ppa.list"), ppa).expect("write");
+    let ran = world
+        .run(
+            &args(&PIPED),
+            Err("no terminal".to_owned()),
+            &[],
+            None,
+            &roomy(),
+        )
+        .await;
+    assert_eq!(ran.error, None, "{}", ran.screen);
+    assert!(
+        ran.screen
+            .contains("Moved 1 deadsnakes repository files to "),
+        "{}",
+        ran.screen
+    );
+    assert!(
+        !ran.screen.contains("Updating apt package cache"),
+        "{}",
+        ran.screen
+    );
+    let updates: Vec<String> = world
+        .sb
+        .tree
+        .calls_made()
+        .into_iter()
+        .filter(|call| call.contains("/stand-ins/apt-get ") && call.ends_with(" update"))
+        .collect();
+    assert_eq!(updates.len(), 1, "{updates:?}");
+    assert!(
+        !world
+            .host
+            .calls()
+            .iter()
+            .any(|call| call.starts_with("apt-get")),
+        "{:?}",
+        world.host.calls()
+    );
 }
 
 /// Nothing moved and both caches hold tags: no listing runs (sb-go's
@@ -892,8 +942,8 @@ async fn refusals_come_before_any_step() {
     assert!(world.host.calls().is_empty(), "{:?}", world.host.calls());
 }
 
-/// A checkout that isn't there fails its own step, after apt and the
-/// other checkout, as sb-go's `requireDirectory` does; it isn't asked
+/// A checkout that isn't there fails its own step, after the other
+/// checkout, as sb-go's `requireDirectory` does; it isn't asked
 /// about up front.
 #[tokio::test]
 async fn a_missing_checkout_fails_its_own_step() {
@@ -911,7 +961,6 @@ async fn a_missing_checkout_fails_its_own_step() {
     in_order(
         &ran.screen,
         &[
-            "Updating apt package cache",
             "✗ Saltbox and Sandbox update",
             "error updating Sandbox",
             "inspect required directory",
@@ -975,12 +1024,15 @@ async fn both_questions_are_asked_in_order_before_any_step() {
     assert!(!ran.screen.contains("Updating"), "{}", ran.screen);
 }
 
-/// A failing apt ends the run with its words, before either checkout.
+/// A failing `apt-get update` no longer fails the update (ops decision
+/// 48): neither update nor its runtime runs one where no deadsnakes
+/// source is left, so a broken apt source stops nothing. The binary's
+/// run with every apt-get on `PATH` failing is crates/sb/tests/update.rs.
 #[tokio::test]
-async fn a_failing_apt_stops_before_the_checkouts() {
+async fn a_failing_apt_get_does_not_stop_the_update() {
     let _spawns = SPAWNS.lock().await;
     let world = World::new("develop", "develop");
-    world.host.fail("apt-get");
+    world.sb.tree.fail("apt-get-update");
     let flags = args(&[
         "--reset-branch",
         "--migrations",
@@ -988,25 +1040,25 @@ async fn a_failing_apt_stops_before_the_checkouts() {
         "--skip-self-update",
     ]);
     let ran = world.run(&flags, Ok(()), &[], None, &roomy()).await;
-    assert!(ran.error.is_some());
+    assert_eq!(ran.error, None, "{}", ran.screen);
     assert!(
-        ran.screen.contains("error updating apt cache"),
+        !ran.screen.contains("error updating apt cache"),
         "{}",
         ran.screen
     );
     assert!(
-        !ran.screen.contains("Saltbox and Sandbox"),
+        ran.screen.contains("Saltbox and Sandbox updated"),
         "{}",
         ran.screen
     );
     assert_eq!(
         World::branch(&world.saltbox()),
-        ("develop".into(), "develop".into())
+        ("master".into(), "master".into())
     );
 }
 
 /// Self-update inside update: a replaced sb ends the run with exit 0 (a
-/// requested 0) and release's "Re-run" warning, before apt or either
+/// requested 0) and release's "Re-run" warning, before either
 /// checkout; a build with self-update off warns and goes on.
 #[tokio::test]
 async fn self_update_replaced_ends_the_run_with_exit_0() {
@@ -2000,7 +2052,6 @@ async fn skip_git_leaves_both_checkouts_as_they_are() {
     in_order(
         &ran.screen,
         &[
-            "Updating apt package cache",
             "Saltbox and Sandbox updated",
             "Ansible virtual environment ready",
             "Saltbox configuration permissions secured",
@@ -2021,7 +2072,7 @@ async fn skip_git_leaves_both_checkouts_as_they_are() {
     }
     assert_eq!(
         world.programs(),
-        ["apt-get", "ansible-playbook", "ansible-playbook"],
+        ["ansible-playbook", "ansible-playbook"],
         "{:?}",
         world.host.calls()
     );

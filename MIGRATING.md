@@ -64,6 +64,12 @@ completion files call a command sb doesn't have.
   to `psycopg[binary]`, whose wheels bundle libpq. A host that has it
   keeps it; sb just stops installing it. Install it yourself if your
   own `custom_pip` packages build against PostgreSQL.
+- **`sb update` doesn't refresh apt's package lists** (`apt-get
+  update`), so they aren't fresh for whatever you run next. Ubuntu's
+  `apt-daily.timer`, on by default, refreshes them about twice a day.
+  If you turned it off, run `sudo apt-get update` before `sb install`
+  or an update that runs migrations.
+  An apt source that fails no longer fails `sb update`.
 
 ### Stricter checks
 

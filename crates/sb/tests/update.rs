@@ -178,10 +178,11 @@ fn update_is_shown_with_sb_gos_flags_and_migrations() {
         .success();
 }
 
-/// Piped with every flag: self-update off (a raw build), apt, both
-/// checkouts reset, then Saltbox's runtime, the config permissions, both
-/// tags caches (ops spec, decision 46), the announcements the pull
-/// brought printed inline on stdout, validate-config's checks.
+/// Piped with every flag: self-update off (a raw build), no apt refresh
+/// (ops decision 49), both checkouts reset, then Saltbox's runtime, the
+/// config permissions, both tags caches (ops spec, decision 46), the
+/// announcements the pull brought printed inline on stdout,
+/// validate-config's checks.
 #[test]
 fn piped_with_every_flag_every_step_runs_in_order() {
     if !root_gate::requested() {
@@ -204,7 +205,6 @@ fn piped_with_every_flag_every_step_runs_in_order() {
         &stderr,
         &[
             "Self-update is disabled in this build",
-            "Updating apt package cache",
             "Updating Saltbox and Sandbox",
             "Saltbox repository updated (master)",
             "Ansible virtual environment ready",
@@ -243,12 +243,27 @@ fn piped_with_every_flag_every_step_runs_in_order() {
         World::branch(&world.sandbox()),
         ("master".into(), "master".into())
     );
-    let calls = world.changes();
-    assert_eq!(calls.len(), 1, "{calls:?}");
-    assert!(
-        calls[0].starts_with("apt-get ") && calls[0].ends_with(" update"),
-        "{calls:?}"
-    );
+    // No apt-get at all: the stand-in records nothing.
+    assert_eq!(world.changes(), Vec::<String>::new());
+    assert!(!stderr.contains("Updating apt package cache"), "{stderr}");
+}
+
+/// With the stand-in apt-get on `PATH` failing every call, as a broken
+/// apt source would make `apt-get update` fail, the update still ends
+/// well and calls no apt-get (ops decision 49).
+#[test]
+fn a_failing_apt_get_does_not_stop_the_update() {
+    if !root_gate::requested() {
+        return;
+    }
+    let world = World::new("develop", "develop");
+    world.host.fail("apt-get");
+    let out = world.update(&["--reset-branch", "--migrations", "skip"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stderr}");
+    assert!(!stderr.contains("error updating apt cache"), "{stderr}");
+    assert!(stderr.contains("Saltbox and Sandbox updated"), "{stderr}");
+    assert_eq!(world.changes(), Vec::<String>::new());
 }
 
 /// SIGINT during the Saltbox fetch (ops spec, Testing Strategy): sb stops
@@ -359,7 +374,7 @@ fn without_a_terminal_missing_flags_are_refused_first() {
 /// Strategy: "`update` on a PTY: the branch questions before the first
 /// step"): Saltbox's question, then Sandbox's, each after its current
 /// branch, on the alternate screen over the paused tree (term-ui's
-/// `confirm_over`, ops decision 39), and only then apt and the checkouts;
+/// `confirm_over`, ops decision 39), and only then the checkouts;
 /// `y` resets Saltbox, `n` keeps Sandbox's branch, each answer a notice in
 /// the one tree printed at the end.
 #[test]
@@ -398,7 +413,6 @@ fn on_a_terminal_both_questions_come_before_the_first_step() {
             "Sandbox: Currently on branch 'develop'",
             sandbox,
             leave,
-            "Updating apt package cache",
             "Saltbox: Reset from branch 'develop' to 'master' (your answer)",
             "Saltbox repository updated (master)",
             "Sandbox: Kept branch 'develop' (your answer)",
@@ -1244,7 +1258,6 @@ fn on_a_terminal_a_no_leaves_the_checkout_as_it_was() {
             "Declining leaves Saltbox as it is; the rest of the update goes on.",
             question,
             leave,
-            "Updating apt package cache",
             // The tree cuts the notice to the PTY's 100 columns.
             "Saltbox: Left as is, keeping 1 local commit on 'master'",
             "Sandbox repository updated (master)",
@@ -1278,7 +1291,6 @@ fn skip_git_leaves_both_checkouts_byte_for_byte() {
     in_order(
         &stderr,
         &[
-            "Updating apt package cache",
             "Ansible virtual environment ready",
             "Updating Saltbox tags cache",
             "Updating Sandbox tags cache",
