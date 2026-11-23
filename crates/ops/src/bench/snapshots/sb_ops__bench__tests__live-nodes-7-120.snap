@@ -3,18 +3,16 @@ source: crates/ops/src/bench/mod.rs
 expression: "live.text(&frame(width, *interrupted), &Theme::plain(), example_layout(width))"
 ---
 
-Speedtest  12 nodes
+Speedtest  10 nodes
 --------------------------------------------------------------
 Node                         Upload      Download    Latency
 Speedtest.net           900.00 Mbps   950.00 Mbps    1.00 ms
-Los Angeles, US         Test failed
+Los Angeles, US         800.00 Mbps   850.00 Mbps  150.00 ms
 Dallas, US              700.00 Mbps   750.00 Mbps  120.00 ms
-Montreal, CA            600.00 Mbps   650.00 Mbps  100.00 ms
+Montreal, CA            Test failed
 Paris, FR               500.00 Mbps   550.00 Mbps   20.00 ms
 Amsterdam, NL           400.00 Mbps   450.00 Mbps   10.00 ms
-Suzhou, CN              Test failed
-Ningbo, CN                ⠋ testing
-Hong Kong, CN
-Singapore, SG
+Hong Kong, CN           300.00 Mbps   350.00 Mbps  200.00 ms
+Singapore, SG             ⠋ testing
 Taipei, CN
 Tokyo, JP

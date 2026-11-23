@@ -31,17 +31,15 @@ Disk write
 3rd run                  840.0 MB/s
 Average                  820.0 MB/s
 
-Speedtest  12 nodes
+Speedtest  10 nodes
 --------------------------------------------------------------
 Node                         Upload      Download    Latency
 Speedtest.net           900.00 Mbps   950.00 Mbps    1.00 ms
-Los Angeles, US         Test failed
+Los Angeles, US         800.00 Mbps   850.00 Mbps  150.00 ms
 Dallas, US              700.00 Mbps   750.00 Mbps  120.00 ms
-Montreal, CA            600.00 Mbps   650.00 Mbps  100.00 ms
+Montreal, CA            Test failed
 Paris, FR               500.00 Mbps   550.00 Mbps   20.00 ms
 Amsterdam, NL           400.00 Mbps   450.00 Mbps   10.00 ms
-Suzhou, CN              Test failed
-Ningbo, CN              Test failed
 Hong Kong, CN           300.00 Mbps   350.00 Mbps  200.00 ms
 Singapore, SG           200.00 Mbps   250.00 Mbps  250.00 ms
 Taipei, CN              100.00 Mbps   150.00 Mbps  220.00 ms

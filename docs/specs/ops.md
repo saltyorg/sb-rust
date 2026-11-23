@@ -21,7 +21,9 @@ tree for the whole run, its questions on the alternate screen (decision
 39, difference 64; term-ui decision 14).
 Amended 2026-11-21 by the maintainer's choice: bench takes the ruled
 layout (section "`sb bench`", "Layout"; decision 43, differences 67 to
-69).*
+69). Amended 2026-11-23 by the maintainer's decisions: Speedtest's
+retired nodes are dropped or replaced, and a node whose server is gone
+says `Server gone` (decision 48, difference 74).*
 
 Module of the approved capability map (`ops`): the workflow commands
 that tie the other modules together. The build order puts `ops` last
@@ -547,7 +549,8 @@ shows it:
   over the node names), the node names in the terminal's colour; a
   failed node's `Test failed` or `Failed to parse results`
   right-aligned in the Upload column, in Problem, its other cells
-  empty;
+  empty; a node whose server is gone, its `Server gone` the same way,
+  in Warn;
 - a `Skipped` row (Disk write: no space, free space unknown, no write
   permission; Speedtest unavailable) keeps its text, in Warn;
 - the footer: a blank line, a Muted rule, then `Finished in` and
@@ -621,11 +624,12 @@ in either answer are never printed or logged.
   (`$HOME/.config/ookla/speedtest-cli.json`) goes with it
   (docs/platform-notes/speedtest.md), the rest of sb's environment kept
   as sb-go's;
-- nodes, sb-go's (bench_script.sh:115-128): Speedtest.net (no id), Los
-  Angeles, US 7190, Dallas, US 22288, Montreal, CA 64420, Paris, FR
-  61933, Amsterdam, NL 41423, Suzhou, CN 5396, Ningbo, CN 59387, Hong
-  Kong, CN 32155, Singapore, SG 13623, Taipei, CN 65092, Tokyo, JP
-  48463;
+- nodes, sb-go's (bench_script.sh:115-128) in its order, less the ones
+  Ookla retired (decision 48, difference 74): Speedtest.net (no id), Los
+  Angeles, US 14236 (Frontier; sb-go's 7190 is gone), Dallas, US 22288,
+  Montreal, CA 64420, Paris, FR 61933, Amsterdam, NL 41423, Hong Kong,
+  CN 32155, Singapore, SG 13623, Taipei, CN 65092, Tokyo, JP 48463;
+  ten nodes, the heading's `10 nodes`;
 - columns `Node`, `Upload`, `Download` and `Latency` (the ruled layout
   above; until 2026-11-21 a `Speedtest` title row over bench.sh's
   `Node Name | Upload Speed | Download Speed | Latency`): the JSON's
@@ -634,7 +638,12 @@ in either answer are never printed or logged.
   `ping.latency` as `<n> ms` (two decimals), the values the CLI's text
   form prints (difference 55); a run that doesn't exit 0 is the row's
   `Test failed`, an answer without the three values `Failed to parse
-  results`, as bench.sh's, and the next node runs;
+  results`, as bench.sh's, and the next node runs; a run of a node with
+  a server id that doesn't exit 0 and whose stderr has the CLI's JSON
+  log line with `type`
+  `log`, `level` `error` and a `message` containing
+  `NoServersException` (the server id isn't in Ookla's list) is the
+  row's `Server gone` instead (difference 74);
 - the JSON's interface, server and result fields are never read, and
   the CLI's output reaches neither the screen nor the log;
 - a Speedtest that can't be prepared (the architecture, the client, the
@@ -1555,6 +1564,17 @@ decision 46):
     sb-go has a task per checkout, Saltbox's (with its runtime and
     tags), the permissions, then Sandbox's, one after the other.
 
+bench's retired Speedtest nodes (the maintainer, 2026-11-23; decision
+48):
+74. Speedtest runs ten nodes: Los Angeles is Frontier's server 14236,
+    and Suzhou and Ningbo are gone. sb-go's bench_script.sh and
+    upstream bench.sh still run Los Angeles 7190, Suzhou 5396 and
+    Ningbo 59387, servers Ookla no longer has, so those rows always
+    say `Test failed`. A node whose server Ookla no longer has says
+    `Server gone`, in Warn, in the live section and the printed
+    report; bench.sh's `Test failed`, in Problem, stays for a test
+    that ran and failed (the network, the server's own error).
+
 ## Scope
 
 **In:**
@@ -2414,6 +2434,30 @@ the real services.
     nodes still to run listed muted, and nothing drawn before the
     host's facts are read (well under a second on a host whose mounts
     answer).
+48. **Speedtest's retired nodes are replaced or dropped, and a gone
+    server is named** (the maintainer, 2026-11-23, after a container
+    run showed three of the twelve nodes fail at once): Ookla CLI
+    1.2.0 with `--server-id` 7190 (Los Angeles), 5396 (Suzhou) or 59387
+    (Ningbo) exits 2 with `Configuration - No servers defined
+    (NoServersException)` in its JSON log line on stderr, and Ookla's
+    server search lists no mainland-China server for Suzhou, Ningbo,
+    Shanghai, Beijing, Hangzhou, Guangzhou or Shenzhen. Los Angeles
+    gets a live server, picked by evidence: in Ookla's list, a real
+    test through it completed, and a well-connected host or carrier;
+    Suzhou and Ningbo are dropped, the list's order otherwise kept
+    (ten nodes). Such a node's row says `Server gone`, in Warn, found
+    from the parsed log line (`type` `log`, `level` `error`, the
+    `message` containing `NoServersException`); any other failure keeps
+    `Test failed`, in Problem (difference 74). Decided:
+    Frontier's 14236 (2026-11-23; Spectrum's 57682 completed too):
+    a carrier's own host, long in Ookla's list (a low id), and the
+    lower latency of the two from the test container; the log line is
+    read from stderr only, where the CLI writes it
+    (docs/platform-notes/speedtest.md), and only for a node with a
+    server id: for Speedtest.net's own choice it would mean no server
+    was found at all, which stays `Test failed` (the code review's
+    finding). An id that never existed gives the same line, so a
+    mistyped id would show `Server gone` too.
 
 ## Known limits
 
@@ -2451,7 +2495,7 @@ the real services.
 - `--password-file <path>` is read after the sudo relaunch, as root. A
   user with sudo can read the file anyway; the content is never shown.
 - bench's Speedtest nodes are fixed IDs from Ookla's list; a node Ookla
-  retires shows `Test failed` until the list is changed.
+  retires shows `Server gone` until the list is changed.
 - The cleanup's directory checks can't stop root itself from planting
   a link between the check and the open; the open refuses one anyway.
 - Migrations declined in one run aren't offered again (the diff is

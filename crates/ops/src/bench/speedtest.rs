@@ -83,15 +83,22 @@ pub struct Node {
     pub id: Option<&'static str>,
 }
 
-/// bench.sh's nodes, in its order (`speed`, bench_script.sh:115-128).
-pub const NODES: [Node; 12] = [
+/// bench.sh's nodes, in its order (`speed`, bench_script.sh:115-128),
+/// less the ones Ookla retired (ops decision 48, 2026-11-23): Suzhou
+/// (5396) and Ningbo (59387) dropped, no mainland-China server being
+/// left in Ookla's list for them, and Los Angeles moved off 7190.
+pub const NODES: [Node; 10] = [
     Node {
         name: "Speedtest.net",
         id: None,
     },
+    // Frontier's Los Angeles server (sponsor `Frontier`), chosen
+    // 2026-11-23: in Ookla's server list, a real test through it with
+    // the CLI 1.2.0 completed, a carrier's own host. bench.sh's 7190
+    // answers `NoServersException`.
     Node {
         name: "Los Angeles, US",
-        id: Some("7190"),
+        id: Some("14236"),
     },
     Node {
         name: "Dallas, US",
@@ -108,14 +115,6 @@ pub const NODES: [Node; 12] = [
     Node {
         name: "Amsterdam, NL",
         id: Some("41423"),
-    },
-    Node {
-        name: "Suzhou, CN",
-        id: Some("5396"),
-    },
-    Node {
-        name: "Ningbo, CN",
-        id: Some("59387"),
     },
     Node {
         name: "Hong Kong, CN",
@@ -247,6 +246,11 @@ pub enum Measured {
     },
     /// The CLI failed (bench.sh's `Test failed`).
     Failed,
+    /// The node's server isn't in Ookla's list any more (`Server gone`,
+    /// ops decision 48). Its text is as wide as `Test failed`, which the
+    /// report's layout is sized by before the nodes run
+    /// (`later_tables`).
+    Gone,
     /// It answered without the three values (`Failed to parse results`).
     Unparsed,
 }
@@ -270,6 +274,30 @@ struct Bandwidth {
     bandwidth: f64,
 }
 
+/// The CLI's JSON log line (`{"type":"log",...,"message":...,
+/// "level":...}`, docs/platform-notes/speedtest.md); serde skips its
+/// `timestamp`.
+#[derive(serde::Deserialize)]
+struct LogLine {
+    #[serde(rename = "type")]
+    kind: String,
+    level: String,
+    message: String,
+}
+
+/// Whether the CLI's `stderr` has its error log line for a server id
+/// that isn't in Ookla's list (`Configuration - No servers defined
+/// (NoServersException)`, docs/platform-notes/speedtest.md): the
+/// parsed line's `type`, `level` and `message`, not the raw text.
+fn server_gone(stderr: &str) -> bool {
+    stderr
+        .lines()
+        .filter_map(|line| serde_json::from_str::<LogLine>(line).ok())
+        .any(|log| {
+            log.kind == "log" && log.level == "error" && log.message.contains("NoServersException")
+        })
+}
+
 /// A node's row from the CLI's JSON (`--format=json`): `upload.bandwidth`
 /// and `download.bandwidth` in bytes per second, shown in Mbps (10^6
 /// bits) as the CLI's text does, and `ping.latency` in ms, its text's
@@ -289,8 +317,10 @@ pub fn parse(stdout: &str) -> Measured {
 /// `speedtest` (`program`) against `node`, as bench.sh runs it, with
 /// `--format=json` (the CLI's own machine-readable output), `HOME` set to
 /// `home` (and `XDG_CONFIG_HOME` removed) so its licence file stays there, within `timeout`, stopped by
-/// `token`. Only an exit of 0 with the three values measures. Its stdout
-/// and stderr reach neither the screen nor the log.
+/// `token`. Only an exit of 0 with the three values measures; a failed
+/// run of a node with a server id whose stderr says the server is gone
+/// is [`Measured::Gone`]. Its
+/// stdout and stderr reach neither the screen nor the log.
 ///
 /// # Errors
 ///
@@ -334,6 +364,12 @@ pub async fn run_node(
             }
             Ok(measured)
         }
+        // Only a node with a server id: for Speedtest.net's own choice the
+        // line says no server was found at all.
+        ending if node.id.is_some() && server_gone(&ran.stderr) => {
+            tracing::warn!(node = node.name, id = node.id, %ending, "speedtest's server is gone");
+            Ok(Measured::Gone)
+        }
         ending => {
             tracing::warn!(node = node.name, %ending, "speedtest failed");
             Ok(Measured::Failed)
@@ -364,7 +400,8 @@ pub fn heading(outcome: &Outcome) -> Heading {
 /// The Speedtest section's rows (bench's ruled layout): `Node`, `Upload`,
 /// `Download` and `Latency` under muted headings, the figures
 /// right-aligned in columns 14, 14 and 11 wide, a failed node's text
-/// right-aligned in the Upload column in Problem; or the one `Skipped`
+/// right-aligned in the Upload column in Problem (a gone server's in
+/// Warn); or the one `Skipped`
 /// row saying why it didn't run, in Warn.
 #[must_use]
 pub fn table(outcome: &Outcome) -> Table {
@@ -401,10 +438,10 @@ fn nodes_table() -> Table {
         .min_width(3, LATENCY)
 }
 
-/// A node's row: its name and figures, or its failure in Problem in the
-/// Upload column.
+/// A node's row: its name and figures, or its failure in the Upload
+/// column, in Problem (a gone server in Warn).
 fn node_row(node: &Node, measured: &Measured) -> Vec<Cell> {
-    let failed = |text: &str| vec![Cell::new(node.name), Cell::new(text).role(Role::Problem)];
+    let failed = |text: &str, role| vec![Cell::new(node.name), Cell::new(text).role(role)];
     match measured {
         Measured::Speeds {
             upload,
@@ -413,8 +450,9 @@ fn node_row(node: &Node, measured: &Measured) -> Vec<Cell> {
         } => [node.name, upload, download, latency]
             .map(Cell::new)
             .to_vec(),
-        Measured::Failed => failed("Test failed"),
-        Measured::Unparsed => failed("Failed to parse results"),
+        Measured::Failed => failed("Test failed", Role::Problem),
+        Measured::Gone => failed("Server gone", Role::Warn),
+        Measured::Unparsed => failed("Failed to parse results", Role::Problem),
     }
 }
 
@@ -583,8 +621,11 @@ mod tests {
         assert!(bad("https://example.invalid/x.tgz", "zz").asset().is_err());
     }
 
+    /// bench.sh's nodes less the ones Ookla retired (ops decision 48):
+    /// Los Angeles on Frontier's server, Suzhou and Ningbo dropped, the
+    /// order kept.
     #[test]
-    fn the_nodes_are_bench_sh_s() {
+    fn the_nodes_are_bench_sh_s_live_ones() {
         assert_eq!(
             NODES[0],
             Node {
@@ -596,11 +637,29 @@ mod tests {
         assert_eq!(
             ids,
             [
-                "7190", "22288", "64420", "61933", "41423", "5396", "59387", "32155", "13623",
-                "65092", "48463"
+                "14236", "22288", "64420", "61933", "41423", "32155", "13623", "65092", "48463"
             ]
         );
-        assert_eq!(NODES[11].name, "Tokyo, JP");
+        let names: Vec<_> = NODES.iter().map(|node| node.name).collect();
+        assert_eq!(
+            names,
+            [
+                "Speedtest.net",
+                "Los Angeles, US",
+                "Dallas, US",
+                "Montreal, CA",
+                "Paris, FR",
+                "Amsterdam, NL",
+                "Hong Kong, CN",
+                "Singapore, SG",
+                "Taipei, CN",
+                "Tokyo, JP"
+            ]
+        );
+        assert_eq!(
+            live_heading().render(&Theme::plain(), false, 4),
+            "Speedtest  10 nodes\n----\n"
+        );
     }
 
     /// An archive entry: its name, bytes and kind.
@@ -812,7 +871,7 @@ mod tests {
         let args = std::fs::read_to_string(dir.path().join("args")).expect("args");
         assert_eq!(
             args.trim(),
-            "--format=json --progress=no --accept-license --accept-gdpr --server-id=7190"
+            "--format=json --progress=no --accept-license --accept-gdpr --server-id=14236"
         );
         let seen_home = std::fs::read_to_string(dir.path().join("home")).expect("home");
         assert_eq!(seen_home.trim(), home.display().to_string());
@@ -918,6 +977,111 @@ mod tests {
         };
         assert_eq!(row(NODES[1].name), ["Test failed"], "{text}");
         assert_eq!(row(NODES[2].name), ["Failed to parse results"], "{text}");
+    }
+
+    /// A stand-in `speedtest` writing `stderr` to its stderr, nothing to
+    /// stdout, and exiting `code`.
+    fn erring(dir: &Path, name: &str, stderr: &str, code: i32) -> PathBuf {
+        let path = dir.join(name);
+        let script = format!("#!/bin/sh\ncat >&2 <<'EOF'\n{stderr}\nEOF\nexit {code}\n");
+        sb_cli_core::testing::write_program(&path, script);
+        path
+    }
+
+    /// The CLI 1.2.0's answer to a server id Ookla retired
+    /// (docs/platform-notes/speedtest.md): exit 2 and this one log line.
+    const NO_SERVERS: &str = r#"{"type":"log","timestamp":"2026-01-15T10:00:00Z","message":"Configuration - No servers defined (NoServersException)","level":"error"}"#;
+
+    /// A node whose server Ookla no longer has is `Server gone`, in Warn
+    /// (ops decision 48); a failure the CLI logs otherwise, that log line
+    /// not as an error, or the line for Speedtest.net's own choice stays
+    /// `Test failed` in Problem.
+    #[tokio::test]
+    async fn a_retired_server_is_server_gone_in_warn() {
+        let _spawns = crate::bench::SPAWNS.lock().await;
+        let dir = tempfile::tempdir().expect("dir");
+        let token = CancellationToken::new();
+        let run = async |program: PathBuf| {
+            run_node(&program, dir.path(), NODES[1], NODE_TIMEOUT, &token)
+                .await
+                .expect("ran")
+        };
+        let gone = run(erring(dir.path(), "gone", NO_SERVERS, 2)).await;
+        assert_eq!(gone, Measured::Gone);
+        // The licence notice and other text around the log line.
+        let noisy = format!("licence notice\n{NO_SERVERS}\nmore text");
+        assert_eq!(
+            run(erring(dir.path(), "noisy", &noisy, 2)).await,
+            Measured::Gone
+        );
+        let other = r#"{"type":"log","timestamp":"2026-11-23T00:00:00Z","message":"Cannot read from socket","level":"error"}"#;
+        assert_eq!(
+            run(erring(dir.path(), "other", other, 2)).await,
+            Measured::Failed
+        );
+        let info = NO_SERVERS.replace(r#""level":"error""#, r#""level":"info""#);
+        assert_eq!(
+            run(erring(dir.path(), "info", &info, 2)).await,
+            Measured::Failed
+        );
+        let result = NO_SERVERS.replace(r#""type":"log""#, r#""type":"result""#);
+        assert_eq!(
+            run(erring(dir.path(), "result", &result, 2)).await,
+            Measured::Failed
+        );
+        // Only the field counts: the word in plain text isn't the log.
+        assert_eq!(
+            run(erring(dir.path(), "plain", "NoServersException", 2)).await,
+            Measured::Failed
+        );
+        let failed = run(erring(dir.path(), "failed", "", 2)).await;
+        assert_eq!(failed, Measured::Failed);
+        // Speedtest.net's own choice has no server id to be gone: there,
+        // the line means no server was found at all.
+        let chosen = erring(dir.path(), "chosen", NO_SERVERS, 2);
+        assert_eq!(
+            run_node(&chosen, dir.path(), NODES[0], NODE_TIMEOUT, &token)
+                .await
+                .expect("ran"),
+            Measured::Failed
+        );
+
+        let outcome = Outcome::Nodes(vec![(NODES[1], gone), (NODES[2], failed)]);
+        let text = rendered(&outcome);
+        assert!(
+            text.ends_with(
+                "\nLos Angeles, US         Server gone\nDallas, US              Test failed"
+            ),
+            "{text}"
+        );
+        let theme = sb_cli_core::theme::Theme::resolve(
+            &sb_cli_core::theme::Palette::default(),
+            sb_cli_core::theme::Profile::TrueColor,
+        );
+        let coloured = table(&outcome).render(&theme, true, None);
+        let paint = |role, text| sb_term_ui::style::paint(&theme, role, true, text);
+        assert!(
+            coloured.contains(&paint(Role::Warn, "Server gone")),
+            "{coloured:?}"
+        );
+        assert!(
+            coloured.contains(&paint(Role::Problem, "Test failed")),
+            "{coloured:?}"
+        );
+        // The live section's rows are the printed ones.
+        let live = live_table(
+            &[
+                Measured::Speeds {
+                    upload: "1.00 Mbps".to_owned(),
+                    download: "1.00 Mbps".to_owned(),
+                    latency: "1.00 ms".to_owned(),
+                },
+                Measured::Gone,
+            ],
+            Cell::new("testing"),
+        )
+        .render(&theme, true, None);
+        assert!(live.contains(&paint(Role::Warn, "Server gone")), "{live:?}");
     }
 
     #[tokio::test]

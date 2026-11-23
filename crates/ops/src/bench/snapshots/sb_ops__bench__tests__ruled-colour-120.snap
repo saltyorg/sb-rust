@@ -31,17 +31,15 @@ expression: "example(true, truecolor(), true, width).replace('\\x1b', \"␛\")"
 ␛[38;2;139;149;167m3rd run␛[0m                  840.0 MB/s
 ␛[1m␛[38;2;139;149;167mAverage␛[0m                  ␛[1m820.0 MB/s␛[0m
 
-␛[1m␛[38;2;126;166;255mSpeedtest␛[0m␛[38;2;139;149;167m  12 nodes␛[0m
+␛[1m␛[38;2;126;166;255mSpeedtest␛[0m␛[38;2;139;149;167m  10 nodes␛[0m
 ␛[38;2;139;149;167m──────────────────────────────────────────────────────────────␛[0m
 ␛[38;2;139;149;167mNode␛[0m                         ␛[38;2;139;149;167mUpload␛[0m      ␛[38;2;139;149;167mDownload␛[0m    ␛[38;2;139;149;167mLatency␛[0m
 Speedtest.net           900.00 Mbps   950.00 Mbps    1.00 ms
-Los Angeles, US         ␛[38;2;255;110;122mTest failed␛[0m
+Los Angeles, US         800.00 Mbps   850.00 Mbps  150.00 ms
 Dallas, US              700.00 Mbps   750.00 Mbps  120.00 ms
-Montreal, CA            600.00 Mbps   650.00 Mbps  100.00 ms
+Montreal, CA            ␛[38;2;255;110;122mTest failed␛[0m
 Paris, FR               500.00 Mbps   550.00 Mbps   20.00 ms
 Amsterdam, NL           400.00 Mbps   450.00 Mbps   10.00 ms
-Suzhou, CN              ␛[38;2;255;110;122mTest failed␛[0m
-Ningbo, CN              ␛[38;2;255;110;122mTest failed␛[0m
 Hong Kong, CN           300.00 Mbps   350.00 Mbps  200.00 ms
 Singapore, SG           200.00 Mbps   250.00 Mbps  250.00 ms
 Taipei, CN              100.00 Mbps   150.00 Mbps  220.00 ms

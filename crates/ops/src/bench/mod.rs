@@ -1175,7 +1175,7 @@ mod tests {
         assert!(at_most_once(&text, SPEEDTEST_HEADINGS), "{text}");
         assert_eq!(
             text.matches("Failed to parse results").count(),
-            12,
+            speedtest::NODES.len(),
             "{text}"
         );
         assert!(
@@ -1440,18 +1440,16 @@ mod tests {
         }
     }
 
-    /// The example's Speedtest: nine nodes measured, three failed.
+    /// The example's Speedtest: nine nodes measured, one failed.
     fn example_nodes() -> speedtest::Outcome {
         use speedtest::Measured;
         let speeds = [
             Some(("900.00", "950.00", "1.00")),
-            None,
+            Some(("800.00", "850.00", "150.00")),
             Some(("700.00", "750.00", "120.00")),
-            Some(("600.00", "650.00", "100.00")),
+            None,
             Some(("500.00", "550.00", "20.00")),
             Some(("400.00", "450.00", "10.00")),
-            None,
-            None,
             Some(("300.00", "350.00", "200.00")),
             Some(("200.00", "250.00", "250.00")),
             Some(("100.00", "150.00", "220.00")),
@@ -1606,9 +1604,9 @@ mod tests {
     }
 
     /// The roles of the failure and skip cells: a failed node, a failed
-    /// disk run and a run that couldn't parse in Problem; every
-    /// `Skipped` reason in Warn; `Average` Muted and bold, in the
-    /// printed section and the live block.
+    /// disk run and a run that couldn't parse in Problem; a node whose
+    /// server is gone and every `Skipped` reason in Warn; `Average` Muted
+    /// and bold, in the printed section and the live block.
     #[test]
     fn failures_take_problem_and_skips_take_warn() {
         use sb_term_ui::style::paint;
@@ -1617,6 +1615,7 @@ mod tests {
         let failed = render(&speedtest::table(&speedtest::Outcome::Nodes(vec![
             (speedtest::NODES[1], speedtest::Measured::Failed),
             (speedtest::NODES[2], speedtest::Measured::Unparsed),
+            (speedtest::NODES[3], speedtest::Measured::Gone),
         ])));
         for text in ["Test failed", "Failed to parse results"] {
             assert!(
@@ -1624,6 +1623,10 @@ mod tests {
                 "{failed:?}"
             );
         }
+        assert!(
+            failed.contains(&paint(&theme, Role::Warn, true, "Server gone")),
+            "{failed:?}"
+        );
         let runs = render(&disk::table(&disk::Outcome::Runs(vec![
             Some(1.0),
             None,
@@ -2064,7 +2067,7 @@ mod tests {
         drop(runner);
         // The blank line before the section, as `Out` writes it.
         let rows = screen.rows();
-        assert_eq!(rows[..2], ["", "Speedtest  12 nodes"], "{rows:#?}");
+        assert_eq!(rows[..2], ["", "Speedtest  10 nodes"], "{rows:#?}");
         assert!(
             rows[4].starts_with("Speedtest.net") && rows[4].ends_with("interrupted"),
             "{rows:#?}"

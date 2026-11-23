@@ -15,7 +15,8 @@ there; never on the host). Inside it, as root: both archives fetched from
 entries listed; then the amd64 `speedtest` run with `HOME` set to an empty
 directory, once with `--format=json --progress=no --accept-license
 --accept-gdpr` (Speedtest.net's server), once the same with
-`--server-id=7190`, once with an unknown `--server-id`, and once without
+`--server-id=7190` (then live; retired by 2026-11-23), once with an
+unknown `--server-id`, and once without
 `--format=json` (bench.sh's text form). Only the field names, exit codes
 and file locations were kept: no output, address or result.
 
@@ -42,8 +43,17 @@ archive has one regular entry named `speedtest` at its root.
     `isVpn`; `server` holds `id`, `host`, `port`, `name`, `location`,
     `country` and `ip`; `result` holds `id`, `url` and `persisted`. sb
     reads none of these.
-- **Failure (an unknown server id):** exit 2, nothing on stdout, a JSON
-  log line on stderr (`{"type":"log",...,"level":"error"}`).
+- **Failure (a server id not in Ookla's list):** exit 2, nothing on
+  stdout, a JSON log line on stderr (`{"type":"log",...,"level":"error"}`).
+  Checked again 2026-11-23 (the same CLI in a throwaway
+  `curlimages/curl` container) with a retired id, `--server-id=7190`
+  (Ookla's former Los Angeles node, which its server search no longer
+  lists), and with an id that never existed (`999999999`): both give
+  the same one line on stderr, its `timestamp` aside,
+  `{"type":"log",...,"message":"Configuration - No servers defined
+  (NoServersException)","level":"error"}`. sb reads that log object's
+  `type`, `level` and `message` fields to show `Server gone` for a
+  node with a server id.
 
 ## The text form (bench.sh's)
 
