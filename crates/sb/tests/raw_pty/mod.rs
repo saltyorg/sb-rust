@@ -84,12 +84,23 @@ impl Pty {
             let Some(left) = deadline.checked_duration_since(Instant::now()) else {
                 return false;
             };
-            match self.output.recv_timeout(left) {
-                Ok(bytes) => self.seen.extend(bytes),
-                Err(_) => return found(&self.seen),
+            if !self.gather(left) {
+                return found(&self.seen);
             }
         }
         true
+    }
+
+    /// Gather what arrives within `within` (one read's worth); false when
+    /// nothing did.
+    pub fn gather(&mut self, within: Duration) -> bool {
+        match self.output.recv_timeout(within) {
+            Ok(bytes) => {
+                self.seen.extend(bytes);
+                true
+            }
+            Err(_) => false,
+        }
     }
 
     pub fn send(&mut self, bytes: &[u8]) {

@@ -21,6 +21,7 @@ use crossterm::execute;
 use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen};
 use dialoguer::Input;
 use dialoguer::theme::Theme;
+use rustix::termios::{OptionalActions, Termios, tcgetattr, tcsetattr};
 use sb_cli_core::cancel::{RestoreHook, Shutdown};
 use sb_cli_core::theme::Role;
 
@@ -44,7 +45,9 @@ pub enum PromptError {
     /// Ctrl-C while asking: console raises SIGINT for it, and the confirm
     /// has the run's [`Shutdown`] record that delivery before it returns
     /// ([`Shutdown::interrupt_raised`]), so cli-core's `finish_run` ends
-    /// sb by the signal, however late the signals thread reads it.
+    /// sb by the signal, however late the signals thread reads it. Also
+    /// when a signal ended the run before the confirm took the terminal
+    /// (a Ctrl-C a moment before the question, say); it isn't asked then.
     #[error("interrupted")]
     Interrupted,
     /// Reading or drawing failed.
@@ -287,6 +290,9 @@ fn confirm_on(
     // <https://docs.rs/rustix/1.1.6/rustix/termios/fn.tcflush.html>). The
     // terminal's input queue is one, whichever descriptor reads it.
     let _ = rustix::termios::tcflush(&tty, rustix::termios::QueueSelector::IFlush);
+    // Held until the question ends, whichever way.
+    let _raw = RawMode::hold(&tty, shutdown).map_err(|err| failed(err.to_string()))?;
+    unasked_if_interrupted(shutdown)?;
     let write = tty.try_clone().map_err(|err| failed(err.to_string()))?;
     let term = console::Term::read_write_pair(tty, write);
     let theme = YesNo {
@@ -332,6 +338,96 @@ fn confirm_on(
                 failed(err.to_string())
             }
         })
+}
+
+/// The terminal held in raw mode for the whole question.
+///
+/// Its modes are put back when dropped, or by a restore hook on a second
+/// signal (cli-core's forced exit). The mode is the one console sets for
+/// each key it reads:
+/// `cfmakeraw`, the output modes kept (console 0.16.6 `src/unix_term.rs`,
+/// `read_single_key`; rustix's `Termios::make_raw`,
+/// <https://docs.rs/rustix/1.1.6/rustix/termios/struct.Termios.html#method.make_raw>).
+/// console puts the terminal's own modes back after each key, so without
+/// this the terminal is in canonical mode with `ISIG` while the question
+/// is drawn and between keys, and a Ctrl-C then is the kernel's SIGINT,
+/// which console never sees: the run's token is cancelled while dialoguer
+/// waits on for a key. Held here, a Ctrl-C at the question is always a
+/// key, which console turns into its raise and `Interrupted`. Neither
+/// dialoguer 0.12.0 nor console 0.16.6 documents its Ctrl-C handling or
+/// holds raw mode over a prompt (`Term::read_key` says only that it reads
+/// one key without echo). Why not crossterm's `enable_raw_mode` (0.29.0
+/// `src/terminal/sys/unix.rs`): it clears the output modes too, so
+/// console's and dialoguer's `\n` would no longer return the carriage; it
+/// keeps the modes to put back in one process-wide static, which sb-tui's
+/// screen uses; and it switches stdin when stdin is a terminal, not the
+/// `/dev/tty` opened and checked here.
+///
+/// A Ctrl-C typed before the hold was the kernel's SIGINT, and its
+/// handler has run on this thread once `tcsetattr` returns: the kernel
+/// offers a signal sent to a process group to each process's main thread
+/// first, unless that thread blocks it or has another signal pending
+/// (UNVERIFIED as API: signal(7) says "an arbitrary thread"; checked in
+/// Linux 6.8's `kernel/signal.c`, `complete_signal` and `wants_signal`),
+/// the questions are asked on the main thread, and a handler runs before
+/// a system call returns to the thread's code. So the delivery flag is
+/// set by then, for [`Shutdown::interrupt_raised`]. One window is left
+/// (UNVERIFIED, read in Linux 6.8's `drivers/tty/n_tty.c`, `isig`): the
+/// line discipline decides on a Ctrl-C under the old modes, then lets go
+/// of the modes' lock before it sends the signal, so a switch taking the
+/// lock in those microseconds returns before the SIGINT exists. The
+/// question then waits as before this hold, and a second Ctrl-C (a key
+/// now, a second signal) ends sb by SIGINT.
+struct RawMode {
+    tty: File,
+    original: Termios,
+    _hook: RestoreHook,
+}
+
+impl RawMode {
+    fn hold(tty: &File, shutdown: &Shutdown) -> std::io::Result<Self> {
+        let original = tcgetattr(tty)?;
+        let mut raw = original.clone();
+        raw.make_raw();
+        raw.output_modes = original.output_modes;
+        let tty = tty.try_clone()?;
+        let hook_tty = tty.try_clone()?;
+        let hook_modes = original.clone();
+        // The hook first, so a forced exit right after the switch still
+        // puts the modes back.
+        let hook = shutdown.on_forced_exit(move || put_back(&hook_tty, &hook_modes));
+        tcsetattr(&tty, OptionalActions::Now, &raw)?;
+        Ok(Self {
+            tty,
+            original,
+            _hook: hook,
+        })
+    }
+}
+
+impl Drop for RawMode {
+    fn drop(&mut self) {
+        put_back(&self.tty, &self.original);
+    }
+}
+
+/// Put `modes` back on `tty`; nothing better to do if the terminal fails.
+fn put_back(tty: &File, modes: &Termios) {
+    let _ = tcsetattr(tty, OptionalActions::Now, modes);
+}
+
+/// [`PromptError::Interrupted`] when a signal has ended the run, checked
+/// once the confirm holds the terminal ([`RawMode`]): a Ctrl-C before the
+/// hold was a SIGINT, delivered to this thread before the switch returned
+/// (see there), and it interrupts the question, unasked, as the Ctrl-C at
+/// it does. A command's own request to end isn't a signal: the question is
+/// asked then.
+fn unasked_if_interrupted(shutdown: &Shutdown) -> Result<(), PromptError> {
+    if shutdown.interrupt_raised() {
+        Err(PromptError::Interrupted)
+    } else {
+        Ok(())
+    }
 }
 
 /// The confirm's answer from the whole line: `y` or `yes`, in any case,
@@ -545,6 +641,26 @@ mod tests {
             "{err}"
         );
         assert_eq!(seen.metadata().expect("metadata").len(), 0);
+    }
+
+    /// A signal that ended the run before the question took the terminal
+    /// interrupts it, unasked; a command's own request doesn't, and
+    /// neither does nothing at all.
+    #[test]
+    fn a_signal_before_the_question_interrupts_it() {
+        let shutdown = Shutdown::new();
+        assert!(unasked_if_interrupted(&shutdown).is_ok());
+        let requested = Shutdown::new();
+        let _ = requested.request(3);
+        assert!(unasked_if_interrupted(&requested).is_ok());
+        for signal in [rustix::process::Signal::INT, rustix::process::Signal::TERM] {
+            let signalled = Shutdown::new();
+            signalled.signalled(signal.as_raw());
+            assert!(matches!(
+                unasked_if_interrupted(&signalled),
+                Err(PromptError::Interrupted)
+            ));
+        }
     }
 
     /// The whole line is the answer: `y` or `yes` in any case, spaces

@@ -482,6 +482,95 @@ fn on_a_terminal_ctrl_c_at_a_question_leaves_the_screen_and_ends_by_sigint() {
     assert!(!text.ends_with("\r\n\r\n"), "{text:?}");
 }
 
+/// Ctrl-C a moment before a question shows, while sb writes what the
+/// question is about: sb ends by SIGINT, unasked, nothing changed. The
+/// terminal's output is stopped (XOFF, Ctrl+S, which its `IXON` acts on)
+/// so that write waits, in canonical mode: the Ctrl-C is then the
+/// kernel's SIGINT, not a key the question reads. The tree is on a file
+/// (no alternate screen then), so the question's writes are all sb
+/// writes on the terminal.
+#[test]
+fn on_a_terminal_ctrl_c_just_before_a_question_ends_by_sigint() {
+    if !root_gate::requested() {
+        return;
+    }
+    let world = World::new("develop", "master");
+    let sb = test_build();
+    let stderr = world.dir.path().join("stderr");
+    let pid_file = world.dir.path().join("pid");
+    let script = "echo $$ > \"$2\"; exec \"$0\" update --color=never --migrations skip 2> \"$1\"";
+    let cmd = world.namespaced(
+        Path::new("/bin/sh"),
+        &[
+            "-c",
+            script,
+            &sb,
+            &stderr.to_string_lossy(),
+            &pid_file.to_string_lossy(),
+        ],
+        &[],
+    );
+    let mut pty = Pty::spawn(&cmd);
+    pty.send(b"\x13");
+    let question = "Saltbox: Do you want to reset to the 'master' branch?";
+    // Waiting in a write(2) to `/dev/tty`, the question's terminal; or,
+    // had the XOFF come too late, the question shown (the Ctrl-C is then
+    // a key, the case the test above covers).
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !(writing_to_the_terminal(&pid_file) || pty.text().contains(question)) {
+        assert!(Instant::now() < deadline, "no question: {}", pty.text());
+        pty.gather(Duration::from_millis(5));
+    }
+    pty.send(b"\x03");
+    let status = pty.exit();
+    let shown = std::fs::read_to_string(&stderr).expect("stderr");
+    assert_eq!(
+        status.signal(),
+        Some("Interrupt"),
+        "{status:?}: {shown}\n{:?}",
+        pty.text()
+    );
+    assert!(shown.contains("interrupted"), "{shown}");
+    assert!(world.changes().is_empty(), "{:?}", world.changes());
+    assert_eq!(
+        World::branch(&world.saltbox()),
+        ("develop".into(), "develop".into())
+    );
+}
+
+/// Whether the process whose pid is in `pid_file` is in a write(2) to a
+/// descriptor of `/dev/tty`, from `/proc/<pid>/syscall`: the call's number
+/// and its arguments in hexadecimal (`proc_pid_syscall(5)`,
+/// <https://man7.org/linux/man-pages/man5/proc_pid_syscall.5.html>).
+fn writing_to_the_terminal(pid_file: &Path) -> bool {
+    // write(2)'s number: x86_64's `__NR_write` 1, the generic table's
+    // (aarch64) 64.
+    const WRITE: &str = if cfg!(target_arch = "x86_64") {
+        "1"
+    } else {
+        "64"
+    };
+    let Some(pid) = std::fs::read_to_string(pid_file)
+        .ok()
+        .map(|pid| pid.trim().to_owned())
+        .filter(|pid| !pid.is_empty())
+    else {
+        return false;
+    };
+    let Ok(call) = std::fs::read_to_string(format!("/proc/{pid}/syscall")) else {
+        return false;
+    };
+    let mut fields = call.split_whitespace();
+    if fields.next() != Some(WRITE) {
+        return false;
+    }
+    fields
+        .next()
+        .and_then(|fd| u64::from_str_radix(fd.trim_start_matches("0x"), 16).ok())
+        .and_then(|fd| std::fs::read_link(format!("/proc/{pid}/fd/{fd}")).ok())
+        .is_some_and(|to| to == Path::new("/dev/tty"))
+}
+
 /// Ctrl-C at a question, sb run from an interactive bash (its own
 /// newline after a job ended by SIGINT): one blank line between the
 /// interrupted block and the next prompt, not two (cli-core spec, "The

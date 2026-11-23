@@ -1036,6 +1036,67 @@ fn ctrl_c_at_the_question_interrupts() {
     pty.assert_restored();
 }
 
+/// Ctrl+C while the question is being put up, before a key is read: sb
+/// still ends by SIGINT. The terminal's output is stopped first (XOFF,
+/// Ctrl+S, which the terminal's `IXON` acts on); the Ctrl+C is sent once
+/// sb has the terminal open for the question, past the command's last
+/// check. When sb drew the question in canonical mode, its write waited
+/// there, and the Ctrl+C was a SIGINT that only cancelled the run's
+/// token: sb went on to wait at the question (a second Ctrl+C was
+/// needed). The tree is on a file, so the question is all sb writes on
+/// the terminal.
+#[test]
+fn ctrl_c_while_the_question_is_put_up_interrupts() {
+    if !root_gate::requested() {
+        return;
+    }
+    let world = World::new();
+    let broken = format!("{}{UNKNOWN}", world.text("settings.yml"));
+    let saves = world.saves(&[&broken]);
+    let fake = world.fake();
+    let stderr = world.dir.path().join("stderr");
+    let mut pty = Pty::spawn_with(
+        &world,
+        &["settings"],
+        &[("VISUAL", fake.as_ref()), ("FAKE_SAVES", saves.as_os_str())],
+        Some(&format!("2> '{}'", stderr.display())),
+    );
+    pty.send(b"\x13");
+    let sb = pty.child.process_id().expect("sb's pid");
+    // The question's own terminal: `/dev/tty`, opened after the editor
+    // ran and the validation was drawn (the editor's count is read at the
+    // end: the fake may be writing it while this waits).
+    let asking = || {
+        std::fs::read_dir(format!("/proc/{sb}/fd")).is_ok_and(|fds| {
+            fds.flatten()
+                .any(|fd| std::fs::read_link(fd.path()).is_ok_and(|to| to == Path::new("/dev/tty")))
+        })
+    };
+    let drawn =
+        || std::fs::read_to_string(&stderr).is_ok_and(|text| text.contains("unknown field"));
+    let deadline = Instant::now() + WAIT;
+    while !(drawn() && asking()) {
+        assert!(
+            Instant::now() < deadline,
+            "sb didn't get to the question: {:?}",
+            std::fs::read_to_string(&stderr)
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    pty.send(b"\x03");
+    let status = pty.exit();
+    let shown = std::fs::read_to_string(&stderr).expect("stderr");
+    assert_eq!(
+        status.signal(),
+        Some("Interrupt"),
+        "{status:?}\n{shown}\n{}",
+        pty.contents()
+    );
+    assert!(shown.contains("interrupted"), "{shown}");
+    assert_eq!(world.runs(), 1);
+    pty.assert_restored();
+}
+
 /// SIGTERM to sb while the editor runs: the editor gets SIGTERM and sb
 /// ends by the signal (143 to a shell).
 #[test]

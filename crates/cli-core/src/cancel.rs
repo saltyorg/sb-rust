@@ -553,6 +553,12 @@ impl Shutdown {
     /// nothing; a Ctrl-C delivered after it still counts as a second
     /// signal. A delivery that isn't a first (a second signal forces the
     /// exit) or that a hold would note is left to the thread.
+    ///
+    /// A caller that has just put the terminal in raw mode (term-ui's
+    /// confirm) calls it too, for a Ctrl-C the kernel turned into a SIGINT
+    /// just before: handled on the calling thread by then as well, it is
+    /// decided here the same way, and nothing was delivered when no Ctrl-C
+    /// came.
     #[must_use]
     pub fn interrupt_raised(&self) -> bool {
         let holds = &self.holds;
