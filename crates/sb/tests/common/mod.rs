@@ -1,24 +1,107 @@
 //! Shared by the `sb` binary tests.
 
-use std::path::PathBuf;
+use std::fs::File;
+use std::os::unix::fs::PermissionsExt as _;
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 /// A log directory for every test run of sb: tests run as root here, and a
 /// root run logs; it must never reach the host's `/var/log/sb`. It lives in
 /// Cargo's temporary directory for integration tests (under `target/`), so
 /// `cargo clean` removes it and no run leaves a folder in /tmp
 /// (<https://doc.rust-lang.org/cargo/reference/environment-variables.html#environment-variables-cargo-sets-for-crates>).
+///
+/// One per test process, in `sb-test-logs`, made root-only (0700), the
+/// mode sb keeps its log directory in: sb then uses it as it is, whatever
+/// else it holds (the run lock directories, [`run_lock_dir`]). A
+/// directory sb found looser it would lock down only if it held nothing
+/// but sb's logs, and warn on every run otherwise (cli-core's
+/// `RunLog::open`), which broke the tests that compare stderr whenever a
+/// lock directory got there first. Those of processes that have ended are
+/// removed as a process makes its own ([`remove_ended`]).
 pub fn test_log_dir() -> PathBuf {
+    own_dir().to_path_buf()
+}
+
+/// Where the test processes' directories are.
+fn test_logs() -> PathBuf {
     PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("sb-test-logs")
 }
 
-/// A run lock directory no other run of sb uses: this test process's id
-/// and a count, in [`test_log_dir`], made here (sb makes the lock's own
-/// directory, never its parent).
+/// This test process's directory in [`test_logs`], made on first use: a
+/// fresh name (tempfile's), mode 0700, and beside it `<name>.lock`,
+/// locked for as long as the process lives (std's `File::lock`, an
+/// `flock` the kernel releases when the process ends, however it ends,
+/// and in any PID namespace, as the gate's sandbox has;
+/// <https://doc.rust-lang.org/std/fs/struct.File.html#method.lock>).
+/// Made under `.setup.lock`, so no process clears another's half-made
+/// directory. Custom: a `TempDir` in a static is never dropped, so it
+/// never removes itself, and neither tempfile nor std clears what ended
+/// processes left.
+fn own_dir() -> &'static Path {
+    static OWN: OnceLock<(PathBuf, File)> = OnceLock::new();
+    let (dir, _held) = OWN.get_or_init(|| {
+        let logs = test_logs();
+        std::fs::create_dir_all(&logs).expect("test logs");
+        let setup = File::create(logs.join(".setup.lock")).expect("setup lock");
+        setup.lock().expect("setup lock");
+        remove_ended(&logs);
+        let dir = tempfile::Builder::new()
+            .prefix("run-")
+            .permissions(std::fs::Permissions::from_mode(0o700))
+            .tempdir_in(&logs)
+            .expect("test log dir")
+            .keep();
+        let held = File::create(lock_of(&dir)).expect("held lock");
+        held.lock().expect("held lock");
+        (dir, held)
+    });
+    dir
+}
+
+/// The lock file beside a process's directory `dir`.
+fn lock_of(dir: &Path) -> PathBuf {
+    let mut name = dir.as_os_str().to_owned();
+    name.push(".lock");
+    PathBuf::from(name)
+}
+
+/// Remove from `logs` what test processes that have ended left: a
+/// directory whose lock can be taken, with its lock, and anything else no
+/// held lock speaks for (an earlier layout's `sb.log` and `run-lock-*`, a
+/// lock whose directory is gone). Called under `.setup.lock`.
+fn remove_ended(logs: &Path) {
+    let free = |lock: &Path| File::open(lock).is_ok_and(|lock| lock.try_lock().is_ok());
+    for entry in std::fs::read_dir(logs).expect("test logs").flatten() {
+        let path = entry.path();
+        if entry.file_name() == ".setup.lock" {
+            continue;
+        }
+        if path.extension().is_some_and(|ext| ext == "lock") {
+            if !path.with_extension("").exists() && free(&path) {
+                let _ = std::fs::remove_file(&path);
+            }
+            continue;
+        }
+        let lock = lock_of(&path);
+        if !lock.exists() || free(&lock) {
+            if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                let _ = std::fs::remove_dir_all(&path);
+            } else {
+                let _ = std::fs::remove_file(&path);
+            }
+            let _ = std::fs::remove_file(&lock);
+        }
+    }
+}
+
+/// A run lock directory no other run of sb uses: a count, in this test
+/// process's [`test_log_dir`] (sb makes the lock's own directory, never
+/// its parent).
 fn run_lock_dir() -> PathBuf {
     static RUNS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let run = RUNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    std::fs::create_dir_all(test_log_dir()).expect("test log dir");
-    test_log_dir().join(format!("run-lock-{}-{run}", std::process::id()))
+    test_log_dir().join(format!("run-lock-{run}"))
 }
 
 /// The built `sb`, logging to [`test_log_dir`]. `assert_cmd`'s prelude adds
