@@ -312,11 +312,12 @@ impl Cmd {
     }
 
     /// Spawn the child for `way` in a group of its own and log its start,
-    /// or log why it didn't start.
+    /// or log why it didn't start. Under cli-core's fork lock, so the
+    /// child can't inherit a program sb is writing (`fork_lock`).
     fn spawn(&self, way: Way) -> Result<(Child, Option<Group>), SpawnError> {
-        let spawned = self
-            .command(way)
-            .and_then(|mut child| child.spawn().map_err(SpawnCause::from));
+        let spawned = self.command(way).and_then(|mut child| {
+            sb_cli_core::fork_lock::forking(|| child.spawn()).map_err(SpawnCause::from)
+        });
         match spawned {
             Ok(child) => {
                 // An attached child stays in sb's group: none of its own.

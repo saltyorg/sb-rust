@@ -386,7 +386,7 @@ async fn install(step: &mut Step, env: &Env<'_>, release: &Release) -> anyhow::R
         .context("error downloading saltbox.fact")?;
     let staged = env
         .release
-        .download(&release.asset, stage, step)
+        .download_program(&release.asset, stage, step)
         .await
         .context("error downloading saltbox.fact")?;
     let validating = "Validating downloaded saltbox.fact";

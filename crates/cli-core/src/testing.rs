@@ -33,12 +33,16 @@ use std::process::{Command, Stdio};
 /// When `sh` can't be started or the file can't be written.
 #[track_caller]
 pub fn write_program(path: &Path, contents: impl AsRef<[u8]>) {
-    let mut child = Command::new("sh")
-        .args(["-c", "cat > \"$1\" && chmod 755 \"$1\"", "sh"])
-        .arg(path)
-        .stdin(Stdio::piped())
-        .spawn()
-        .expect("start sh to write a stand-in program");
+    // Started under the fork lock, as sb-exec starts children, so it
+    // can't inherit a program sb's code is writing in another test.
+    let mut child = crate::fork_lock::forking(|| {
+        Command::new("sh")
+            .args(["-c", "cat > \"$1\" && chmod 755 \"$1\"", "sh"])
+            .arg(path)
+            .stdin(Stdio::piped())
+            .spawn()
+    })
+    .expect("start sh to write a stand-in program");
     // The handle is dropped at the end of the statement, closing the pipe:
     // cat sees its end. A shell that failed first (a missing directory)
     // has closed it, and the write's EPIPE is reported with its status.
@@ -64,18 +68,81 @@ pub fn write_program(path: &Path, contents: impl AsRef<[u8]>) {
 /// When `sh` can't be started or the copy fails.
 #[track_caller]
 pub fn copy_program(from: &Path, to: &Path) {
-    let status = Command::new("sh")
-        .args(["-c", "cp \"$1\" \"$2\" && chmod 755 \"$2\"", "sh"])
-        .arg(from)
-        .arg(to)
-        .status()
-        .expect("start sh to copy a program");
+    // Started under the fork lock, as `write_program` is.
+    let status = crate::fork_lock::forking(|| {
+        Command::new("sh")
+            .args(["-c", "cp \"$1\" \"$2\" && chmod 755 \"$2\"", "sh"])
+            .arg(from)
+            .arg(to)
+            .spawn()
+    })
+    .and_then(|mut child| child.wait())
+    .expect("start sh to copy a program");
     assert!(
         status.success(),
         "copying {} to {}: {status}",
         from.display(),
         to.display()
     );
+}
+
+/// A child start held in progress: cli-core's fork lock taken shared, as
+/// sb-exec takes it around a spawn, on a thread of its own until this is
+/// dropped. Code that writes a program sb runs must wait for it
+/// ([`crate::fork_lock`]).
+#[derive(Debug)]
+pub struct ForkHeld {
+    release: Option<std::sync::mpsc::Sender<()>>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+/// Hold a child start in progress until the result is dropped.
+///
+/// # Panics
+///
+/// When the holding thread can't start or dies before it holds.
+#[must_use]
+pub fn fork_held() -> ForkHeld {
+    let (holding, held) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    let thread = std::thread::spawn(move || {
+        crate::fork_lock::forking(|| {
+            holding.send(()).expect("holding");
+            // Until the sender is dropped.
+            let _ = released.recv();
+        });
+    });
+    held.recv().expect("the fork lock held");
+    ForkHeld {
+        release: Some(release),
+        thread: Some(thread),
+    }
+}
+
+impl Drop for ForkHeld {
+    fn drop(&mut self) {
+        drop(self.release.take());
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+/// `work` on a thread of its own while a child start is held: it must
+/// not have finished a while later (100 ms, long enough for work that
+/// isn't held back), and finishes once the hold ends. Its result.
+///
+/// # Panics
+///
+/// When `work` finished while the child start was held, or panicked.
+#[track_caller]
+pub fn waits_for_a_fork<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> T {
+    let held = fork_held();
+    let thread = std::thread::spawn(work);
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    assert!(!thread.is_finished(), "finished while a child was starting");
+    drop(held);
+    thread.join().expect("work")
 }
 
 #[cfg(test)]

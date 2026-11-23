@@ -9,6 +9,7 @@ pub mod cancel;
 pub mod colour;
 pub mod config;
 pub mod exit;
+pub mod fork_lock;
 pub mod help;
 pub mod json;
 pub mod log;

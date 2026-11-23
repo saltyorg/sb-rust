@@ -48,6 +48,9 @@ tokio-rustls = { workspace = true, optional = true }
 # Turns `testing` on for the unit tests and every other test target (as
 # sb-journal does).
 sb-release = { workspace = true, features = ["testing"] }
+# cli-core's fork-lock helpers (`waits_for_a_fork`), for the program copy's
+# test.
+sb-cli-core = { workspace = true, features = ["testing"] }
 hex.workspace = true
 sb-term-ui = { workspace = true, features = ["testing"] }
 indicatif.workspace = true

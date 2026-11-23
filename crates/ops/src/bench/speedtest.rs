@@ -200,16 +200,29 @@ pub fn extract(archive: &Path, destination: &Path) -> Result<(), ExtractError> {
 
 /// `entry` (tar already limits it to its `size`) into a new 0700 file at
 /// `destination`, synced; the file is removed again when anything after
-/// its creation fails, and one already there is left alone.
+/// its creation fails, and one already there is left alone. Opened,
+/// written and closed under cli-core's fork lock, so no child sb starts
+/// meanwhile holds it open when the nodes run it (ETXTBSY, `fork_lock`);
+/// synced after through a handle of its own, so the sync holds no child
+/// back.
 fn write_entry(entry: &mut impl io::Read, size: u64, destination: &Path) -> io::Result<()> {
-    let mut output = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o700)
-        .open(destination)?;
-    let written = io::copy(entry, &mut output).and_then(|written| {
+    // The outer error, a failed create, leaves a file already there
+    // alone; the inner one, a failed copy, removes the file made here.
+    let copied = sb_cli_core::fork_lock::writing(|| {
+        let mut output = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o700)
+            .open(destination)?;
+        Ok::<_, io::Error>(io::copy(entry, &mut output))
+    })?;
+    let written = copied.and_then(|written| {
         if written == size {
-            output.sync_all()
+            // A read-only handle can be synced on Linux (fsync(2),
+            // HISTORY: a writable one is System V Release 4's rule,
+            // "forbidden by POSIX",
+            // <https://man7.org/linux/man-pages/man2/fsync.2.html>).
+            std::fs::File::open(destination).and_then(|output| output.sync_all())
         } else {
             Err(io::Error::other(format!(
                 "entry size mismatch: expected {size} bytes, got {written}"
@@ -636,6 +649,22 @@ mod tests {
         let err = extract(&path, &out).expect_err("exists");
         assert!(matches!(err, ExtractError::Write(_)), "{err}");
         assert_eq!(std::fs::read(&out).expect("kept"), b"\x7fELF program");
+    }
+
+    /// The program is written under cli-core's fork lock: never while a
+    /// child starts, which would inherit its write handle (ETXTBSY when a
+    /// node runs it).
+    #[test]
+    fn the_program_is_not_written_while_a_child_starts() {
+        let dir = tempfile::tempdir().expect("dir");
+        let path = archive(
+            dir.path(),
+            &[("speedtest", b"\x7fELF program", tar::EntryType::Regular)],
+        );
+        let out = dir.path().join("speedtest");
+        let into = out.clone();
+        sb_cli_core::testing::waits_for_a_fork(move || extract(&path, &into)).expect("extract");
+        assert_eq!(std::fs::read(&out).expect("read"), b"\x7fELF program");
     }
 
     #[test]

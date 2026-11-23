@@ -63,7 +63,7 @@ fn content(layout: &Layout, name: &str) -> String {
 /// <https://docs.rs/tempfile/3.27.0/tempfile/struct.Builder.html>), mode
 /// 0755 set on the open file (why not `Builder::permissions`: the umask
 /// applies to it), then renamed over the old one
-/// (`NamedTempFile::persist`).
+/// (`TempPath::persist`).
 ///
 /// # Errors
 ///
@@ -72,20 +72,28 @@ pub fn write_all(layout: &Layout, names: &[String]) -> Result<(), WrapperError> 
     for name in names {
         let path = wrapper_path(&layout.wrappers, name)?;
         let text = content(layout, name);
-        let mut file = tempfile::Builder::new()
-            .prefix(".sb-wrapper-")
-            .tempfile_in(&layout.wrappers)
-            .map_err(|cause| WrapperError::Create {
+        // Opened, written and closed (`into_temp_path` closes it,
+        // <https://docs.rs/tempfile/3.27.0/tempfile/struct.NamedTempFile.html#method.into_temp_path>)
+        // under cli-core's fork lock, so no child sb starts meanwhile
+        // holds it open when sb runs ansible-playbook through it
+        // (ETXTBSY, `fork_lock`).
+        let file = sb_cli_core::fork_lock::writing(|| {
+            let mut file = tempfile::Builder::new()
+                .prefix(".sb-wrapper-")
+                .tempfile_in(&layout.wrappers)
+                .map_err(|cause| WrapperError::Create {
+                    path: path.clone(),
+                    cause,
+                })?;
+            let written = file.write_all(text.as_bytes()).and_then(|()| {
+                file.as_file()
+                    .set_permissions(std::fs::Permissions::from_mode(0o755))
+            });
+            written.map_err(|cause| WrapperError::Write {
                 path: path.clone(),
                 cause,
             })?;
-        let written = file.write_all(text.as_bytes()).and_then(|()| {
-            file.as_file()
-                .set_permissions(std::fs::Permissions::from_mode(0o755))
-        });
-        written.map_err(|cause| WrapperError::Write {
-            path: path.clone(),
-            cause,
+            Ok::<_, WrapperError>(file.into_temp_path())
         })?;
         file.persist(&path).map_err(|err| WrapperError::Activate {
             path: path.clone(),
@@ -170,6 +178,20 @@ mod tests {
 
     fn names(names: &[&str]) -> Vec<String> {
         names.iter().map(ToString::to_string).collect()
+    }
+
+    /// Each wrapper is written under cli-core's fork lock: never while a
+    /// child starts, which would inherit its write handle (ETXTBSY when
+    /// sb runs ansible-playbook through it).
+    #[test]
+    fn a_wrapper_is_not_written_while_a_child_starts() {
+        let (_dir, layout) = tree();
+        let layout = sb_cli_core::testing::waits_for_a_fork(move || {
+            write_all(&layout, &names(&["ansible"])).map(|()| layout)
+        })
+        .expect("written");
+        let text = std::fs::read_to_string(layout.wrappers.join("ansible")).expect("wrapper");
+        assert_eq!(text, content(&layout, "ansible"));
     }
 
     #[test]

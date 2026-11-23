@@ -398,16 +398,27 @@ fn extract(
         // (<https://docs.rs/tar/0.4.46/tar/struct.Entry.html#method.unpack>):
         // it takes the archive's mode, replaces an existing file, sets the
         // mtime and has no text with the two sizes sb-go's mismatch names.
-        let mut out = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o755)
-            .open(staged)
-            .map_err(|cause| ExtractError::Create { name, cause })?;
-        // tar's entry reader stops at its size, so only a short read can
-        // differ (sb-go reads `size + 1` to catch a longer one).
-        let written = io::copy(&mut entry, &mut out).map_err(ExtractError::Write)?;
-        out.sync_all().map_err(ExtractError::Sync)?;
+        // Opened, written and closed under cli-core's fork lock, so no
+        // child sb starts meanwhile holds it open when its probe runs it
+        // (ETXTBSY, `fork_lock`). tar's entry reader stops at its size, so
+        // only a short read can differ (sb-go reads `size + 1` to catch a
+        // longer one).
+        let written = sb_cli_core::fork_lock::writing(|| {
+            let mut out = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o755)
+                .open(staged)
+                .map_err(|cause| ExtractError::Create { name, cause })?;
+            io::copy(&mut entry, &mut out).map_err(ExtractError::Write)
+        })?;
+        // Synced through a handle of its own, so the sync holds no child
+        // back: a read-only handle can be synced on Linux (fsync(2),
+        // HISTORY: a writable one is System V Release 4's rule, "forbidden
+        // by POSIX", <https://man7.org/linux/man-pages/man2/fsync.2.html>).
+        File::open(staged)
+            .and_then(|out| out.sync_all())
+            .map_err(ExtractError::Sync)?;
         if written != size {
             return Err(ExtractError::Mismatch {
                 name,
@@ -684,5 +695,20 @@ mod tests {
             "{err}"
         );
         assert_eq!(std::fs::read(&staged).expect("kept"), b"already");
+    }
+
+    /// The binary is written under cli-core's fork lock: never while a
+    /// child starts, which would inherit its write handle (ETXTBSY when
+    /// the probe runs it).
+    #[test]
+    fn the_binary_is_not_written_while_a_child_starts() {
+        let dir = tempfile::tempdir().expect("dir");
+        let path = dir.path().join("uv.tar.gz");
+        std::fs::write(&path, archive(&[Entry::File("d/uv", b"uv")])).expect("archive");
+        let staged = dir.path().join("uv");
+        let (from, into) = (path, staged.clone());
+        sb_cli_core::testing::waits_for_a_fork(move || extract(&from, "uv", &into, 16))
+            .expect("extract");
+        assert_eq!(std::fs::read(&staged).expect("staged"), b"uv");
     }
 }

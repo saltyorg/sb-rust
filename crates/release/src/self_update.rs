@@ -324,7 +324,7 @@ async fn install(
                                 max_size: MAX_SIZE,
                             };
                             releases
-                                .download(asset, stage, step)
+                                .download_program(asset, stage, step)
                                 .await
                                 .context("binary update failed")
                         },
