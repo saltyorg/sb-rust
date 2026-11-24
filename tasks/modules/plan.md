@@ -92,7 +92,7 @@ The work, by module, with the build-order step it comes from:
    `Cargo.lock` without the mark lands alone too. A `Cargo.lock` conflict on rebase takes
    `main`'s side and lets cargo re-resolve; it is never hand-merged.
 4. **Files many lanes add to, by union.** These take both sides' lines on
-   a rebase conflict, as `scripts/floor-acknowledged.txt` does:
+   a rebase conflict:
    - `crates/sb/src/main.rs`: a command's code lives in its own file
      under `crates/sb/src/` (as the tui spec's `edit.rs`); `main.rs` gains
      only the subcommand's variant, its dispatch arm and the `mod` line;

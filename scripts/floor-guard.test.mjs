@@ -23,25 +23,31 @@ const guard = join(dirname(fileURLToPath(import.meta.url)), 'floor-guard.mjs');
 // The scratch repositories see no configuration and no repository of the
 // caller's (a hook exports GIT_DIR and friends); HOME and XDG_CONFIG_HOME
 // are each run's scratch directory.
-const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('GIT_')));
+// Nor does a FLOOR_APPROVED the caller set for its own uncommitted work
+// (ADR-029): the `approved` option sets it where a case needs it.
+const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('GIT_') && k !== 'FLOOR_APPROVED'));
 env.GIT_CONFIG_GLOBAL = '/dev/null';
 env.GIT_CONFIG_SYSTEM = '/dev/null';
 
 // run(base, change): the guard's findings, as "rule file" strings, for
 // `change` (path -> new content, null deletes) on top of the committed
-// `base` (path -> content). With `commit`, the change is committed too and
-// the guard is given the base commit, as a range run is. `config` is git
-// configuration set in the scratch repository (key -> value). A list of
-// changes is a commit each, the last one left uncommitted unless `commit`
-// is set; the guard is then given the commit before the first of them.
-const run = (base, change, { commit = false, config = {} } = {}) => {
+// `base` (path -> content): `found`, the blocking ones; `reported`, the
+// ones printed for the reviewer; `approved`, the blocking ones an approval
+// covers. With `commit`, the change is committed too and the guard is
+// given the base commit, as a range run is. `config` is git configuration
+// set in the scratch repository (key -> value). A list of changes is a
+// commit each, the last one left uncommitted unless `commit` is set; the
+// guard is then given the commit before the first of them. `message` is
+// the last commit's message, `baseMessage` the base commit's, and
+// `approved` the FLOOR_APPROVED variable.
+const run = (base, change, { commit = false, config = {}, message = 'test', baseMessage = 'test', approved } = {}) => {
   const dir = mkdtempSync(join(tmpdir(), 'floor-guard-'));
   try {
     const scratch = { ...env, HOME: dir, XDG_CONFIG_HOME: dir };
     const git = (...args) => execFileSync('git', args, { cwd: dir, env: scratch, stdio: 'pipe' });
-    const save = () => {
+    const save = (m = 'test') => {
       git('add', '-A');
-      git('-c', 'user.name=test', '-c', 'user.email=test', 'commit', '-q', '-m', 'test');
+      git('-c', 'user.name=test', '-c', 'user.email=test', 'commit', '-q', '-m', m);
     };
     const write = (files) => {
       for (const [f, text] of Object.entries(files)) {
@@ -53,31 +59,49 @@ const run = (base, change, { commit = false, config = {} } = {}) => {
     git('init', '-q');
     for (const [key, value] of Object.entries(config)) git('config', key, value);
     write({ 'README.md': 'base\n', ...base });
-    save();
+    save(baseMessage);
     const steps = [change].flat();
     steps.forEach((step, i) => {
       write(step);
-      if (commit || i < steps.length - 1) save();
+      if (i < steps.length - 1) save();
+      else if (commit) save(message);
     });
     const r = spawnSync(process.execPath, [guard, ...(commit ? ['--base', 'HEAD~' + steps.length] : [])],
-      { cwd: dir, env: scratch, encoding: 'utf8' });
-    const found = [...r.stderr.matchAll(/^ {2}\[([\w-]+)\] (\S+):/gm)].map((m) => m[1] + ' ' + m[2]);
-    return { status: r.status, found, output: r.stdout + r.stderr };
+      { cwd: dir, env: approved === undefined ? scratch : { ...scratch, FLOOR_APPROVED: approved }, encoding: 'utf8' });
+    const of = (text, re) => [...text.matchAll(re)].map((m) => m[1] + ' ' + m[2]);
+    return { status: r.status, found: of(r.stderr, /^ {2}\[([\w-]+)\] (\S+):/gm),
+      reported: of(r.stdout, /^ {2}\[([\w-]+)\] (\S+):/gm), approved: of(r.stdout, /^ {2}approved \[([\w-]+)\] (\S+):/gm),
+      output: r.stdout + r.stderr };
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 };
 
-// flags: the change gives exactly these findings, in any order. clean: it
-// gives none.
-const flags = (base, change, expected, options) => {
+// The findings that are only reported, never blocking (ADR-029).
+const REPORTED = ['assertion-removed', 'test-removed', 'test-deleted', 'gate-line-removed'];
+const isReported = (finding) => REPORTED.includes(finding.split(' ')[0]);
+// flags: the change gives exactly these findings, in any order, blocking
+// and reported, and at least one blocks, so the run fails. reports: it
+// gives only these reported ones, and the run passes. clean: it gives
+// none of either.
+const outcome = (base, change, expected, options) => {
   const r = run(base, change, options);
-  assert.deepEqual(r.found.sort(), [expected].flat().sort(), r.output);
-  assert.equal(r.status, 1, r.output);
+  const all = [expected].flat();
+  assert.deepEqual(r.found.sort(), all.filter((e) => !isReported(e)).sort(), r.output);
+  assert.deepEqual(r.reported.sort(), all.filter(isReported).sort(), r.output);
+  return r;
+};
+const flags = (base, change, expected, options) => {
+  assert.ok([expected].flat().some((e) => !isReported(e)), 'flags expects a blocking finding');
+  assert.equal(outcome(base, change, expected, options).status, 1);
+};
+const reports = (base, change, expected, options) => {
+  assert.ok([expected].flat().every(isReported), 'reports expects reported findings only');
+  assert.equal(outcome(base, change, expected, options).status, 0);
 };
 const clean = (base, change, options) => {
   const r = run(base, change, options);
-  assert.deepEqual(r.found, [], r.output);
+  assert.deepEqual([...r.found, ...r.reported], [], r.output);
   assert.equal(r.status, 0, r.output);
 };
 // edit(files, path, from, to): `files` with one text replaced in one file.
@@ -127,8 +151,28 @@ test('check.sh: a threshold that is removed, or no longer a number, is flagged',
 });
 
 test('check.sh: a dropped -D warnings is flagged, a reindented line is clean', () => {
-  flags(checkSh, edit(checkSh, CHECK, ' -- -D warnings', ''), 'gate-line-removed ' + CHECK);
+  flags(checkSh, edit(checkSh, CHECK, ' -- -D warnings', ''), ['lint-weakened ' + CHECK, 'gate-line-removed ' + CHECK]);
+  flags(checkSh, edit(checkSh, CHECK, '-D warnings', '-W warnings'), ['lint-weakened ' + CHECK, 'gate-line-removed ' + CHECK]);
   clean(checkSh, edit(checkSh, CHECK, '  cargo clippy', '    cargo clippy'));
+});
+
+test('check.sh: an added -A on a cargo line is flagged; a -D added, or moved to another line, is clean', () => {
+  flags(checkSh, edit(checkSh, CHECK, ' -D warnings', ' -D warnings -A clippy::pedantic'),
+    ['lint-weakened ' + CHECK, 'gate-line-removed ' + CHECK]);
+  // Every spelling: no space, quoted, after `=`, and the long forms.
+  for (const [from, to] of [[' -D warnings', ' -Dwarnings -Aclippy::pedantic'],
+    [' -D warnings', ' -D warnings --allow clippy::pedantic'], [' -D warnings', ' -D warnings --allow=clippy::pedantic'],
+    [' -D warnings', ' --warn warnings'], [' -D warnings', ' --force-warn=warnings'],
+    ['  cargo clippy', '  RUSTFLAGS="-A warnings" cargo clippy'], ['  cargo clippy', '  RUSTFLAGS=-Awarnings cargo clippy']]) {
+    flags(checkSh, edit(checkSh, CHECK, from, to), ['lint-weakened ' + CHECK, 'gate-line-removed ' + CHECK]);
+  }
+  flags(checkSh, edit(checkSh, CHECK, 'fast() {', 'fast() {\n  cargo build --quiet -- --allow warnings'), 'lint-weakened ' + CHECK);
+  reports(checkSh, edit(checkSh, CHECK, ' -D warnings', ' --deny warnings'), 'gate-line-removed ' + CHECK);
+  reports(checkSh, edit(checkSh, CHECK, ' -D warnings', ' -D warnings # not -A clippy::all'), 'gate-line-removed ' + CHECK);
+  reports(checkSh, edit(checkSh, CHECK, ' -D warnings', ' -D warnings -D clippy::pedantic'), 'gate-line-removed ' + CHECK);
+  reports(checkSh, edit(checkSh, CHECK, '--quiet -- -D warnings', '--quiet \\\n    -- -D warnings'),
+    'gate-line-removed ' + CHECK);
+  clean(checkSh, edit(checkSh, CHECK, 'step() {', 'declare -A seen=()\nstep() {'));
 });
 
 test('check.sh: a new MUTATION_TESTERS entry is flagged, a comment beside it is clean', () => {
@@ -138,7 +182,7 @@ test('check.sh: a new MUTATION_TESTERS entry is flagged, a comment beside it is 
 });
 
 test('check.sh: a removed step is flagged, an added step is clean', () => {
-  flags(checkSh,
+  reports(checkSh,
     edit(checkSh, CHECK, '  step "floor guard"\n  node scripts/floor-guard.mjs --base "$base"\n', ''),
     ['gate-line-removed ' + CHECK, 'gate-line-removed ' + CHECK]);
   clean(checkSh, edit(checkSh, CHECK, '  step "floor guard"', '  step "format"\n  cargo fmt --check\n  step "floor guard"'));
@@ -420,13 +464,13 @@ for (const { file, text } of added) {
 };
 
 test('floor-guard.mjs: a removed rule is flagged, an added rule is clean', () => {
-  flags(guardMjs, edit(guardMjs, GUARD, "  if (SKIPS.test(text)) flag('test-made-easier', file, text);\n", ''),
+  reports(guardMjs, edit(guardMjs, GUARD, "  if (SKIPS.test(text)) flag('test-made-easier', file, text);\n", ''),
     'gate-line-removed ' + GUARD);
   clean(guardMjs, edit(guardMjs, GUARD, '}\n', "  if (/dbg!/.test(text)) flag('unfinished-work', file, text);\n}\n"));
 });
 
 test('floor-guard.mjs: a narrowed pattern is flagged, a new pattern and a reworded comment are clean', () => {
-  flags(guardMjs, edit(guardMjs, GUARD, '|\\bTODO\\b/;', '/;'), 'gate-line-removed ' + GUARD);
+  reports(guardMjs, edit(guardMjs, GUARD, '|\\bTODO\\b/;', '/;'), 'gate-line-removed ' + GUARD);
   clean(guardMjs, edit(guardMjs, GUARD, 'const SKIPS', 'const EMPTY = /\\{\\s*\\}/;\nconst SKIPS'));
   clean(guardMjs, edit(guardMjs, GUARD, 'diff-scoped enforcement', 'enforcement, by diff,'));
 });
@@ -448,12 +492,12 @@ exit $status
 };
 
 test('check-commit-messages.sh: a loosened pattern is flagged, a reworded comment is clean', () => {
-  flags(messagesSh, edit(messagesSh, MESSAGES, '[^A-Z ](.{0,98}[^.])?$', '.*$'), 'gate-line-removed ' + MESSAGES);
+  reports(messagesSh, edit(messagesSh, MESSAGES, '[^A-Z ](.{0,98}[^.])?$', '.*$'), 'gate-line-removed ' + MESSAGES);
   clean(messagesSh, edit(messagesSh, MESSAGES, '# Fails if', '# Exits 1 if'));
 });
 
 test('check-commit-messages.sh: a removed rule is flagged, an added rule is clean', () => {
-  flags(messagesSh, edit(messagesSh, MESSAGES, "  echo \"Missing 'Review:' line: $sha\"\n  status=1\n", '  :\n'),
+  reports(messagesSh, edit(messagesSh, MESSAGES, "  echo \"Missing 'Review:' line: $sha\"\n  status=1\n", '  :\n'),
     ['gate-line-removed ' + MESSAGES, 'gate-line-removed ' + MESSAGES]);
   clean(messagesSh, edit(messagesSh, MESSAGES, 'exit $status',
     'if ! grep -qE \'^Library-check: .+\' <<<"$body"; then status=1; fi\nexit $status'));
@@ -465,7 +509,8 @@ test('a deleted guard script is flagged once, not line by line', () => {
 });
 
 test('a committed weakening is flagged against its base, a committed clean change is not', () => {
-  flags(checkSh, edit(checkSh, CHECK, ' -- -D warnings', ''), 'gate-line-removed ' + CHECK, { commit: true });
+  flags(checkSh, edit(checkSh, CHECK, ' -- -D warnings', ''), ['lint-weakened ' + CHECK, 'gate-line-removed ' + CHECK],
+    { commit: true });
   flags(rootToml, edit(rootToml, ROOT, 'todo = "deny"', 'todo = "allow"'), 'lint-weakened ' + ROOT, { commit: true });
   clean(checkSh, edit(checkSh, CHECK, 'COVERAGE_MIN=90 ', 'COVERAGE_MIN=95 '), { commit: true });
 });
@@ -502,7 +547,7 @@ test('an added .gitattributes is flagged, and hides nothing', () => {
   flags(checkSh, { '.gitattributes': 'scripts/*.sh -diff\n', ...lowered },
     ['tool-config-added .gitattributes', 'threshold-loosened ' + CHECK]);
   flags(checkSh, { '.gitattributes': '* binary\n', ...edit(checkSh, CHECK, ' -- -D warnings', '') },
-    ['tool-config-added .gitattributes', 'gate-line-removed ' + CHECK], { commit: true });
+    ['tool-config-added .gitattributes', 'lint-weakened ' + CHECK, 'gate-line-removed ' + CHECK], { commit: true });
 });
 
 // R2: a threshold weakened by an added assignment.
@@ -687,14 +732,14 @@ test('check.sh: MUTATION_TESTERS as a compound assignment is flagged, a comment 
 
 test('check.sh: a tester added to an entry is not a narrower scope, a tester removed is', () => {
   const entry = 'MUTATION_TESTERS[sb-journal]="sb-host"';
-  flags(checkSh, edit(checkSh, CHECK, entry, 'MUTATION_TESTERS[sb-journal]="sb-host sb"'), 'gate-line-removed ' + CHECK);
+  reports(checkSh, edit(checkSh, CHECK, entry, 'MUTATION_TESTERS[sb-journal]="sb-host sb"'), 'gate-line-removed ' + CHECK);
   const two = edit(checkSh, CHECK, entry, 'MUTATION_TESTERS[sb-journal]="sb-host sb"');
   flags(two, edit(two, CHECK, '"sb-host sb"', '"sb-host"'), ['mutation-scope-narrowed ' + CHECK, 'gate-line-removed ' + CHECK]);
 });
 
 test('one added line does not excuse several removed copies of it', () => {
   const twice = { [MESSAGES]: messagesSh[MESSAGES].replace('exit $status', 'if bad; then\n  status=1\nfi\nexit $status') };
-  flags(twice, { [MESSAGES]: messagesSh[MESSAGES].replace("  echo \"Missing 'Review:' line: $sha\"\n  status=1\n", '    status=1\n') },
+  reports(twice, { [MESSAGES]: messagesSh[MESSAGES].replace("  echo \"Missing 'Review:' line: $sha\"\n  status=1\n", '    status=1\n') },
     ['gate-line-removed ' + MESSAGES, 'gate-line-removed ' + MESSAGES, 'gate-line-removed ' + MESSAGES,
       'gate-line-removed ' + MESSAGES]);
 });
@@ -710,9 +755,9 @@ test('a lowered minimum is flagged', () => {
 `,
 };
 
-test("the guard's tests: a removed assertion or a deleted file is flagged, a new test is clean", () => {
-  flags(guardTests, edit(guardTests, TESTS, "  flags(checkSh, lowered, 'threshold-loosened');\n", ''), 'gate-line-removed ' + TESTS);
-  flags(guardTests, { [TESTS]: null }, 'gate-file-deleted ' + TESTS);
+test("the guard's tests are no gate file (ADR-029): a removed assertion, a deleted file and a new test are clean", () => {
+  clean(guardTests, edit(guardTests, TESTS, "  flags(checkSh, lowered, 'threshold-loosened');\n", ''));
+  clean(guardTests, { [TESTS]: null });
   clean(guardTests, { [TESTS]: guardTests[TESTS] + "test('exit 0 is flagged', () => {\n  flags(checkSh, 'exit 0 || true');\n});\n" });
 });
 
@@ -741,115 +786,80 @@ test('a textconv filter named by an added .gitattributes hides nothing', () => {
     ['tool-config-added .gitattributes', 'threshold-loosened ' + CHECK], { config: { 'diff.hide.textconv': 'true' } });
 });
 
-// Acknowledged findings (ADR-015): scripts/floor-acknowledged.txt.
+// Approved exceptions (ADR-029): a Floor-approved line in a commit message
+// after the base, or in FLOOR_APPROVED for uncommitted work.
 
-const ACK = 'scripts/floor-acknowledged.txt';
-const entry = (rule, file, text, reason = 'the reason') => [rule, file, text, reason].join('\t') + '\n';
-const clippyLine = 'cargo clippy --workspace --all-targets --quiet -- -D warnings';
-const dropped = edit(checkSh, CHECK, ' -- -D warnings', '');
-const droppedEntry = entry('gate-line-removed', CHECK, clippyLine, 'clippy moved to its own script');
+const approval = (rule, file, reason = 'the reason') => `Floor-approved: ${rule} ${file} — ${reason} (the maintainer, 2026-11-24)`;
+const loosened = edit(checkSh, CHECK, 'COVERAGE_MIN=90 ', 'COVERAGE_MIN=80 ');
 
-test('an acknowledged finding passes, and is printed with its reason', () => {
-  const r = run(checkSh, { ...dropped, [ACK]: '# rule, file, line, reason\n' + droppedEntry });
-  assert.equal(r.status, 0, r.output);
-  assert.match(r.output, /acknowledged/);
-  assert.ok(r.output.includes('[gate-line-removed] ' + CHECK + ': ' + clippyLine), r.output);
-  assert.ok(r.output.includes('clippy moved to its own script'), r.output);
-});
-
-test('an acknowledgement is read whatever the spacing inside its line', () => {
-  clean(checkSh, { ...edit(checkSh, CHECK, 'COVERAGE_MIN=90 ', 'COVERAGE_MIN=80 '),
-    [ACK]: entry('threshold-loosened', CHECK,
-      'COVERAGE_MIN=90 # % of changed lines covered -> COVERAGE_MIN=80 # % of changed lines covered') });
-});
-
-test('an entry covers one finding: a second identical finding needs a second entry', () => {
-  const twice = { [MESSAGES]: messagesSh[MESSAGES].replace('exit $status', 'if bad; then\n  status=1\nfi\nexit $status') };
-  const both = { [MESSAGES]: twice[MESSAGES].replaceAll('  status=1\n', '  :\n') };
-  const one = entry('gate-line-removed', MESSAGES, 'status=1');
-  flags(twice, { ...both, [ACK]: one }, 'gate-line-removed ' + MESSAGES);
-  clean(twice, { ...both, [ACK]: one + one });
-});
-
-test('gate-line-removed: two removed lines with one entry fail, with an entry each they pass', () => {
-  const two = edit(checkSh, CHECK, '  step "floor guard"\n  node scripts/floor-guard.mjs --base "$base"\n', '');
-  const step = entry('gate-line-removed', CHECK, 'step "floor guard"');
-  flags(checkSh, { ...two, [ACK]: step }, 'gate-line-removed ' + CHECK);
-  clean(checkSh, { ...two, [ACK]: step + entry('gate-line-removed', CHECK, 'node scripts/floor-guard.mjs --base "$base"') });
-});
-
-test('an entry for another rule, file or line acknowledges nothing, and is itself reported', () => {
-  for (const other of [entry('threshold-loosened', CHECK, clippyLine), entry('gate-line-removed', MESSAGES, clippyLine),
-    entry('gate-line-removed', CHECK, 'cargo clippy')]) {
-    flags(checkSh, { ...dropped, [ACK]: other }, ['gate-line-removed ' + CHECK, 'acknowledgement-unmatched ' + ACK]);
+test('an approved blocking finding passes, and is printed with its approval', () => {
+  const line = approval('threshold-loosened', CHECK, 'the floor the tree measures');
+  for (const options of [{ approved: line }, { commit: true, message: 'test\n\n' + line + '\n' }]) {
+    const r = run(checkSh, loosened, options);
+    assert.equal(r.status, 0, r.output);
+    assert.deepEqual(r.approved, ['threshold-loosened ' + CHECK], r.output);
+    assert.ok(r.output.includes(line), r.output);
   }
 });
 
-test('an added entry that matches no finding fails', () => {
-  flags(checkSh, { [ACK]: droppedEntry }, 'acknowledgement-unmatched ' + ACK);
-  flags(checkSh, { ...dropped, [ACK]: droppedEntry + droppedEntry }, 'acknowledgement-unmatched ' + ACK);
+test('an approval covers every finding of its rule in its file, in any commit of the range', () => {
+  const twice = edit(checkSh, CHECK, 'COVERAGE_MIN=90 ', 'COVERAGE_MIN=80 ');
+  twice[CHECK] = twice[CHECK].replace('=45711520', '=55711520');
+  const r = run(checkSh, twice, { approved: approval('threshold-loosened', CHECK) });
+  assert.equal(r.status, 0, r.output);
+  assert.deepEqual(r.approved, ['threshold-loosened ' + CHECK, 'threshold-loosened ' + CHECK], r.output);
+  // ADR-029's limit: one commit's approval covers another commit's finding
+  // of the same rule in the same file in the range.
+  const first = edit(checkSh, CHECK, 'COVERAGE_MIN=90 ', 'COVERAGE_MIN=80 ');
+  const second = { [CHECK]: first[CHECK].replace('=45711520', '=55711520') };
+  const range = run(checkSh, [first, second], { commit: true, message: 'test\n\n' + approval('threshold-loosened', CHECK) });
+  assert.equal(range.status, 0, range.output);
+  assert.equal(range.approved.length, 2, range.output);
 });
 
-test('an entry without a reason fails', () => {
-  flags(checkSh, { ...dropped, [ACK]: ['gate-line-removed', CHECK, clippyLine].join('\t') + '\n' },
-    ['gate-line-removed ' + CHECK, 'acknowledgement-malformed ' + ACK]);
-  flags(checkSh, { ...dropped, [ACK]: entry('gate-line-removed', CHECK, clippyLine, ' ') },
-    ['gate-line-removed ' + CHECK, 'acknowledgement-malformed ' + ACK]);
+test('an approval that covers no finding is printed, and fails nothing', () => {
+  const r = run(checkSh, { 'README.md': 'more\n' }, { approved: approval('threshold-loosened', CHECK) });
+  assert.equal(r.status, 0, r.output);
+  assert.match(r.output, /an approval that covers no finding/);
 });
 
-test('an entry from an earlier commit acknowledges nothing', () => {
-  flags({ ...checkSh, [ACK]: droppedEntry }, dropped, 'gate-line-removed ' + CHECK);
-  flags({ ...checkSh, [ACK]: droppedEntry }, dropped, 'gate-line-removed ' + CHECK, { commit: true });
+test('the caller\'s FLOOR_APPROVED never reaches the scratch repositories', () => {
+  assert.equal(env.FLOOR_APPROVED, undefined);
 });
 
-test('a later weakening in the same file still fails after an acknowledged one', () => {
-  const first = { ...dropped, [ACK]: droppedEntry };
-  const second = { [CHECK]: dropped[CHECK].replace('  step "floor guard"\n', '') };
-  flags(checkSh, [first, second], 'gate-line-removed ' + CHECK);
-  flags(checkSh, [first, second], 'gate-line-removed ' + CHECK, { commit: true });
+test('an approval covers its rule in its file only', () => {
+  for (const other of [approval('threshold-removed', CHECK), approval('threshold-loosened', MESSAGES)]) {
+    flags(checkSh, loosened, 'threshold-loosened ' + CHECK, { approved: other });
+  }
+  const both = { ...loosened, ...edit(rootToml, ROOT, 'todo = "deny"', 'todo = "allow"') };
+  flags({ ...checkSh, ...rootToml }, both, 'lint-weakened ' + ROOT, { approved: approval('threshold-loosened', CHECK) });
 });
 
-test('a range of commits passes when each finding and its entry are both in it', () => {
-  clean(checkSh, [{ ...dropped, [ACK]: droppedEntry }, { 'README.md': 'more\n' }], { commit: true });
-  clean(checkSh, [dropped, { 'README.md': 'more\n' }, { [ACK]: droppedEntry }], { commit: true });
-  const second = { [CHECK]: dropped[CHECK].replace('  step "floor guard"\n', ''),
-    [ACK]: droppedEntry + entry('gate-line-removed', CHECK, 'step "floor guard"') };
-  clean(checkSh, [{ ...dropped, [ACK]: droppedEntry }, second], { commit: true });
+test('an approval in the base commit approves nothing', () => {
+  const old = 'test\n\n' + approval('threshold-loosened', CHECK);
+  flags(checkSh, loosened, 'threshold-loosened ' + CHECK, { baseMessage: old });
+  flags(checkSh, loosened, 'threshold-loosened ' + CHECK, { baseMessage: old, commit: true });
 });
 
-test('the acknowledgement file: a removed or edited entry is flagged, a comment and a moved entry are clean', () => {
-  const other = entry('lint-removed', ROOT, 'todo = "deny"');
-  const kept = { ...checkSh, [ACK]: '# The record of acknowledged findings.\n' + droppedEntry + other };
-  flags(kept, { [ACK]: '# The record of acknowledged findings.\n' + other }, 'acknowledgement-removed ' + ACK);
-  flags(kept, { [ACK]: null }, 'acknowledgement-removed ' + ACK);
-  flags(kept, { [ACK]: kept[ACK].replace('clippy moved to its own script', 'another reason') },
-    ['acknowledgement-removed ' + ACK, 'acknowledgement-unmatched ' + ACK]);
-  clean(kept, { [ACK]: '# The record of acknowledged findings.\n# One line each.\n' + other + droppedEntry });
+test('a Floor-approved line in another form, or for a reported rule, fails the run', () => {
+  for (const bad of ['Floor-approved: threshold-loosened ' + CHECK,
+    'Floor-approved: threshold-loosened ' + CHECK + ' — the reason',
+    'Floor-approved: threshold-loosened ' + CHECK + ' — the reason (an agent, 2026-11-24)',
+    'Floor-approved: threshold-loosened ' + CHECK + ' - the reason (the maintainer, 2026-11-24)',
+    '  ' + approval('threshold-loosened', CHECK)]) {
+    flags(checkSh, loosened, ['threshold-loosened ' + CHECK, 'approval-malformed Floor-approved'], { approved: bad });
+  }
+  flags(checkSh, edit(checkSh, CHECK, '  step "floor guard"\n', ''), ['approval-malformed Floor-approved',
+    'gate-line-removed ' + CHECK], { approved: approval('gate-line-removed', CHECK) });
+  flags(checkSh, { 'README.md': 'more\n' }, 'approval-malformed Floor-approved',
+    { commit: true, message: 'test\n\nFloor-approved: anything' });
 });
 
-// The second review: what an entry can't cover.
-
-test('a tool config: each added line needs its own entry', () => {
-  const config = { 'clippy.toml': 'msrv = "1.99"\n' };
-  const two = { 'clippy.toml': 'too-many-lines-threshold = 500\ntoo-many-arguments-threshold = 20\nmsrv = "1.99"\n' };
-  flags(config, { ...two, [ACK]: entry('tool-config-changed', 'clippy.toml', 'too-many-lines-threshold = 500') },
-    'tool-config-changed clippy.toml');
-  flags(config, { ...two, [ACK]: entry('tool-config-changed', 'clippy.toml', 'lines added') },
-    ['tool-config-changed clippy.toml', 'tool-config-changed clippy.toml', 'acknowledgement-unmatched ' + ACK]);
-  clean(config, { ...two, [ACK]: entry('tool-config-changed', 'clippy.toml', 'too-many-lines-threshold = 500')
-    + entry('tool-config-changed', 'clippy.toml', 'too-many-arguments-threshold = 20') });
-});
-
-test('a removed, an unmatched and a malformed entry cannot be acknowledged', () => {
-  const kept = { ...checkSh, [ACK]: droppedEntry };
-  flags(kept, { [ACK]: entry('acknowledgement-removed', ACK, droppedEntry.trim().slice(0, 120).replace(/\t/g, ' ')) },
-    ['acknowledgement-removed ' + ACK, 'acknowledgement-unmatched ' + ACK]);
-  const stray = entry('lint-removed', ROOT, 'todo = "deny"');
-  flags(checkSh, { [ACK]: stray + entry('acknowledgement-unmatched', ACK, stray.trim().slice(0, 120).replace(/\t/g, ' ')) },
-    ['acknowledgement-unmatched ' + ACK, 'acknowledgement-unmatched ' + ACK]);
-  const short = 'lint-removed\t' + ROOT + '\n';
-  flags(checkSh, { [ACK]: short + entry('acknowledgement-malformed', ACK, short.trim().slice(0, 120).replace(/\t/g, ' ')) },
-    ['acknowledgement-malformed ' + ACK, 'acknowledgement-unmatched ' + ACK]);
+test('reported findings are printed for the reviewer, and pass', () => {
+  const r = run(checkSh, edit(checkSh, CHECK, '  step "floor guard"\n', ''));
+  assert.equal(r.status, 0, r.output);
+  assert.match(r.output, /for the code reviewer to judge/);
+  assert.ok(r.output.includes('[gate-line-removed] ' + CHECK + ': step "floor guard"'), r.output);
 });
 
 // docs-M2: false negatives in Rust files and CONSTRAINTS.md.
@@ -951,11 +961,11 @@ pub fn run(r: &Runner) -> std::io::Result<bool> {
 test('a removed assert_cmd chain step is flagged, a removed builder step is clean', () => {
   for (const step of ['        .assert()\n', '        .success()\n', '        .code(0)\n',
     '        .stdout(predicates::str::contains("sb"))\n', '        .stderr("");\n']) {
-    flags(cliRs, edit(cliRs, CLI, step, step.endsWith(';\n') ? ';\n' : ''), 'assertion-removed ' + CLI);
+    reports(cliRs, edit(cliRs, CLI, step, step.endsWith(';\n') ? ';\n' : ''), 'assertion-removed ' + CLI);
   }
-  flags(cliRs, edit(cliRs, CLI, '        .assert()\n        .failure();\n', '        ;\n'),
+  reports(cliRs, edit(cliRs, CLI, '        .assert()\n        .failure();\n', '        ;\n'),
     ['assertion-removed ' + CLI, 'assertion-removed ' + CLI]);
-  flags(cliRs, edit(cliRs, CLI, '.arg("--bad").assert().failure();', '.arg("--bad").ok();'), 'assertion-removed ' + CLI);
+  reports(cliRs, edit(cliRs, CLI, '.arg("--bad").assert().failure();', '.arg("--bad").ok();'), 'assertion-removed ' + CLI);
   clean(cliRs, edit(cliRs, CLI, '        .arg("version")\n', ''));
   clean(runRs, edit(runRs, RUN, '        .stdout(Stdio::piped())\n        .stderr(std::process::Stdio::null())\n', ''));
   clean(runRs, edit(runRs, RUN, '\n        .failure("Docker container start");', ';'));
@@ -964,16 +974,16 @@ test('a removed assert_cmd chain step is flagged, a removed builder step is clea
 });
 
 test('a deleted src file that held tests is flagged, one without tests is clean', () => {
-  flags(libRs, { [LIB]: null }, 'test-deleted ' + LIB);
-  flags(libRs, { [LIB]: null }, 'test-deleted ' + LIB, { commit: true });
+  reports(libRs, { [LIB]: null }, 'test-deleted ' + LIB);
+  reports(libRs, { [LIB]: null }, 'test-deleted ' + LIB, { commit: true });
   const tokio = { [RUN]: runRs[RUN] + '\n#[tokio::test]\nasync fn runs() {}\n' };
-  flags(tokio, { [RUN]: null }, 'test-deleted ' + RUN);
-  flags(cliRs, { [CLI]: null }, 'test-deleted ' + CLI);
-  flags({ 'crates/sb/tests/common/mod.rs': 'pub fn sb() {}\n' }, { 'crates/sb/tests/common/mod.rs': null },
+  reports(tokio, { [RUN]: null }, 'test-deleted ' + RUN);
+  reports(cliRs, { [CLI]: null }, 'test-deleted ' + CLI);
+  reports({ 'crates/sb/tests/common/mod.rs': 'pub fn sb() {}\n' }, { 'crates/sb/tests/common/mod.rs': null },
     'test-deleted crates/sb/tests/common/mod.rs');
   clean({ 'docs/testing.md': 'Unit tests carry #[test].\n' }, { 'docs/testing.md': null });
   clean(runRs, { [RUN]: null });
-  flags({ ...runRs, ...cliRs }, { [RUN]: null, [CLI]: null }, 'test-deleted ' + CLI);
+  reports({ ...runRs, ...cliRs }, { [RUN]: null, [CLI]: null }, 'test-deleted ' + CLI);
   const outOfLine = { [RUN]: runRs[RUN] + '\n#[cfg(test)]\nmod tests;\n' };
   clean(outOfLine, { [RUN]: null });
 });
@@ -1053,16 +1063,16 @@ test('a Rust file: #[cfg(false)] and #[cfg(not(all()))] are flagged, #[cfg(not(a
 
 test('a removed assert_cmd .code( with its argument on the next line is flagged', () => {
   const split = { [CLI]: cliRs[CLI].replace('        .code(0)\n', '        .code(\n            predicate::in_iter([0, 1]),\n        )\n') };
-  flags(split, edit(split, CLI, '        .code(\n            predicate::in_iter([0, 1]),\n        )\n', ''), 'assertion-removed ' + CLI);
+  reports(split, edit(split, CLI, '        .code(\n            predicate::in_iter([0, 1]),\n        )\n', ''), 'assertion-removed ' + CLI);
 });
 
 test('a test removed from a file that stays is flagged, a renamed or re-attributed one is clean', () => {
-  flags(libRs, edit(libRs, LIB, '    #[test]\n', ''), 'test-removed ' + LIB);
-  flags(libRs, edit(libRs, LIB, '    #[test]\n    fn adds() {\n        assert_eq!(add(1, 2), 3);\n    }\n', ''),
+  reports(libRs, edit(libRs, LIB, '    #[test]\n', ''), 'test-removed ' + LIB);
+  reports(libRs, edit(libRs, LIB, '    #[test]\n    fn adds() {\n        assert_eq!(add(1, 2), 3);\n    }\n', ''),
     ['test-removed ' + LIB, 'assertion-removed ' + LIB]);
-  flags(libRs, edit(libRs, LIB, '    #[test]', '    #[cfg_attr(any(), test)]'), 'test-removed ' + LIB);
+  reports(libRs, edit(libRs, LIB, '    #[test]', '    #[cfg_attr(any(), test)]'), 'test-removed ' + LIB);
   const outOfLine = { [RUN]: runRs[RUN] + '\n#[cfg(test)]\nmod tests;\n' };
-  flags(outOfLine, edit(outOfLine, RUN, '\n#[cfg(test)]\nmod tests;\n', ''), 'test-removed ' + RUN);
+  reports(outOfLine, edit(outOfLine, RUN, '\n#[cfg(test)]\nmod tests;\n', ''), 'test-removed ' + RUN);
   clean(libRs, edit(libRs, LIB, '    fn adds() {', '    fn adds_two() {'));
   clean(libRs, edit(libRs, LIB, '    #[test]', '    #[tokio::test]'));
   const doc = { 'docs/testing.md': 'Unit tests carry #[test].\nThey run in CI.\n' };
@@ -1123,7 +1133,7 @@ test('CONSTRAINTS.md: the lines after a Floor bullet are part of it until a bull
 test('a test commented out line by line is flagged, a doc comment that mentions #[test] is clean', () => {
   const plain = { [LIB]: libRs[LIB].replace('        assert_eq!(add(1, 2), 3);\n', '        let _ = add(1, 2);\n') };
   const fn = '    #[test]\n    fn adds() {\n        let _ = add(1, 2);\n    }\n';
-  flags(plain, edit(plain, LIB, fn, fn.split('\n').map((l) => (l ? '    // ' + l.trim() : l)).join('\n')), 'test-removed ' + LIB);
+  reports(plain, edit(plain, LIB, fn, fn.split('\n').map((l) => (l ? '    // ' + l.trim() : l)).join('\n')), 'test-removed ' + LIB);
   clean(plain, edit(plain, LIB, '#[cfg(test)]\nmod tests {', '/// Each `#[test]` below runs in CI.\n#[cfg(test)]\nmod tests {'));
 });
 
@@ -2196,6 +2206,16 @@ test('check-commit-messages.sh: the description\'s first letter is lowercase, af
   rejected(['fix: 2 Fix the readers'], /2 Fix the readers/);
   rejected(['fix: Fix the reader'], /Fix the reader/);
   accepted(['fix: fix the `Foo` reader', 'docs: close ADR-001', 'build: add `--locked`', 'fix: `foo` reads Rust files']);
+});
+
+test('check-commit-messages.sh: a Floor-approved line names a rule, a file, a reason and the maintainer\'s date', () => {
+  const ok = 'Floor-approved: threshold-loosened scripts/check.sh — the floor the tree measures (the maintainer, 2026-11-24)';
+  accepted(['build: lower it\n\n' + ok, 'build: lower two\n\n' + ok + '\n' + ok.replace('scripts/check.sh', 'deny.toml')]);
+  for (const bad of [ok.replace(' (the maintainer, 2026-11-24)', ''), ok.replace('the maintainer', 'an agent'),
+    ok.replace(' — ', ' - '), ok.replace('2026-11-24', '24.11.2026'), 'Floor-approved: threshold-loosened',
+    '  ' + ok]) {
+    rejected(['build: lower it\n\n' + bad], /Malformed 'Floor-approved:' line/);
+  }
 });
 
 test('check-commit-messages.sh: the scope is lower-case ASCII letters, digits and hyphens', () => {

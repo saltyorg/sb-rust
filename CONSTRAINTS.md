@@ -54,7 +54,7 @@ pass clippy and their tests.
 |---|---|---|---|---|
 | Format | No diff | `cargo fmt --check -p <crates>` | fast | rustfmt is the style |
 | Lint | Zero clippy warnings, with the whole `clippy::pedantic` group and rustc's `missing_debug_implementations` and `trivial_numeric_casts` on for `crates/` (workspace `[lints]`; a prototype keeps the lints it was written under); opting one lint out workspace-wide needs an ADR | `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo clippy --workspace --lib --bins -- -D warnings` for the build without dev-dependency features (the first leaves out `disallowed_methods`, which binds library and binary code only, and the second denies it); `check.sh`'s crate check, that each crate has `[lints] workspace = true` | fast | Warnings left in place get ignored; pedantic catches missing `# Errors` docs, `#[must_use]` and lossy casts (maintainer, 2026-11-05) |
-| Floor guard | Zero unacknowledged floor violations in the diff | `node scripts/floor-guard.mjs --base <base>` | fast | Catches the cheap roads to green |
+| Floor guard | Zero blocking findings in the diff without the maintainer's approval: the gate's configuration, its thresholds and the suppressions (below); removed assertions, removed or deleted tests and changed gate-script lines are printed for the code reviewer and don't block | `node scripts/floor-guard.mjs --base <base>` | fast | Catches the cheap roads to green where a silent change does the most harm; the rest is review's ([ADR-029](docs/decisions/ADR-029-floor-guard-narrowed.md), a loosening by the maintainer's decision, 2026-11-24) |
 | Secrets | Zero findings in the diff | `gitleaks stdin --redact` on `git diff <base>` plus untracked files | fast | Redacted: the value never reaches a log |
 | Tests | All pass | `check.sh`'s check that no insta pending snapshot (`.pending-snap`, `.snap.new`) is under `crates/`, then `cargo llvm-cov` for the crates' unit and integration tests (the coverage run), then `cargo test --doc` for the crates and `cargo test` for the prototypes, then `cargo nextest run` (the `release-tests` cargo and nextest profiles: the release profile's code, every failure reported) for the crates' tests in a release build; each of these runs, the startup timing, the floor guard's own tests and the release scripts' tests (`scripts/release.test.sh` and the Saltbox updater's in `.github/actions/update-saltbox-python/`, at fast when `scripts/` or `.github/` changed), as root in the mutation passes' sandbox (ADR-021: every mount read-only but the run's own `TMPDIR`, `target/` and the tests' log directory, the namespace's own `/proc`, `/dev/pts`, a private `/tmp` and a private `/dev/shm`; `/proc/sys`, `/sys` and `/dev` read-only; `/run` empty; its own loopback and PID namespace); hangup's session-scope test, which needs systemd, runs by hand in `crates/sb/tests/hangup-systemd.sh` | task | The crates' unit and integration tests run once in each build (ADR-016): a failure that showed only in a release build passed the debug run (maintainer, 2026-11-16); every test run in the sandbox, after a completion test wrote the host's /etc/fish (maintainer, 2026-11-17) |
 | Coverage | Changed lines ≥ 90% covered | `cargo llvm-cov --lcov` + `diff-cover --fail-under=90` | task | Maintainer chose stricter than the 80% default |
@@ -65,7 +65,7 @@ pass clippy and their tests.
 | Architecture | Crates depend only along the capability map's "Depends on" column | cargo-deny `bans.deny` with `wrappers`, one entry per crate (`deny.toml`); `check.sh`'s crate check, that each crate but `sb` has its entry (at fast) | full | The compiler can't see the map; cargo-deny can |
 | Binary size | Production glibc binary ≤ 45,711,520 bytes, and `sb version` runs on each release of the host spec's runtime list | `stat` after `cross build --profile production --target x86_64-unknown-linux-gnu` in `build/Dockerfile`'s image of the oldest supported release (`Cross.toml`), in its own target directory (ADR-020); then `docker run` of the binary in an `ubuntu:<release>` container of each release; then the aarch64 production build in the same image, and its `sb version` under QEMU user-mode on the oldest release's arm64 glibc (`build/qemu.Dockerfile`, no binfmt handler); a host of another architecture skips them all with a printed line | full | Never larger than sb-go's binary (2026-10-30); a binary one supported release can't load never ships (ADR-020); arm64 ships too, and its build breaking shows before CI's arm runners (maintainer, 2026-11-18) |
 | Production binary size | at most 21031072 bytes; tolerance at most 5% above it, a headroom shared by the changes until the value is reset | `stat` of the same production glibc build, against that size plus the tolerance; the figures printed every run | full | The finished tree's size; Binary size's ceiling above still holds (maintainer, 2026-11-18, [ADR-025](docs/decisions/ADR-025-ratchet-enforced.md); lowered to the tree's size after the size cut of 2026-11-20) |
-| Commit messages | Each commit after the base: a Conventional Commits subject whose description's first letter is lower case, a `Library-check:` line when it changes Rust, a `Review:` line when it changes a file outside `docs/` and `tasks/`; a true merge is skipped | `scripts/check-commit-messages.sh <base> HEAD` | full, when the base isn't HEAD | Public repository rules and Library first (CLAUDE.md) |
+| Commit messages | Each commit after the base: a Conventional Commits subject whose description's first letter is lower case, a `Library-check:` line when it changes Rust, a `Review:` line when it changes a file outside `docs/` and `tasks/`, each `Floor-approved:` line in its form; a true merge is skipped | `scripts/check-commit-messages.sh <base> HEAD` | full, when the base isn't HEAD | Public repository rules and Library first (CLAUDE.md) |
 | Review line | The body of every commit that changes a file outside `docs/` and `tasks/` says which reviewers ran, on what diff, and what was fixed or declined | `scripts/check-commit-messages.sh` (`Review:`) | full, when the base isn't HEAD | Fresh-context review, by tier (CLAUDE.md, ADR-016) |
 | Logging | Every root run writes its run record and outcome; logs never contain secret values | Tests in `sb-cli-core` (run log) and in each module that handles secrets (facts, accounts, credentials): the test feeds a known secret and asserts it isn't in the captured log | task | Decision 11; the run log is kept on the host |
 | Journal matrix | compare.sh, compat.sh, follow.sh and stress.sh pass on each supported release, with only the journal spec's listed Differences | `crates/journal/tests/` (the journal spec, [docs/specs/journal.md](docs/specs/journal.md), "Commands") | by hand (below) | journalctl of each release is the reference the reader must match (journal spec, assumption 4 and success criterion 3) |
@@ -93,14 +93,21 @@ pushing and running it, and afl.rs fuzzing after it, wait for the
 maintainer's go-ahead (journal spec, decisions 3 and 7). A failing run
 blocks as a failing check does.
 
-A floor finding that is expected and accepted (a guard line changed on
-purpose, an assertion moved to another test) is acknowledged in
-`scripts/floor-acknowledged.txt`, in the commit that causes it: one line
-for each finding, with the rule, the file, the flagged line and a reason.
-The guard prints each acknowledged finding with its reason, and fails on
-any other finding and on an entry that matches none. An entry from an
-earlier commit acknowledges nothing, and entries are never edited or
-removed ([ADR-015](docs/decisions/ADR-015-acknowledged-floor-findings.md)).
+A blocking floor finding (a threshold, a lint level, deny.toml, the
+toolchain pin, a tool configuration, a gate step switched off, a new
+`#[ignore]`, `#[expect]`, `coverage(off)` or `mutants::skip`, a
+CONSTRAINTS.md rule or number) passes only with the maintainer's approval
+([ADR-029](docs/decisions/ADR-029-floor-guard-narrowed.md)). An agent asks
+the maintainer first and never writes an approval on its own. Approved,
+the commit that causes the finding carries
+`Floor-approved: <rule> <path> — <reason> (the maintainer, <date>)` in
+its body, and until that commit exists the gate is given the same line in
+the `FLOOR_APPROVED` environment variable (one line each). The guard
+prints each approved finding with its line, and
+`scripts/check-commit-messages.sh` checks the line's form. A removed
+assertion, a removed or deleted test and a removed or changed gate-script
+line are printed for the code reviewer, who judges each against the
+commit message; they don't fail the run.
 
 ## Tools
 

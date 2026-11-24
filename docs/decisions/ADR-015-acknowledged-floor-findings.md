@@ -2,7 +2,12 @@
 
 ## Status
 
-Accepted (maintainer, 2026-11-11, hardening plan decision 6)
+Superseded by [ADR-029](ADR-029-floor-guard-narrowed.md) (2026-11-24),
+which removes the acknowledgement file: the guard blocks only the gate's
+configuration, thresholds and suppressions, an exception needs the
+maintainer's approval in the commit message, and the other findings are
+reported for review. Accepted (maintainer, 2026-11-11, hardening plan
+decision 6).
 
 ## Date
 

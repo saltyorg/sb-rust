@@ -19,7 +19,11 @@
 #   "Review:" line in its body saying which review subagents ran and what
 #   came of their findings (CLAUDE.md, "Fresh-context review"; ADR-016),
 #   from the commit that introduced the rule on, the same way. A commit of
-#   documents only needs none: those are reviewed at the checkpoint.
+#   documents only needs none: those are reviewed at the checkpoint;
+# - a "Floor-approved:" line, the maintainer's approval of a blocking floor
+#   guard finding (ADR-029), has the form
+#   "Floor-approved: <rule> <path> — <reason> (the maintainer, <date>)",
+#   the date as YYYY-MM-DD. The guard matches it to its findings.
 # A merge commit (two or more parents) is skipped, whatever its subject; any
 # other commit is checked, a subject starting "Merge " included.
 # With no usable BEFORE (first push), checks every commit reachable from AFTER.
@@ -44,6 +48,7 @@ digits=0123456789
 pattern="^(feat|fix|docs|chore|refactor|test|ci|build|perf|style|revert)(\\([$lower$digits-]+\\))?!?: [^ ].{0,99}\$"
 # No capital before the description's first lower-case letter.
 first_letter="^[^$upper$lower]*([$lower]|\$)"
+approval="^Floor-approved: [^ ]+ [^ ]+ — [^ ].* \\(the maintainer, [$digits]{4}-[$digits]{2}-[$digits]{2}\\)\$"
 script=scripts/check-commit-messages.sh
 status=0
 # The fields are split on the unit separator: a tab is white space to read,
@@ -79,6 +84,12 @@ while IFS=$'\x1f' read -r sha parents subject; do
     echo "Missing 'Review:' line (commit changes files outside docs/ and tasks/): $sha $subject"
     status=1
   fi
+  while IFS= read -r line; do
+    if ! [[ $line =~ $approval ]]; then
+      echo "Malformed 'Floor-approved:' line (Floor-approved: <rule> <path> — <reason> (the maintainer, <date>)): $sha $line"
+      status=1
+    fi
+  done < <(grep -E '^[[:space:]]*Floor-approved:' <<<"$body")
 done < <(git log --format='%h%x1f%p%x1f%s' "$range")
 [[ $status -eq 0 ]] && echo "check-commit-messages: OK"
 exit $status

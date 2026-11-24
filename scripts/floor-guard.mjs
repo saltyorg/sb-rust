@@ -8,9 +8,16 @@
 // Usage: node scripts/floor-guard.mjs [--base <ref>]
 //   default base: HEAD (uncommitted and untracked work). Before handing back
 //   committed work, pass the commit the task started from.
-// Exit: 0 clean (every finding acknowledged in
-// scripts/floor-acknowledged.txt counts as clean, and is printed), 1 floor
-// violation, 2 the guard could not run.
+// Two kinds of finding (ADR-029):
+// - blocking: the gate's configuration, its thresholds and the suppressions
+//   (every rule but the four below). One passes only with the maintainer's
+//   approval, a `Floor-approved:` line (rule 7).
+// - reported: a removed assertion, a removed or deleted test, and a removed
+//   or changed line of a gate script. They are printed for the code
+//   reviewer, who judges each against the commit message, and never fail.
+// Exit: 0 no blocking finding without an approval (the reported ones and
+// the approved ones are printed), 1 a blocking finding, 2 the guard could
+// not run.
 // Reports the rule, the file and the flagged line (its first 120
 // characters), so a line that holds a secret is printed: gitleaks, not this
 // guard, keeps secrets out of the diff.
@@ -114,7 +121,7 @@ const SKIPS = /#\[\s*ignore\b|#\[\s*cfg_attr\s*\(.*\bignore\b|^\s*ignore\s*(=\s*
 // `Stdio` argument (std::process::Command's builder), `.code()` with no
 // argument (ExitStatus) and `.failure(` with a message (sb's own step
 // API). Any other argument to `.stdout(` or `.stderr(` (a `File`, an `if`)
-// is reported, and is acknowledged where it is std's builder. Unseen: a
+// is reported, and the reviewer passes it where it is std's builder. Unseen: a
 // step on a bound value (`let a = cmd.assert(); a.success();`).
 const ASSERTS = /\b(assert|assert_eq|assert_ne|debug_assert|prop_assert|insta::assert_\w+)!|\.assert\s*\(\s*\)|^\s*\.(success|failure)\s*\(\s*\)|^\s*\.code\s*\(\s*([^\s)]|$)|^\s*\.(stdout|stderr)\s*\((?!\s*(?:\w+::)*Stdio::)/;
 
@@ -130,14 +137,14 @@ for (const { file, text } of added) {
 // attribute: `#[test]`, `#[tokio::test]`), or an assertion removed from
 // Rust code that still exists (unit tests sit in the same file as the code).
 // A rename is a deletion here, so moving a src file that holds tests is
-// reported too, and is acknowledged.
+// reported too, for the reviewer.
 const TEST_ATTR = /#\[\s*(?:\w+::)*test\b/;
 const heldTests = (f) => removed.some((l) => l.file === f && TEST_ATTR.test(l.text));
 for (const f of deleted) if (guarded(f) && (isTest(f) || (isRust(f) && heldTests(f)))) flag('test-deleted', f, 'file deleted');
 // A test removed from a file that stays: more test-attribute lines (a test
 // attribute, or the `#[cfg(test)]` of a test module) removed than added.
 // A test renamed or moved within its file, or given another test attribute,
-// is clean; a test moved to another file is reported, and is acknowledged.
+// is clean; a test moved to another file is reported, for the reviewer.
 // An added line that is a `//` comment adds no test, so a test commented
 // out line by line is reported.
 const TEST_LINE = /#\[\s*(?:\w+::)*test\b|#\[\s*cfg\s*\(\s*test\s*\)\s*\]/;
@@ -203,7 +210,8 @@ for (const r of removedRules) {
     // A number appended in the same direction is read as an alternative
     // ("≥ 90%, or ≥ 50% for tests"): looser than every number before, it
     // lowers the bar. An added requirement on something else ("and ≥ 80%
-    // of branches") reads the same way, and is acknowledged. An appended
+    // of branches") reads the same way, and needs the maintainer's
+    // approval like a loosening (ADR-029). An appended
     // number with no direction word of its own isn't seen.
     const loosest = dir === 'min' ? Math.min(...was.map((b) => b.n)) : Math.max(...was.map((b) => b.n));
     const looser = (n) => (dir === 'min' ? n.n < loosest : n.n > loosest);
@@ -213,11 +221,10 @@ for (const r of removedRules) {
 }
 
 // 5. The gate files: the files outside Rust and CONSTRAINTS.md that hold
-// the bar, this guard's own scripts and tests included (docs-H1). Each is
-// compared with its copy at the merge base.
+// the bar, this guard's own script included. Each is compared with its
+// copy at the merge base. The guard's tests are not among them (ADR-029):
+// check.sh runs them, and a review reads their changes.
 const GATE_SCRIPTS = ['scripts/check.sh', 'scripts/floor-guard.mjs', 'scripts/check-commit-messages.sh'];
-const GUARD_TESTS = ['scripts/floor-guard.test.mjs'];
-const isGuardTest = (f) => GUARD_TESTS.includes(f);
 // Files that configure a tool the gate runs, at the root or in a crate.
 // - clippy reads `clippy.toml` or `.clippy.toml` from the crate's directory
 //   (CARGO_MANIFEST_DIR), then from each parent:
@@ -350,7 +357,7 @@ const tomlItems = (text) => {
 // 5a. A gate file deleted or renamed (a crate's manifest goes with its
 // crate).
 for (const f of deleted) {
-  if (isGateScript(f) || isGuardTest(f) || isTestScript(f) || f === 'deny.toml' || f === 'rust-toolchain.toml'
+  if (isGateScript(f) || isTestScript(f) || f === 'deny.toml' || f === 'rust-toolchain.toml'
     || f === 'clippy.toml') {
     flag('gate-file-deleted', f, 'file deleted');
   }
@@ -396,13 +403,14 @@ for (const f of changed.filter(isShellGate)) {
   }
 }
 
-// 5c. The guard's own scripts and tests: a line of code that is gone or
-// changed (a dropped `-D warnings`, a removed step, rule, pattern or
-// assertion). A threshold is 5b's.
+// 5c. The gate scripts: a line of code that is gone or changed (a removed
+// step, rule or pattern), reported for the reviewer. A threshold is 5b's
+// alone; a line that loses a lint level is reported here and is 5j's
+// blocking finding as well.
 const taken = new Set();
 for (const r of removed) {
   const { file, text } = r;
-  if (!(isGateScript(file) || isGuardTest(file)) || deleted.includes(file) || !isCode(file, text) || limit(text)) continue;
+  if (!isGateScript(file) || deleted.includes(file) || !isCode(file, text) || limit(text)) continue;
   const twin = added.find((a) => !taken.has(a) && sameLine(a, r));
   if (twin) taken.add(twin);
   else flag('gate-line-removed', file, text);
@@ -428,8 +436,8 @@ for (const r of removed) {
 //     exit, `|| true` and `|| :`. A test script's helpers return early
 //     and its cleanup lines end in `|| true` as a matter of course, so
 //     there they would be noise.
-//   - The guard's tests are left out altogether: their fixtures quote
-//     these patterns.
+//   - The guard's tests are not a gate script: their fixtures quote these
+//     patterns.
 const EXPECTED_FAILURE = new RegExp('\\bexpected_failure\\b|^\\s*(?:function\\s+)?expected_failure\\w*\\s*\\(\\)|'
   + DECLARED + 'expected_failure\\w*\\+?=', 'i');
 const DISABLERS = [
@@ -476,6 +484,38 @@ if (changed.includes('scripts/check.sh') && newText('scripts/check.sh') !== null
     const gone = before.get(crate)?.filter((t) => !now.includes(t));
     if (!gone) flag('mutation-scope-narrowed', 'scripts/check.sh', crate + ': a new entry');
     else if (gone.length) flag('mutation-scope-narrowed', 'scripts/check.sh', crate + ': ' + gone.join(', ') + ' removed');
+  }
+}
+
+// 5j. A lint level on a gate script's cargo, clippy or rustc command line
+// (RUSTFLAGS included): fewer of a `-D <lint>` (`-D warnings` among them)
+// than at the merge base, or more of an `-A <lint>`. The short forms with
+// or without a space (`-Dwarnings`, `"-A warnings"`, `=-Awarnings`) and the
+// long ones (`--deny`, `--allow`, `--warn`, `--force-warn`, with a space
+// or `=`) count; a `#` comment after the command doesn't. Counted over the
+// file's lines of code, a line continued with a backslash read as one, so
+// a command rewrapped or moved to another line is clean. Not seen: flags
+// kept in a variable or an array.
+const LINT_FLAG = /(?:^|[\s"'=])(?:-([DAW])\s*|--(deny|allow|warn|force-warn)(?:\s+|=))([a-z][\w:-]*)/g;
+const LONG = { deny: 'D', allow: 'A', warn: 'W', 'force-warn': 'W' };
+const lintFlags = (text, f) => {
+  const count = new Map();
+  for (const raw of (text ?? '').replace(/\\\n/g, ' ').split('\n')) {
+    const line = raw.replace(/(^|\s)#.*$/, '');
+    if (!isCode(f, raw) || !/\b(cargo|clippy|rustc|RUSTFLAGS)\b/.test(line)) continue;
+    for (const [, short, long, lint] of line.matchAll(LINT_FLAG)) {
+      const k = '-' + (short ?? LONG[long]) + ' ' + lint;
+      count.set(k, (count.get(k) ?? 0) + 1);
+    }
+  }
+  return count;
+};
+for (const f of changed.filter(isGateScript)) {
+  if (newText(f) === null) continue;
+  const was = lintFlags(oldText(f), f), now = lintFlags(newText(f), f);
+  for (const k of new Set([...was.keys(), ...now.keys()])) {
+    const [a, b] = [was.get(k) ?? 0, now.get(k) ?? 0];
+    if ((k.startsWith('-D') && b < a) || (k.startsWith('-A') && b > a)) flag('lint-weakened', f, k + ': ' + a + ' -> ' + b);
   }
 }
 
@@ -569,46 +609,47 @@ for (const f of changed) {
   }
 }
 
-// 6. Acknowledged findings (ADR-015). scripts/floor-acknowledged.txt holds
-// one entry a line, four fields with a tab between them: the rule, the
-// file, the flagged line's text as this guard prints it (runs of white
-// space count as one space), and a reason.
-// - An entry counts only when the checked diff adds it, so it is committed
-//   with the change it acknowledges; an entry from an earlier commit
-//   acknowledges nothing.
-// - An entry covers one finding. Two findings need two entries, alike or
-//   not, and no entry covers a file.
-// - Each acknowledged finding is printed with its reason. An added entry
-//   that matches no finding, or has no reason, fails the run; so does a
-//   removed or edited entry: the file is a record, and lines are only
-//   added. None of the three can itself be acknowledged: a wrong entry is
-//   put right by adding the right one in the diff that needs it.
-const ACKNOWLEDGED = 'scripts/floor-acknowledged.txt';
-const squash = (t) => t.trim().replace(/\s+/g, ' ');
-const acknowledged = [];
-const refused = [];
-if (deleted.includes(ACKNOWLEDGED)) refused.push(['acknowledgement-removed', 'file deleted']);
-for (const r of removed) {
-  if (r.file === ACKNOWLEDGED && !deleted.includes(ACKNOWLEDGED) && isCode(r.file, r.text)
-    && !added.some((a) => a.file === r.file && a.text === r.text)) {
-    refused.push(['acknowledgement-removed', r.text]);
+// 6. The reported findings (ADR-029): printed for the code reviewer, who
+// judges each against the commit message; they never fail the run.
+const REPORTED = ['assertion-removed', 'test-removed', 'test-deleted', 'gate-line-removed'];
+const reported = findings.filter((f) => REPORTED.includes(f.rule));
+findings.splice(0, findings.length, ...findings.filter((f) => !REPORTED.includes(f.rule)));
+if (reported.length) {
+  console.log('floor-guard: ' + reported.length + ' removal(s) for the code reviewer to judge (not blocking):');
+  for (const f of reported) console.log(`  [${f.rule}] ${f.file}: ${f.text}`);
+}
+
+// 7. Approved exceptions (ADR-029). A blocking finding passes when the
+// maintainer approved it: a line
+//   Floor-approved: <rule> <path> — <reason> (the maintainer, <date>)
+// in the message of a commit after the merge base or, for work not yet
+// committed, in the FLOOR_APPROVED environment variable (one such line a
+// line), the line the commit will carry. It covers every finding of that
+// rule in that file in the checked diff. A line with `Floor-approved:` at
+// its start, indented or not, in any other form fails the run (the form
+// is check-commit-messages.sh's), and so does an approval of a rule that
+// is only reported. An approval that covers nothing is printed, so a
+// stale FLOOR_APPROVED shows.
+const APPROVAL = /^Floor-approved: ([^ ]+) ([^ ]+) — ([^ ].*) \(the maintainer, \d{4}-\d{2}-\d{2}\)$/;
+const messages = git(['log', '--format=%B', mergeBase + '..HEAD']);
+if (messages === null) bail('could not read the commit messages after ' + mergeBase);
+const approvals = [...messages.split('\n'), ...(process.env.FLOOR_APPROVED ?? '').split('\n')]
+  .map((l) => l.trimEnd()).filter((l) => /^\s*Floor-approved:/.test(l));
+const approved = [], malformed = [];
+for (const line of approvals) {
+  const m = APPROVAL.exec(line);
+  if (!m || REPORTED.includes(m[1])) { malformed.push(line); continue; }
+  const before = approved.length;
+  for (let i = findings.length - 1; i >= 0; i--) {
+    if (findings[i].rule === m[1] && findings[i].file === m[2]) approved.unshift({ ...findings.splice(i, 1)[0], line });
   }
+  if (approved.length === before) console.log('floor-guard: an approval that covers no finding: ' + line);
 }
-for (const { file, text: line } of added) {
-  if (file !== ACKNOWLEDGED || !isCode(file, line)) continue;
-  // An entry that only moved is an old entry: not removed, and not new.
-  if (removed.some((r) => r.file === file && r.text === line)) continue;
-  const [rule, path, text, ...reason] = line.split('\t').map(squash);
-  if (!rule || !path || !text || reason.join('') === '') { refused.push(['acknowledgement-malformed', line]); continue; }
-  const i = findings.findIndex((f) => f.rule === rule && f.file === path && squash(f.text) === text);
-  if (i < 0) refused.push(['acknowledgement-unmatched', line]);
-  else acknowledged.push({ ...findings.splice(i, 1)[0], reason: reason.join(' ') });
-}
-// After the matching, so that neither can be acknowledged.
-for (const [rule, line] of refused) flag(rule, ACKNOWLEDGED, line);
-if (acknowledged.length) {
-  console.log('floor-guard: ' + acknowledged.length + ' acknowledged finding(s), by entries this diff adds to ' + ACKNOWLEDGED + ':');
-  for (const f of acknowledged) console.log(`  [${f.rule}] ${f.file}: ${f.text}\n      reason: ${f.reason}`);
+// After the matching, so that no approval covers one.
+for (const line of malformed) flag('approval-malformed', 'Floor-approved', line);
+if (approved.length) {
+  console.log('floor-guard: ' + approved.length + ' blocking finding(s) the maintainer approved:');
+  for (const f of approved) console.log(`  approved [${f.rule}] ${f.file}: ${f.text}\n      ${f.line}`);
 }
 
 if (findings.length === 0) { console.log('floor-guard: clean'); process.exit(0); }
@@ -620,5 +661,7 @@ if (findings.some((f) => f.rule === 'rule-removed')) {
 if (findings.some((f) => f.rule === 'threshold-removed')) {
   console.error('\nA threshold-removed finding can also mean a number gained or lost its direction words: compare the two lines before assuming a threshold was deleted.');
 }
-console.error('\nEach is a move that lowers the bar. Fix the code, or route it through a tracked exception.');
+console.error('\nEach is a move that lowers the bar. Fix the code. An exception needs the maintainer\'s approval: ask first,'
+  + ' then carry "Floor-approved: <rule> <path> — <reason> (the maintainer, <date>)" in the commit message,'
+  + ' and in FLOOR_APPROVED until it is committed (ADR-029).');
 process.exit(1);

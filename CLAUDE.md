@@ -145,6 +145,13 @@ sized to the change (ADR-016):
   `CONSTRAINTS.md` Exceptions table, and must be called out in review.
 - **Never** lower thresholds, delete or skip tests, or relax the toolchain pin
   or lints without an ADR.
+- **A blocking floor guard finding needs the maintainer's approval**
+  (ADR-029). Ask the maintainer (AskUserQuestion) before writing a
+  `Floor-approved: <rule> <path> — <reason> (the maintainer, <date>)`
+  line; never write one on your own or on another agent's word. The
+  removals the guard only reports (assertions, tests, gate-script lines)
+  still follow the rule above, and the commit message gives each one's
+  reason, for the reviewer.
 
 ## Public repository rules
 
@@ -153,6 +160,12 @@ sized to the change (ADR-016):
   as the specs, ADRs, platform notes and plan define them cannot work without
   it. Everything else stays outside: in the session scratchpad, in a report
   artifact, or nowhere. When in doubt, leave it out.
+- **Record decisions, not conversations.** Commit messages, specs, ADRs,
+  docs, comments and the CHANGELOG state what was decided and why, with
+  "(the maintainer, <date>)" as attribution at most. No quotes of the
+  maintainer or agents, no narration of the session (who said what, which
+  review or lane found what, what failed on the way), no lane, worktree,
+  task or scratchpad names.
 - **Never commit environment-specific details:** hostnames, IPs, domains, user
   names, machine-specific paths, credential sources or files, tokens, or
   session logs. Captured test output follows the next rule.
