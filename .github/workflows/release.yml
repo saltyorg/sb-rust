@@ -50,6 +50,7 @@ jobs:
   # before a tag). The tag is semver without leading zeros, as semver
   # reads it.
   plan:
+    name: plan
     runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.plan.outputs.version }}
@@ -99,6 +100,7 @@ jobs:
   # `check.sh full` with no base: every step, the production build's size,
   # its runs on each release and the aarch64 build under QEMU included.
   gate:
+    name: "gate (check.sh full)"
     runs-on: ubuntu-22.04
     timeout-minutes: 240
     steps:
@@ -136,6 +138,7 @@ jobs:
   # The test suite on arm64, natively (its full gate's x86_64-only steps
   # ran above).
   gate-arm64:
+    name: "gate-arm64 / ${{ matrix.runner }}"
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 180
     strategy:
@@ -179,6 +182,7 @@ jobs:
   # the completion shells, the journal matrix and, once a stable release
   # exists for its live --repair cases, the install-script containers.
   containers:
+    name: container suites
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
@@ -226,6 +230,7 @@ jobs:
           SBI_SB=$PWD/target/release/sb install/tests/containers.sh
 
   build:
+    name: "build / ${{ matrix.asset.arch }} ${{ matrix.asset.channel }}"
     needs: [plan, gate, gate-arm64, containers]
     runs-on: ubuntu-22.04
     timeout-minutes: 90
@@ -287,14 +292,15 @@ jobs:
           if-no-files-found: error
 
   # The `release` environment's required reviewers approve each
-  # publication (set up with the repository: a remote setting the
-  # maintainer authorises separately).
+  # publication, and the announcement after it (set up with the
+  # repository: a remote setting the maintainer authorises separately).
   publish:
+    name: publish
     needs: [plan, build]
     runs-on: ubuntu-24.04
     environment: release
     permissions:
-      contents: write
+      contents: write # to create the release and upload its assets
     steps:
       # Each artifact in a directory of its own name (merge-multiple off),
       # so a file of the same name in another `asset-*` artifact can't
@@ -364,12 +370,18 @@ jobs:
           fail_on_unmatched_files: true
 
   # sb-go's "Notify Discord" step, as its own job: no write token, and a
-  # failed post leaves the publication alone (re-run this job only). The
-  # payload is built (and so checked) on every release; it is sent when
-  # the DISCORD_WEBHOOK secret is set.
+  # failed post leaves the publication alone (re-run this job only, which
+  # the environment's reviewers approve again). The payload is built (and
+  # so checked) on every release; it is sent when the DISCORD_WEBHOOK
+  # secret is set. The secret is the `release` environment's, which only
+  # the release tags may use (the maintainer, 2026-11-24); only a job
+  # that references the environment gets it, once approved:
+  # https://docs.github.com/actions/reference/workflows-and-actions/deployments-and-environments#environment-secrets
   announce:
+    name: announce on Discord
     needs: [plan, publish]
     runs-on: ubuntu-24.04
+    environment: release
     timeout-minutes: 10
     permissions:
       contents: read
@@ -406,6 +418,7 @@ jobs:
   # below decides (scripts/release.sh saltbox-gate, tested), and the two
   # jobs after it are skipped unless it says run=true.
   saltbox-gate:
+    name: saltbox gate
     needs: [plan, publish]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -440,6 +453,7 @@ jobs:
   # entry points), so it has no write token; the commit below has the
   # token and runs no package code.
   saltbox-prepare:
+    name: saltbox prepare
     needs: [plan, saltbox-gate]
     if: needs.saltbox-gate.outputs.run == 'true'
     runs-on: ubuntu-24.04
@@ -475,6 +489,7 @@ jobs:
   # setting approved before the first stable release. publish.sh checks
   # the prepared files against master before it commits them.
   saltbox-commit:
+    name: saltbox commit
     needs: [plan, saltbox-gate, saltbox-prepare]
     if: needs.saltbox-gate.outputs.run == 'true' && needs.saltbox-prepare.outputs.changed == 'true'
     runs-on: ubuntu-24.04

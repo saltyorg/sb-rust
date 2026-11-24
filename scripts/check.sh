@@ -351,14 +351,15 @@ fast() {
   # only GitHub can run: actionlint (its settings in .github/actionlint.yaml),
   # which runs shellcheck on each `run:` script and silently skips that
   # when it is missing, so its version is checked too; then zizmor's
-  # offline audits at its default persona. Any finding fails. At fast when
-  # .github/ changed, at full always.
+  # offline audits at its auditor persona, which flags everything, likely
+  # false positives too (https://docs.zizmor.sh/usage/#using-personas). Any
+  # finding fails. At fast when .github/ changed, at full always.
   step "workflows (actionlint, zizmor)"
   if ((github_changed)) || [[ $stage == full ]]; then
     # Checked here, not with the stage's tools: only this step runs them.
     check_tools actionlint shellcheck zizmor
     actionlint
-    zizmor --offline --no-progress .github/
+    zizmor --offline --persona=auditor --no-progress .github/
   else
     skip "nothing under .github/ changed since $base"
   fi

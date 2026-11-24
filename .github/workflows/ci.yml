@@ -128,6 +128,7 @@ jobs:
   # only reads the actions' public repositories. check.sh, the local gate,
   # stays offline.
   zizmor-online:
+    name: "zizmor (online)"
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -147,12 +148,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           : "${GH_TOKEN:?no token: zizmor would skip its online audits}"
-          zizmor --no-progress .github/
+          zizmor --persona=auditor --no-progress .github/
 
   # sb-go's build.yml checks, on a build made the way releases are but
   # untagged (so on tag pushes too): `version --json` has a valid
   # uv_version, and with no SB_VERSION self-update is disabled.
   untagged:
+    name: untagged build
     runs-on: ubuntu-22.04
     timeout-minutes: 30
     steps:

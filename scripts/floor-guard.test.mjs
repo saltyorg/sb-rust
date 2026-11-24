@@ -2379,7 +2379,7 @@ const workflowLints = (r) => r.calls.filter((c) => ['actionlint', 'zizmor'].incl
   .map((c) => (c.tool + ' ' + c.args).trim());
 
 test('check.sh: the workflows\' linters run at fast when .github/ changed or nothing did, at full always, and are skipped otherwise', () => {
-  const both = ['actionlint', 'zizmor --offline --no-progress .github/'];
+  const both = ['actionlint', 'zizmor --offline --persona=auditor --no-progress .github/'];
   for (const [stage, work] of [['fast', {}], ['fast', { '.github/workflows/x.yml': 'name: x\n' }],
     ['task', { '.github/actionlint.yaml': 'paths: {}\n' }], ['full', { 'crates/foo/src/lib.rs': 'pub fn f() {}\n' }],
     ['full', { 'docs/x.md': 'x\n' }]]) {

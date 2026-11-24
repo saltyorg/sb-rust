@@ -61,6 +61,7 @@ concurrency:
 
 jobs:
   build:
+    name: build the journal example
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     outputs:
@@ -159,6 +160,7 @@ jobs:
   # warning, never a failure of the run. `rolling` and `devel` follow the
   # release cycle without edits here.
   canary:
+    name: canaries
     needs: build
     runs-on: ubuntu-24.04
     continue-on-error: true

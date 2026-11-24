@@ -20,10 +20,17 @@ defaults:
   run:
     shell: bash
 
+# A dry run that writes nothing: a newer dispatch on the same ref checks
+# the same newest release, so it replaces one still running.
+concurrency:
+  group: saltbox-toolchain-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   # A read-only token: it shows the key reaches Saltbox's installation,
   # with no write power (sb-go's minted contents write here).
   credentials:
+    name: credentials
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     environment: saltbox
@@ -38,6 +45,7 @@ jobs:
           permission-metadata: read
 
   preflight:
+    name: preflight
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:

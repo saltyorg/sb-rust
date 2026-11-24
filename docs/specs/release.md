@@ -372,9 +372,12 @@ when `scripts/` or `.github/` changed).
   token. It builds the payload on every release (so a broken one shows)
   and posts it when the `DISCORD_WEBHOOK` secret is set; unset, it says
   `DISCORD_WEBHOOK isn't set: no announcement` and passes. The secret is
-  a repository or organisation secret, not the `release` environment's
-  (an environment secret would make this job wait for the environment's
-  reviewers again). The payload keeps sb-go's look:
+  an environment secret of the `release` environment, which only the
+  release tags may use, and the job declares `environment: release`
+  (the maintainer, 2026-11-24): a repository secret would reach every
+  workflow on every branch. The job so waits for the environment's
+  required reviewers too, after the publication. The payload keeps
+  sb-go's look:
   - user name `GitHub` and its avatar, no mentions parsed
     (`allowed_mentions`); one embed titled `🚀 New Release:
     <tag>`, colour 5814783, linking the release page, the time of the
@@ -863,9 +866,10 @@ No test reaches the network or replaces an installed sb.
   update-saltbox-python action reads sb's version that way.
 - **The workflows are unrun:** written locally, never pushed. The
   repository's settings they rely on (the `release` environment's
-  reviewers, a ruleset on who may push version tags, the
-  `DISCORD_WEBHOOK` secret, sb-rust among the selected repositories of
-  the Saltbox App's organisation variable and secret) wait for the
+  reviewers, its `DISCORD_WEBHOOK` secret and its limit to the release
+  tags, a ruleset on who may push version tags, sb-rust among the
+  selected repositories of the Saltbox App's organisation variable and
+  secret) wait for the
   maintainer with the repository itself. GitHub's 22.04 runners are
   deprecated from 2026-09-17 and unsupported from 2027-04-17; the 22.04
   jobs need a plan by then.
