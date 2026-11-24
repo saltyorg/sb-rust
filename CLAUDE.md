@@ -108,7 +108,9 @@ sized to the change (ADR-016):
   under `target/agent-guides/` and points `agent-skills:code-reviewer`,
   `agent-skills:security-auditor` and `library-reviewer` at it; it is not
   given to the authoring agent. Findings cite the guideline id (`M-...`);
-  this file, `CONSTRAINTS.md` and the specs win where they conflict.
+  this file, `CONSTRAINTS.md` and the specs win where they conflict. The
+  same hook also tells them to check added and changed files and data
+  against the Public repository rules below.
 - **Brief it with the range and the goal, not your conclusions.** Tell it
   to edit nothing, to run sb only with `SB_LOG_DIR` in the scratchpad, and
   to report findings with file:line.
@@ -146,9 +148,36 @@ sized to the change (ADR-016):
 
 ## Public repository rules
 
+- **Only what the repo must have.** A new or changed file or value goes in
+  the repo only when the build, the tests, a release, or `docs/` and `tasks/`
+  as the specs, ADRs, platform notes and plan define them cannot work without
+  it. Everything else stays outside: in the session scratchpad, in a report
+  artifact, or nowhere. When in doubt, leave it out.
 - **Never commit environment-specific details:** hostnames, IPs, domains, user
-  names, machine-specific paths, credential sources or files, tokens, raw test
-  output, or session logs.
+  names, machine-specific paths, credential sources or files, tokens, or
+  session logs. Captured test output follows the next rule.
+- **Test data is invented, never captured from a real host.** Fixtures,
+  snapshots, examples and expected outputs use made-up values, chosen to hit
+  the case under test (a wide value, a failure, a skip). Nothing from this
+  host, a Saltbox host or a real run may leak in, "sanitized" or not: no
+  values from the clock, the network, the filesystem, the hardware or a real
+  service (measurements, speeds, latencies, timings, timestamps, sizes,
+  identifiers). Real captures are for the maintainer's review only, in the
+  scratchpad or an artifact.
+  - An insta snapshot records sb's rendering of invented inputs. Anything
+    that varies by run is fixed in the test or redacted with insta's filters.
+  - A third-party tool's output format (systemctl's JSON, `--list-tags`) may
+    be captured in a throwaway container from invented inputs by a
+    checked-in capture script, with run-specific values (timestamps, PIDs,
+    IDs, durations) replaced by invented ones.
+  - Public upstream files may be copied unchanged with a `PROVENANCE.md`.
+  - Release names and versions (Ubuntu 24.04, systemd 255, crate and
+    toolchain versions, sb's own) are not host data.
+- **These rules travel with the work.** Every brief that may capture output,
+  write fixtures or accept snapshots says them. Reviewers check new and
+  changed files and data against them. Before landing, read the diff's added
+  and changed fixtures, snapshots and data files for them; a passing gate does
+  not check them.
 - **Verified third-party behaviour** goes in `docs/platform-notes/`, with
   software versions and the method used, and no environment details.
 - **Research** about other projects describes behaviours and lessons, not bug
