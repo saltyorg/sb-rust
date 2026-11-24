@@ -116,6 +116,39 @@ jobs:
         if: always()
         run: sudo chown -R "$(id -u):$(id -g)" target "${CARGO_HOME:-$HOME/.cargo}"
 
+  # zizmor online (the maintainer, 2026-11-24). With a token it also runs
+  # the audits that ask GitHub: among them ref-version-mismatch, that each
+  # hash pin's version comment names a tag pointing at that commit (offline,
+  # it reports nothing), and impostor-commit, that the pinned commit is in
+  # the action's own repository and not only in a fork:
+  # https://docs.zizmor.sh/usage/#operating-modes,
+  # https://docs.zizmor.sh/audits/#ref-version-mismatch,
+  # https://docs.zizmor.sh/audits/#impostor-commit
+  # The token is the job's GITHUB_TOKEN with contents: read alone; zizmor
+  # only reads the actions' public repositories. check.sh, the local gate,
+  # stays offline.
+  zizmor-online:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@fe3acb53a98b62c772db35de75ce0e4595e7ca8c # v2.90.8
+        with:
+          tool: zizmor@1.32.0
+          fallback: none
+      # Without a token zizmor skips the online audits and still passes, so
+      # a missing one fails the step.
+      - name: zizmor (online audits)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          : "${GH_TOKEN:?no token: zizmor would skip its online audits}"
+          zizmor --no-progress .github/
+
   # sb-go's build.yml checks, on a build made the way releases are but
   # untagged (so on tag pushes too): `version --json` has a valid
   # uv_version, and with no SB_VERSION self-update is disabled.
