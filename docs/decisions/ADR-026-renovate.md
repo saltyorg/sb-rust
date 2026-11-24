@@ -123,3 +123,11 @@ Both are the maintainer's to do when the repository is created.
   them with CONSTRAINTS.md's row. A version newer than the pinned
   install-action's manifest fails CI until that action's update lands
   (`fallback: none`).
+- 2026-11-24 (the maintainer: diff-cover as a locked tool): item 4's
+  diff-cover is installed from a hash-pinned lock,
+  `scripts/diff-cover/requirements.txt`, which the `pip-compile` manager
+  regenerates from `requirements.in` (`pip_requirements` is off for it,
+  as it would bump a pin without its hashes); the lock and the Tools row
+  are one group, and lock file maintenance refreshes the rest. The
+  workflows' uv, which installs it, is tracked with the uv sb installs
+  (`build_info.rs`), so both move in one PR.

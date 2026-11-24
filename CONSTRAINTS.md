@@ -127,7 +127,7 @@ doesn't fail every run.
 | Tool | Version | Rule | Install |
 |---|---|---|---|
 | cargo-llvm-cov | 0.9.1 | exact | `cargo install --locked cargo-llvm-cov` (needs the `llvm-tools` component, pinned in `rust-toolchain.toml`) |
-| diff-cover | 9.7.2 | exact | `uv tool install diff-cover==9.7.2` |
+| diff-cover | 9.7.2 | exact | `scripts/install-diff-cover.sh <venv-dir> <bin-dir>`, which installs `diff-cover==9.7.2` with uv into a virtual environment of its own, every package at `scripts/diff-cover/requirements.txt`'s version and hashes (`--require-hashes`, wheels only); the lock is `requirements.in` compiled with the command in its header |
 | cargo-mutants | 27.1.0 | exact | `cargo install --locked cargo-mutants` |
 | cargo-nextest | 0.9.151 | exact | `cargo install --locked cargo-nextest` (runs the mutation passes' tests, ADR-021, and the release-build tests) |
 | cargo-deny | 0.20.2 | exact | `cargo install --locked cargo-deny` |

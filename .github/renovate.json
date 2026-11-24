@@ -196,6 +196,24 @@
             ]
         },
         {
+            "description": "diff-cover's lock is pip-compile's to regenerate, hashes and all: pip_requirements, which matches any requirements.txt, would bump a pin without them",
+            "matchManagers": [
+                "pip_requirements"
+            ],
+            "matchFileNames": [
+                "scripts/diff-cover/requirements.txt"
+            ],
+            "enabled": false
+        },
+        {
+            "description": "diff-cover: its lock (pip-compile) and CONSTRAINTS.md's Tools row (custom.regex) move together, in one PR for review",
+            "matchPackageNames": [
+                "diff-cover"
+            ],
+            "groupName": "diff-cover",
+            "automerge": false
+        },
+        {
             "description": "GitHub Actions: minor and patch updates, grouped (sb-go's)",
             "matchManagers": [
                 "github-actions"
@@ -235,15 +253,23 @@
             "pinDigests": false
         }
     ],
+    "pip-compile": {
+        "description": "diff-cover's hash-pinned lock (scripts/diff-cover/requirements.txt, compiled by uv from requirements.in; scripts/install-diff-cover.sh installs it with --require-hashes)",
+        "managerFilePatterns": [
+            "/(^|/)scripts/diff-cover/requirements\\.txt$/"
+        ]
+    },
     "customManagers": [
         {
             "customType": "regex",
-            "description": "The uv sb installs (crates/cli-core/src/build_info.rs, as sb-go's buildinfo)",
+            "description": "The uv sb installs (crates/cli-core/src/build_info.rs, as sb-go's buildinfo), and the same uv in the workflows' install-action tool lists, which installs diff-cover",
             "managerFilePatterns": [
-                "/(^|/)crates/cli-core/src/build_info\\.rs$/"
+                "/(^|/)crates/cli-core/src/build_info\\.rs$/",
+                "/(^|/)\\.github/workflows/[^/]+\\.yml$/"
             ],
             "matchStrings": [
-                "pub const UV_VERSION: &str = \"(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)\";"
+                "pub const UV_VERSION: &str = \"(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)\";",
+                "[,:\\s]uv@(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)\\b"
             ],
             "depNameTemplate": "uv",
             "datasourceTemplate": "pypi",
@@ -283,13 +309,13 @@
         },
         {
             "customType": "regex",
-            "description": "diff-cover (CONSTRAINTS.md's Tools table: its version and its install line)",
+            "description": "diff-cover (CONSTRAINTS.md's Tools table: its version and its install line; its lock is the pip-compile manager's)",
             "managerFilePatterns": [
                 "/(^|/)CONSTRAINTS\\.md$/"
             ],
             "matchStrings": [
                 "\\| diff-cover \\| (?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+) \\| exact \\|",
-                "`uv tool install diff-cover==(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)`"
+                "installs `diff-cover==(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)`"
             ],
             "depNameTemplate": "diff-cover",
             "datasourceTemplate": "pypi",

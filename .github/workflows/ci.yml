@@ -69,7 +69,7 @@ jobs:
       # (https://github.com/taiki-e/install-action/blob/v2.90.8/README.md, "Inputs").
       - uses: taiki-e/install-action@fe3acb53a98b62c772db35de75ce0e4595e7ca8c # v2.90.8
         with:
-          tool: cargo-llvm-cov@0.9.1,cargo-nextest@0.9.151,cargo-deny@0.20.2,hyperfine@2.0.0,zizmor@1.32.0
+          tool: cargo-llvm-cov@0.9.1,cargo-nextest@0.9.151,cargo-deny@0.20.2,hyperfine@2.0.0,zizmor@1.32.0,uv@0.13.4
           fallback: none
       # cargo-mutants publishes no aarch64 Linux build (the action's
       # manifest for 27.1.0 has x86_64 alone:
@@ -85,12 +85,16 @@ jobs:
       - name: cargo-mutants (arm64)
         if: runner.arch == 'ARM64'
         run: cargo install --locked cargo-mutants --version 27.1.0
+      # diff-cover from its hash-pinned lock, in a virtual environment of
+      # its own (scripts/install-diff-cover.sh), with the uv above, at the
+      # version sb installs (crates/cli-core/src/build_info.rs).
       - name: gitleaks, diff-cover and actionlint
         run: |
           go install github.com/zricethezav/gitleaks/v8@v8.30.1
           go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
           echo "$(go env GOPATH)/bin" >>"$GITHUB_PATH"
-          pipx install diff-cover==9.7.2
+          scripts/install-diff-cover.sh "$RUNNER_TEMP/diff-cover" "$RUNNER_TEMP/bin"
+          echo "$RUNNER_TEMP/bin" >>"$GITHUB_PATH"
           rustup component add llvm-tools
       # A pull request is checked against what it merges into; a push to
       # main with no base checks everything (check.sh: nothing changed
