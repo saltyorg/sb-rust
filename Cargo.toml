@@ -277,6 +277,17 @@ todo = "deny"
 unimplemented = "deny"
 dbg_macro = "deny"
 
+# Debug builds keep line tables only (file and line in backtraces), no
+# variable or type debuginfo (the maintainer, 2026-11-24): local builds,
+# tests, doc tests, the gate's coverage run and cargo-mutants' builds.
+# After a one-line sb-config edit, in interleaved runs: `cargo test
+# --no-run` about 50% faster, the coverage run 8% and `scripts/check.sh
+# full` 4%. release, release-tests and production don't inherit dev; the
+# release and production binaries came out byte-identical.
+# https://doc.rust-lang.org/cargo/reference/profiles.html#debug
+[profile.dev]
+debug = "line-tables-only"
+
 # What a shipped binary would be built with (`--profile production`).
 [profile.production]
 inherits = "release"
