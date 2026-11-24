@@ -865,12 +865,12 @@ No test reaches the network or replaces an installed sb.
   sb-rust keeps `version --json`'s `uv_version` and bare tags, as the
   update-saltbox-python action reads sb's version that way.
 - **The workflows are unrun:** written locally, never pushed. The
-  repository's settings they rely on (the `release` environment's
-  reviewers, its `DISCORD_WEBHOOK` secret and its limit to the release
-  tags, a ruleset on who may push version tags, sb-rust among the
-  selected repositories of the Saltbox App's organisation variable and
-  secret) wait for the
-  maintainer with the repository itself. GitHub's 22.04 runners are
+  `release` environment is set up (the maintainer, 2026-11-24): the
+  maintainer as its required reviewer, its `DISCORD_WEBHOOK` secret and
+  its limit to the release tags. The other settings they rely on (a
+  ruleset on who may push version tags, sb-rust among the selected
+  repositories of the Saltbox App's organisation variable and secret)
+  wait for the maintainer. GitHub's 22.04 runners are
   deprecated from 2026-09-17 and unsupported from 2027-04-17; the 22.04
   jobs need a plan by then.
 - The proxy and GitHub are trusted for the digest; a compromised GitHub
