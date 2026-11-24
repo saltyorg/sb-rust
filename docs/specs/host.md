@@ -542,7 +542,7 @@ what both do.
     `sb-cli-core` (the run log);
   - `sb-host`'s own entry allows `sb` and the later modules as each
     arrives.
-- **proto-logs FINDINGS "Map impact":** put the `journalctl -f` stream in
+- **proto-logs' findings, "Map impact"** (docs/prototypes/proto-logs.md): put the `journalctl -f` stream in
   host. Decision 4 overrides that.
 - **exec spec, decision 4:** "apt progress" is no longer `pty`'s first
   user (assumption 1); the first module that runs a child needing a

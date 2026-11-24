@@ -91,8 +91,8 @@ const TICK_RATE: f64 = 4.0;
 /// while the mouse is in use ([`MOUSE_RECENT`]), so mouse codes already
 /// on their way don't reach the shell.
 /// UNVERIFIED: no ratatui or crossterm documentation covers it. proto-logs
-/// measured it (FINDINGS.md): mouse codes sent 10, 50 and 100 ms after
-/// quitting left 600 bytes in the shell without the drain, none with it.
+/// checked it (docs/prototypes/proto-logs.md): mouse codes sent shortly
+/// after quitting reached the shell without the drain, none with it.
 const DRAIN: Duration = Duration::from_millis(150);
 
 /// How long the drain waits for the terminal's answer to [`STATUS_QUERY`]

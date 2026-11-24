@@ -2,7 +2,7 @@
 # "Architecture"). Format: https://embarkstudios.github.io/cargo-deny/checks/cfg.html
 # The gate runs on the shipped binary's graph:
 #   cargo deny --manifest-path crates/sb/Cargo.toml check
-# so the prototypes' dependencies don't count.
+# so only what sb ships counts.
 
 [graph]
 # Only what we ship (decision 6, ADR-020): glibc on amd64 and arm64.

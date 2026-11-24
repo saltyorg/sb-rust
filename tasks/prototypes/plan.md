@@ -1,5 +1,10 @@
 # Implementation Plan: Stack prototypes
 
+> Done. Each prototype was removed once its module was built (the
+> maintainer, 2026-11-06): the findings are in `docs/prototypes/`, and the
+> code, `scripts/try-prototype.sh` and `scripts/demo-log-sources.sh` are in
+> git history at f5f05afc. The paths below are the prototypes' own.
+
 ## Overview
 
 Before any module spec is locked, build eight throwaway prototypes. Each one

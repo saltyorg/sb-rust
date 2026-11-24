@@ -1,5 +1,12 @@
 # Prototype: proto-logs
 
+> The prototype's code was removed once its module, `sb logs` (crates/tui,
+> crates/host, crates/docker), was built (the maintainer, 2026-11-06); it
+> is in git history at f5f05afc (`git show
+> f5f05afc:prototypes/proto-logs/`). These findings stay as the record.
+> Figures measured in the prototype's own runs are left out: each result
+> says what was checked and what it showed.
+
 **Question:** Can bollard log streams and `journalctl -f` output feed a ratatui
 viewer with follow, scroll, and search, without blocking input?
 
@@ -27,11 +34,11 @@ types:
 - **Synthetic sources:** a throwaway container and a transient systemd unit
   with predictable coloured output, removed afterwards. Used for search and
   switching.
-- **Real sources** on a real Saltbox install, read-only: the container with
-  the longest log lines (over 5,000 characters), a container emitting ANSI
-  colour, the busiest container, and a Saltbox-managed systemd service. Each
-  was opened, followed, paused, searched and resumed in the PTY harness. Only
-  structure was recorded (states, widths, escape leaks), never log content.
+- **Real sources** on a Saltbox install, read-only: a container with very
+  long log lines, a container emitting ANSI colour, a busy container, and a
+  Saltbox-managed systemd service. Each was opened, followed, paused,
+  searched and resumed in the PTY harness. Only structure was recorded
+  (states, widths, escape leaks), never log content.
 
 ## Result
 
@@ -65,12 +72,11 @@ types:
   sequences, and follow, pause, search and resume behaved as with the
   synthetic sources. The journal source streamed like the container sources.
 - **Long lines (shown only by real logs):** application lines can run to
-  thousands of characters (JSON, stack traces). After review, the design is:
+  thousands of characters (JSON, stack traces). The design:
   - **Wrap on by default**, toggled with `w` or the right-click menu.
   - **With wrap off, scroll sideways:** ←/→, Shift+wheel or a horizontal
     wheel, 8 columns per step, with the column shown in the header.
-  - The earlier open-line popup (with JSON pretty-printing) was removed at
-    review in favour of these two.
+  - These two replace an open-line popup (with JSON pretty-printing).
 - **Scrolling moves the view directly, by screen rows** (no selection
   cursor). The earlier design moved a highlight and only scrolled once it
   hit the edge, so the first wheel notches changed nothing visible, which
@@ -85,74 +91,50 @@ types:
   until the container (or a re-created one with the same name) runs again,
   says so, and resumes from the stop time. Checked by restarting a demo
   container mid-stream. Real containers were not restarted.
-- **Bug found and fixed:** searching while following found nothing, because
-  the search started after the newest line. It now jumps to the most recent
-  match first.
+- **Search while following** jumps to the most recent match first: a
+  search that starts after the newest line finds nothing.
 - Wrapping needs exact row heights, which use ratatui's unstable
   `rendered-line-info` feature (`Paragraph::line_count`), the same pin as
   proto-markdown.
-- **Performance (reported as laggy when opening a line):** measured with the
-  opt-in `PROTO_LOGS_TIMING=<file>` frame log on a real source with very long
-  lines.
-
-  | Case | Before | After |
-  |---|---|---|
-  | Paused near the newest line (debug) | ~5 ms per redraw | unchanged |
-  | Paused at the oldest line, popup open, mouse moving (debug) | ~70 ms | ~5 ms |
-  | Same (release) | ~6 ms | ~0.5 ms |
-  | Same with the buffer at its 5,000-line cap (debug) | not measured (scaled with buffer) | ~5 ms |
-
-  Cause: keeping the paused view full measured every line from the top of the
-  view to the end of the buffer on every redraw, so the cost grew with the
-  buffer. Each mouse movement redraws, so moving over the popup queued up slow
-  frames. Fix: stop measuring once the screen is full. Results were the same
-  over two runs. Not changed: skipping redraws on mouse movement. At ~5 ms per
-  frame it isn't needed, and an unmeasured "improvement" would only add code.
-  The module needs a frame-time budget check with long-line fixtures so this
-  can't regress unnoticed.
-- **Lockups with a real mouse (reported: froze for seconds):** each input
-  event caused a full redraw. A real mouse sends motion events faster than
-  redraws finish in a large window, so redraws queued up. Measured with a
-  burst of 300 back-to-back motion events at 240×70: 300 redraws at ~18 ms
-  (debug), i.e. ~5 s of queued work. Fix: handle every waiting event, then
-  redraw once. Result: 600 motion events caused 2 redraws (same over two
-  runs). The earlier harness only sent one event per 150 ms, so it couldn't
-  show this.
+- **Redraw cost with long lines:** measured with an opt-in frame-time log
+  on a source with very long lines. Keeping the paused view full measured
+  every line from the top of the view to the end of the buffer on every
+  redraw, so the cost grew with the buffer, and each mouse movement redraws,
+  so moving over the popup queued up slow frames. Fix: stop measuring once
+  the screen is full; the redraw cost then no longer grew with the buffer.
+  Not changed: skipping redraws on mouse movement. The fixed redraws didn't
+  need it, and an unmeasured "improvement" would only add code. The module
+  needs a frame-time budget check with long-line fixtures so this can't
+  regress unnoticed.
+- **Lockups with a real mouse:** each input event caused a full redraw. A
+  real mouse sends motion events faster than redraws finish in a large
+  window, so redraws queued up. A burst of back-to-back motion events
+  showed it: one redraw for each event. Fix: handle every waiting event,
+  then redraw once, so a burst costs a redraw or two. A harness that sends
+  one event at a time can't show this.
 - **Terminal codes leaking into the shell after quitting:** mouse codes the
   terminal sends while capture is being switched off arrived after the app
   stopped reading, and the shell printed them. Fix: after disabling mouse
   capture, read and discard input for 150 ms before restoring the terminal.
-  Measured by sending mouse codes 10, 50 and 100 ms after `q` and counting
-  what the shell received: before, 600 bytes every time; after, 0.
-- The launcher now builds release binaries, so trying a prototype feels like
-  the real thing (debug redraws are ~10× slower).
-- **"Still a tad slow" (after the lockup fixes):** measured again at 240×70
-  (release) on the long-line source, with the timing log now also recording
-  bytes written per frame. Scrolling redraws took ~1.3 ms and 7–20 KB, before
-  and after the scrolling redesign, so neither CPU nor output volume
-  explained it. The cause was the cursor-based scrolling described above.
-  Render caching was considered and not added: at ~1.3 ms per frame it would
-  add code without a measurable gain.
+  Checked by sending mouse codes shortly after `q`: before the fix the shell
+  received them, after it nothing.
+- The prototypes were tried as release builds, since debug redraws are
+  much slower.
+- **Scrolling that still felt slow (after the lockup fixes):** redraw time
+  and the bytes written per frame were small and the same before and after
+  the scrolling redesign, so neither CPU nor output volume explained it. The
+  cause was the cursor-based scrolling described above. Render caching was
+  considered and not added: it would add code without a measurable gain.
 - **Production build (for comparing against sb-go):** a `production`
   profile (fat LTO, one codegen unit, stripped), built static for musl with
-  `cross`, is 3.0 MB. Redraw medians while scrolling the long-line source at
-  240×70, three runs each:
-
-  | Build | Median per redraw |
-  |---|---|
-  | release, glibc | 1.55–1.65 ms |
-  | production, musl, default allocator | 2.11–2.31 ms |
-  | production, musl, mimalloc | 1.99–2.04 ms |
-
-  musl's allocator costs ~40% per frame. mimalloc (musl builds only) recovers
-  part of that and is kept. All of these are far below one 60 Hz frame
+  `cross`. musl's default allocator made each redraw measurably slower than
+  the glibc release build; mimalloc (musl builds only) recovered part of
+  that and was kept. Every build redrew well within one 60 Hz frame
   (16 ms), so redraw time doesn't explain a feel difference against sb-go.
-- **Slow picker (reported: moving up and down was "slow as hell"):** the
-  batching change had polled crossterm's `EventStream` with a throwaway
-  waker (`now_or_never`). The stream then woke that dead waker, so input was
-  only noticed on the next 250 ms tick. Measured key-to-screen latency
-  (harness baseline 51 ms subtracted): before, ~100 ms median and up to
-  ~250 ms added; after, ~14 ms (within one frame).
+- **Slow picker:** the batching change had polled crossterm's `EventStream`
+  with a throwaway waker (`now_or_never`). The stream then woke that dead
+  waker, so input was only noticed on the next 250 ms tick. After the fix,
+  key-to-screen latency fell to within one frame.
 - **Root cause of the whole series of input bugs:** the event loop, batching,
   mouse modes and terminal setup were hand-written instead of following the
   libraries' documented patterns. The prototype now uses the ratatui async
@@ -183,15 +165,14 @@ types:
 
 ## Picker redesign
 
-Review asked for sb-go's service list and a friendlier picker. The
-maintainer picked a grouped status list, with colour, stopped containers,
-rich status, recent sources, and one picker for both kinds of source.
+The maintainer's decisions (2026-10-29): sb-go's service list, in a
+grouped status list with colour, stopped containers, rich status, recent
+sources, and one picker for both kinds of source.
 
 - **Same services as sb-go.** sb-go lists `saltbox_managed_*` plus
-  `docker`, and hides units whose file is gone. The first prototype missed
-  `docker` and kept stale units. The picker now uses the same filter, read
-  from `systemctl list-units --output=json` rather than the human table
-  sb-go parses. JSON table output is present in systemd v249 (Ubuntu 22.04),
+  `docker`, and hides units whose file is gone. The picker uses the same
+  filter, read from `systemctl list-units --output=json` rather than the
+  human table sb-go parses. JSON table output is present in systemd v249 (Ubuntu 22.04),
   checked in the v249 source (`output_table()` in
   `src/systemctl/systemctl-util.c`). Timestamps come from `systemctl show`,
   whose output systemctl(1) calls computer-parsable.
@@ -199,19 +180,17 @@ rich status, recent sources, and one picker for both kinds of source.
   running/uptime, failed and how long ago, restarting, or scheduled with the next
   timer run. Containers show uptime, exit code, out-of-memory, restart count
   and failing health checks, from one bollard inspect per container, run in
-  parallel. The words carry the meaning without colour. The rules are pure
-  functions in `src/sources.rs`, test-first: the tests failed against stubs,
-  then passed.
+  parallel. The words carry the meaning without colour. The rules are pure,
+  tested functions in `src/sources.rs`.
 - **Timer-driven services** count as healthy between runs (`✓ scheduled ·
-  next run in …`). Review pointed out that a refresh-style unit working as
-  intended shouldn't look idle. A failed run leaves the unit `failed`, which
-  is already under Needs attention, so inactive with a next run scheduled
-  means healthy. The test was changed first and failed against the old rule.
+  next run in …`): a refresh-style unit working as intended shouldn't look
+  idle. A failed run leaves the unit `failed`, which is already under Needs
+  attention, so inactive with a next run scheduled means healthy.
 - **Disabled units are shown, not hidden.** `list-units` returns only
   loaded units, and systemd unloads a disabled unit that nothing uses. sb-go
   and the first version of this picker therefore hid disabled
-  `saltbox_managed_*` units completely. Review called a disabled unit a lack
-  of cleanup, so the picker now also reads
+  `saltbox_managed_*` units completely. A disabled unit is a lack of
+  cleanup, so the picker also reads
   `systemctl list-unit-files --output=json`.
   - A disabled unit that is neither running nor scheduled by a timer shows
     as `! disabled · not cleaned up`, in amber, under Needs attention.
@@ -219,8 +198,7 @@ rich status, recent sources, and one picker for both kinds of source.
   - Checked against v249 source: JSON table output, the `unit_file` key
     (spaces in headers become underscores) and bare unit names
     (`basename(u->path)`).
-  - Tests were written first and failed. The demo script now adds a
-    disabled leftover unit, which showed as intended on real systemd.
+  - A demo disabled leftover unit showed as intended on real systemd.
 - **Needs attention:** failed or auto-restarting units, containers that
   exited non-zero, ran out of memory, are restarting, are unhealthy, or were
   restarted by Docker less than 10 minutes ago. A container that exited with
@@ -235,55 +213,51 @@ rich status, recent sources, and one picker for both kinds of source.
   bursts. The first load runs in the background, so the screen appears at
   once.
 - **Recent section: removed.** A Recent section (last 5 opened, kept in a
-  state file) was built and then removed at the maintainer's request,
+  state file) was built and then removed by the maintainer's decision,
   together with its `dirs` dependency.
-- **Measured:** a full load (three systemctl calls plus an inspect of every
-  container, process start included) took about 20 ms across five runs on a
-  real install with a few dozen containers. That is well under the 150 ms
+- **Load time:** a full load (three systemctl calls plus an inspect of
+  every container, process start included) stayed well under the 150 ms
   budget that would have called for showing the list before its status.
 - **How it was checked:**
   - `TestBackend` render tests on synthetic sources check the sections,
     status text and cursor behaviour.
-  - On the real install (names masked in the output), the picker listed the
-    same services as sb-go's filter.
+  - On a Saltbox install, the picker listed the same services as sb-go's
+    filter.
   - A throwaway container that exited with code 3 moved into Needs attention
     within a tick, without input. A restart-policy loop showed its restart
     count.
   - Filter-then-Enter opened the stopped container's log.
   - Clicks on headers were ignored, the wheel moved the cursor, and a click
     then a second click opened a source.
-  - `logs-demo` now includes a crash-looping container.
-  - `scripts/demo-log-sources.sh up` creates a demo source for every state
-    the picker can show: 8 `sbdemo-*` units (one a disabled leftover) and 10 labelled
-    containers (crash, out of memory, restart loop, unhealthy, recently
-    restarted, running, health check pending, paused, stopped, never
-    started). `view` opens the picker on them and `down` removes them. All
+  - A demo script (`scripts/demo-log-sources.sh`, also in git history at
+    f5f05afc) created a demo source for every state the picker can show:
+    8 `sbdemo-*` units (one a disabled leftover) and 10 labelled containers
+    (crash, out of memory, restart loop, unhealthy, recently restarted,
+    running, health check pending, paused, stopped, never started). All
     showed with the intended section, symbol and words.
   - systemctl lists only loaded units. An idle unit file is unloaded, so
     the "stopped" demo is enabled at runtime, as an enabled Saltbox unit
     would be.
-- **Colour (after review: "not a fan of the line selected having different
-  colors", and too little colour overall):**
+- **Colour:** one solid selection bar, and more colour overall.
   - The selected row was `reversed()`, which swaps each span's own colours,
     so the bar came out in several colours. It is now one solid bar:
     ratatui paints `highlight_style` over the whole row after drawing it
     (ratatui-widgets 0.3.2 `list/rendering.rs`), so a style with both
     colours that also clears DIM replaces every span's styling. A
-    `TestBackend` test checks every cell of the selected row, and failed on
-    the old style.
-  - **Truecolor palette (after review: design for truecolor, as sb-go
-    forces it):** a 16-colour palette was tried first and replaced.
-    - sb-rust's own palette, for dark backgrounds, first in `src/theme.rs`
-      and now in the shared `prototypes/proto-theme` crate (also used by
-      proto-markdown). Colours are named by role: text tones, accent, health (ok, problem, warn, idle),
-      kinds and sections (each with a darker rule tone), selection and
-      search hit. It is not copied from sb-go or charmtone.
+    `TestBackend` test checks every cell of the selected row.
+  - **Truecolor palette** (designed for truecolor, as sb-go forces it): a
+    16-colour palette was tried first and replaced.
+    - sb-rust's own palette, for dark backgrounds, in a shared proto-theme
+      crate (also used by proto-markdown), now cli-core's theme
+      (`crates/cli-core/src/theme.rs`). Colours are named by role: text
+      tones, accent, health (ok, problem, warn, idle), kinds and sections
+      (each with a darker rule tone), selection and search hit. It is not copied from sb-go or charmtone.
     - Explicit tones replace the DIM modifier, which terminals render
       inconsistently. The background stays the terminal's own.
     - crossterm writes `Color::Rgb` as 24-bit SGR without checking the
       terminal (crossterm 0.29 `style/types/colored.rs`), so truecolor is
-      forced with no code. Checked on the real binary with
-      `TERM=xterm-256color` and no `COLORTERM`: 116 24-bit SGR codes, no
+      forced with no code. Checked on the binary with
+      `TERM=xterm-256color` and no `COLORTERM`: only 24-bit SGR codes, no
       16-colour ones.
     - A `TestBackend` test fails if any cell on the picker or viewer
       (including the menu and a search hit) uses a named ANSI colour.
@@ -297,10 +271,9 @@ rich status, recent sources, and one picker for both kinds of source.
 
 ## Verdict
 
-_Reviewed by the maintainer (2026-10-29): verified for now, open to later
-improvements. The review shaped the picker (grouped status list, sb-go's
-service filter, disabled leftovers flagged, timer services healthy, no
-Recent section), the viewer (scroll instead of a popup, faster input) and
+_Approved by the maintainer (2026-10-29), open to later improvements. The
+review shaped the picker (grouped status list, sb-go's service filter,
+disabled leftovers flagged, timer services healthy, no Recent section), the viewer (scroll instead of a popup, faster input) and
 the truecolor palette._
 
 **Adopt.** One async loop with crossterm `EventStream`, bollard streams and a
@@ -322,7 +295,8 @@ the truecolor palette._
 - `docker` module: container status from list plus a parallel inspect, kept
   live by bollard's event stream.
 - `tui` module: the picker design is in `docs/ideas/log-picker.md`. The
-  role-named truecolor palette (`prototypes/proto-theme`) is the starting point for a
-  shared theme across screens (capability map, decision 10).
+  role-named truecolor palette (proto-theme, now cli-core's theme) is the
+  starting point for a shared theme across screens (capability map,
+  decision 10).
 - Stack table: add `serde_json` (systemctl JSON) and `jiff` (Docker
   timestamps).

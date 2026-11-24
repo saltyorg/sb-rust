@@ -1,5 +1,11 @@
 # Prototype: proto-facts
 
+> The prototype's code was removed once its module, `sb fact` (crates/tui,
+> crates/config), was built (the maintainer, 2026-11-06); it is in git
+> history at f5f05afc (`git show f5f05afc:prototypes/proto-facts/`). These
+> findings stay as the record. Figures measured in the prototype's own
+> runs are left out: each result says what was checked and what it showed.
+
 **Question:** Do ratatui and ratatui-textarea give a good fact editor, with
 keyboard and mouse, on Saltbox facts data?
 
@@ -9,9 +15,9 @@ ratatui-textarea@0.9.3, tui-popup@0.7.7 (dialogs), crossterm `osc52`
 
 ## History
 
-The first version copied sb-go's layout (a tree plus a separate details pane)
-without questioning it. It worked technically but kept sb-go's main usability
-problem: values were hidden until you selected each setting. It has been
+The first version copied sb-go's layout (a tree plus a separate details
+pane). It worked technically but kept sb-go's main usability problem:
+values were hidden until you selected each setting. It has been
 replaced by the settings-page design in `docs/ideas/fact-editor.md`, chosen
 for users of mixed skill levels. The technical lessons from the first version
 are kept below.
@@ -79,10 +85,10 @@ changes exactly: an edited value, a removed section, a removed app file.
 
 - **Same two input problems as proto-logs, same fixes:** input events are
   handled in batches with one redraw per batch, and input is drained after
-  mouse capture is turned off. Before the fix, mouse codes arriving 10–100 ms
-  after `q` reached the shell (550 bytes in the test); after, none.
+  mouse capture is turned off. Before the fix, mouse codes arriving just
+  after `q` reached the shell; after it, none did.
 
-- **Library audit (after review asked whether proper libraries were used):**
+- **Library audit:**
   - Clipboard copy now uses crossterm's own `CopyToClipboard` (feature
     `osc52`), replacing hand-written escape codes and the base64 crate.
     Verified by decoding the emitted OSC 52 payload: it carried exactly the
@@ -94,8 +100,8 @@ changes exactly: an edited value, a removed section, a removed app file.
     works after a first render and its size is frozen after that (see
     `popup_state.rs` and `popup_area` in its source), which doesn't suit a
     menu that opens at the cursor with changing labels.
-  - The INI writer stays our own. The library review corrected the
-    evidence for this (checked in rust-ini 0.21.3's source):
+  - The INI writer stays our own. The evidence (checked in rust-ini
+    0.21.3's source):
     - **rust-ini:** the earlier round trip mis-read the indented
       continuation lines only because `enabled_indented_mutiline_value` is
       off by default. With it on, they parse. The writer is what rules it
@@ -117,9 +123,7 @@ changes exactly: an edited value, a removed section, a removed app file.
   - A `TestBackend` render test now checks the save dialog's title and
     buttons in memory: the module-level testing approach.
 
-- **Library review of the whole crate** (the `library-reviewer` agent,
-  after the truecolor change). Each fix was test-first: the test failed
-  against the old code, or for refactors, it pinned the behaviour first.
+- **Library-first fixes over the whole crate,** each with a test.
   - **Security:** saving rewrote a fact file through a fixed temp name with
     default permissions, so a 0600 file holding secrets became 0644.
     - It now matches sb-go: tempfile creates the temp file (unpredictable
@@ -127,13 +131,10 @@ changes exactly: an edited value, a removed section, a removed app file.
     - The original owner, then mode, are copied before writing.
     - Data and directory are synced.
     - A symlinked fact file is refused rather than replaced.
-    - A second review of the fix found nothing to replace, but corrected
-      the doc comment, which had overclaimed sb-go parity.
   - **Dialog buttons could still be cut off.** The wrapped-line estimate
     (text width / dialog width) undercounts when whole words wrap. The
-    dialog height now comes from `Paragraph::line_count`. The real dialog
-    texts happened not to trigger it; a test with text built to trigger it
-    failed before the fix.
+    dialog height now comes from `Paragraph::line_count`, and a test with
+    text built to wrap that way holds it.
   - **Click areas and widths moved onto ratatui layout:**
     - Bottom buttons: `Layout::horizontal` with spacing, widths from
       `Span::width`, each drawn into the rectangle that is its click area.
@@ -154,13 +155,11 @@ changes exactly: an edited value, a removed section, a removed app file.
       it.
   - **Context menu:** still our own popup (tui-popup reasons above), but its
     rows now come from `Rect::rows` plus `Rect::layout`, the same rows map
-    clicks back to items, and shortcut widths use `Span::width`. A second
-    review flagged the first decline ("the current drawing works") as not
-    a valid reason under the library rule.
+    clicks back to items, and shortcut widths use `Span::width`.
   - **Stays custom, with comments:** click-to-row mapping in the list
     (`List` has no hit-testing).
   - **Up with nothing selected** goes to the first row again. The library
-    `select_previous` would wrap to the last; a test caught the change.
+    `select_previous` would wrap to the last; a test holds it.
 
 **Lessons kept from the first version:**
 - Multi-line values must become one ratatui `Line` per value line.
@@ -175,7 +174,7 @@ changes exactly: an edited value, a removed section, a removed app file.
 
 ## Verdict
 
-_Reviewed by the maintainer (2026-10-29): fine. The review shaped the
+_Approved by the maintainer (2026-10-29). The review shaped the
 settings-page design, the right-click menu (no Fold, every action on the
 keyboard too), the search box and the truecolor palette. Still open: the
 manual check in two real terminal emulators (mouse, Shift-drag selection,

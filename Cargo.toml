@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/*", "prototypes/*"]
+members = ["crates/*"]
 
 [workspace.package]
 edition = "2024"
@@ -8,7 +8,7 @@ rust-version = "1.100"
 license = "GPL-3.0-only"
 publish = false
 
-# Versions shared by the crates/ members (prototypes keep their own).
+# Versions shared by the crates/ members.
 [workspace.dependencies]
 sb-cli-core = { path = "crates/cli-core" }
 sb-host = { path = "crates/host" }

@@ -66,7 +66,7 @@ running; whose output tail and which pointer a failure shows.
       2026-11-01; spec decision 7).
 
 **Dependencies:** None
-**Files:** `prototypes/proto-runner/{Cargo.toml,src/main.rs,FINDINGS.md}` (removed since; findings in docs/prototypes/proto-runner.md), `scripts/try-prototype.sh`
+**Files:** `prototypes/proto-runner/{Cargo.toml,src/main.rs,FINDINGS.md}` (removed since; findings in docs/prototypes/proto-runner.md), `scripts/try-prototype.sh` (removed since; in git history at f5f05afc)
 **Scope:** M
 
 ## Task 2: `sb-term-ui` crate, colour hook-up and theme adapters

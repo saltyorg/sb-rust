@@ -1,5 +1,10 @@
 # Tasks: Stack prototypes
 
+> Done. Each prototype was removed once its module was built (the
+> maintainer, 2026-11-06): the findings are in `docs/prototypes/`, and the
+> code, `scripts/try-prototype.sh` and `scripts/demo-log-sources.sh` are in
+> git history at f5f05afc. The paths below are the prototypes' own.
+
 Plan: `tasks/prototypes/plan.md`. Each prototype task ends with `prototypes/<name>/FINDINGS.md`
 in the format the plan defines.
 

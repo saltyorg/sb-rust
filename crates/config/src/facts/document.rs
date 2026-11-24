@@ -17,7 +17,7 @@
 //! sb-go's older writer produced, are accepted and kept too, except where
 //! Python would read the line as a continuation of the value before it.
 //!
-//! Why not an INI crate (prototypes/proto-facts/FINDINGS.md, "Library
+//! Why not an INI crate (docs/prototypes/proto-facts.md, "Library
 //! audit"): rust-ini 0.21.3 and configparser 3.3.0 both drop comments
 //! while parsing and rebuild the whole file when writing; rust-ini also
 //! writes a newline as a `\n` escape, not a continuation line, and by

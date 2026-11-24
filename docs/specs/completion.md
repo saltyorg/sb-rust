@@ -35,7 +35,7 @@ M57).
    ["unstable-dynamic"] }`, ADR-001), each call site carrying a comment
    naming ADR-001. The shell side is clap's registration stub, which
    calls sb at Tab time; no per-shell completion script is ours
-   (proto-complete, FINDINGS.md).
+   (docs/prototypes/proto-complete.md).
 3. **Completion runs as the calling user, without sudo** (cli-core
    decision 3; cli-core spec, startup step 3), and reads only the
    world-readable tag cache and inventory. It never runs a playbook, never

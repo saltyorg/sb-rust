@@ -216,8 +216,8 @@ decision 21; capability map, "When the binary is complete").
   and documented backend, with the async `EventStream` the recipe uses;
   termwiz is larger, and termion has no async reader.
 - **Hand-written escape codes and a raw `read` loop:** proto-logs' series
-  of input bugs came from exactly that (its FINDINGS.md, "Root cause of
-  the whole series of input bugs"); the library-first rule.
+  of input bugs came from exactly that (docs/prototypes/proto-logs.md,
+  "Root cause of the whole series of input bugs"); the library-first rule.
 
 ## Consequences
 

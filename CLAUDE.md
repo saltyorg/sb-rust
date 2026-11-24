@@ -62,8 +62,8 @@ and each crate's own documentation
   URL. Never re-implement something a dependency already provides (event
   loops, input editing, clipboard, popups, widgets, ANSI handling).
 - Diverging from the documented approach needs evidence: a measurement or a
-  missing feature. Record it in a code comment ("why not X") and in the
-  prototype's FINDINGS.md or an ADR.
+  missing feature. Record it in a code comment ("why not X") and in an
+  ADR.
 - A pattern with no official source is marked `UNVERIFIED` in the code,
   with what it was checked against.
 - Prefer crates that are actively maintained and widely used. A
@@ -74,7 +74,7 @@ and each crate's own documentation
 - **Enforcement:**
   - After an edit to a source file of a crate with terminal, UI, input,
     process or I/O code (`cli-core`, `docker`, `exec`, `host`, `motd`,
-    `release`, `sb`, `term-ui`, `tui`) or of a prototype, a hook
+    `release`, `sb`, `term-ui`, `tui`), a hook
     (`.claude/hooks/library-check.sh`) asks for this check. Answer it then, not at commit time. A new crate
     of that kind is added to the hook's list.
   - Before committing changes to terminal, UI, input, event-loop,

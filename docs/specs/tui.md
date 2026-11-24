@@ -1076,7 +1076,7 @@ specifies it because the fact editor is its only user.
 Sources: research brief F (spec-research/F-editors.md, which cites sb-go
 as `file.go:line`), decided.md (F-Q1, the maintainer's answer of
 2026-11-13), the capability map, the config, exec, term-ui and cli-core
-specs, docs/ideas/fact-editor.md and prototypes/proto-facts/FINDINGS.md.
+specs, docs/ideas/fact-editor.md and docs/prototypes/proto-facts.md.
 
 ### Assumptions
 
@@ -1950,8 +1950,9 @@ the test's directory.
 ## The announcement viewer
 
 *Written 2026-11-15 from proto-markdown's reviewed prototype*
-(prototypes/proto-markdown/FINDINGS.md, "Viewer redesign (maintainer
-review)", the maintainer's verdict of 2026-10-29, and its `src/main.rs`),
+(docs/prototypes/proto-markdown.md, "Viewer redesign (maintainer
+review)", the maintainer's verdict of 2026-10-29, and its `src/main.rs`,
+in git history at f5f05afc),
 at the maintainer's request (2026-11-15: the earlier prototype's menu through all
 announcements).
 This is the section the module build's M87 waited on (plan open

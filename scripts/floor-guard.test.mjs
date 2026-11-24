@@ -325,11 +325,6 @@ test('a crate Cargo.toml: a lint of its own set to allow is flagged, a deleted c
   clean(crateToml, { [CRATE]: null });
 });
 
-test('a prototype Cargo.toml is not guarded', () => {
-  const proto = { 'prototypes/tui/Cargo.toml': crateToml[CRATE] };
-  clean(proto, edit(proto, 'prototypes/tui/Cargo.toml', '\n[lints]\nworkspace = true\n', ''));
-});
-
 const TOOLCHAIN = 'rust-toolchain.toml';
 const toolchainToml = {
   [TOOLCHAIN]: `[toolchain]
@@ -719,7 +714,7 @@ for (const config of ['.cargo/config', '.clippy.toml', '.gitleaks.toml', 'rust-t
 }
 
 test('a tool config name elsewhere is clean', () => {
-  clean({}, { 'prototypes/tui/clippy.toml': 'msrv = "1.99"\n', 'docs/rust-toolchain': 'notes\n' });
+  clean({}, { 'tools/tui/clippy.toml': 'msrv = "1.99"\n', 'docs/rust-toolchain': 'notes\n' });
 });
 
 test('check.sh: MUTATION_TESTERS as a compound assignment is flagged, a comment about one is clean', () => {
@@ -1077,8 +1072,6 @@ test('a test removed from a file that stays is flagged, a renamed or re-attribut
   clean(libRs, edit(libRs, LIB, '    #[test]', '    #[tokio::test]'));
   const doc = { 'docs/testing.md': 'Unit tests carry #[test].\nThey run in CI.\n' };
   clean(doc, edit(doc, 'docs/testing.md', 'Unit tests carry #[test].\n', ''));
-  const proto = { 'prototypes/tui/src/lib.rs': libRs[LIB] };
-  clean(proto, edit(proto, 'prototypes/tui/src/lib.rs', '    #[test]\n', ''));
   clean(libRs, edit(libRs, LIB, '    #[test]\n    fn adds() {\n', '    #[test]\n    fn adds_more() {\n        let _ = add(0, 0);\n    }\n\n    #[test]\n    fn adds() {\n'));
 });
 
@@ -1232,16 +1225,16 @@ const stubs = (versions, arch) => {
   out.cargo += 'if [ "$1" = tree ] && [ -z "${NO_PQ:-}" ]; then echo \'rustls feature "prefer-post-quantum"\'; fi\n';
   // The coverage run's lcov report (--output-path): a file under crates/
   // with COV_LF lines, COV_LH of them hit, COV_FNF functions and COV_FNH
-  // hit (99% of each by default), then a prototype's file with nothing
+  // hit (99% of each by default), then a file outside crates/ with nothing
   // hit, which the project floors must not count (ADR-025). With COV_NONE
-  // set, only the prototype's file.
+  // set, only the file outside crates/.
   out.cargo += 'if [ "$1" = llvm-cov ]; then\n'
     + '  o=; for a in "$@"; do [ "$o" = next ] && o="$a"; [ "$a" = --output-path ] && o=next; done\n'
     + '  if [ -n "$o" ] && [ "$o" != next ]; then\n'
     + '    : >"$o"\n'
     + '    if [ -z "${COV_NONE:-}" ]; then printf \'SF:%s/crates/foo/src/lib.rs\\nFNF:%s\\nFNH:%s\\nLF:%s\\nLH:%s\\nend_of_record\\n\' '
     + '"$PWD" "${COV_FNF:-100}" "${COV_FNH:-99}" "${COV_LF:-1000}" "${COV_LH:-990}" >>"$o"; fi\n'
-    + '    printf \'SF:%s/prototypes/p/src/lib.rs\\nFNF:50\\nFNH:0\\nLF:500\\nLH:0\\nend_of_record\\n\' "$PWD" >>"$o"\n'
+    + '    printf \'SF:%s/tools/p/src/lib.rs\\nFNF:50\\nFNH:0\\nLF:500\\nLH:0\\nend_of_record\\n\' "$PWD" >>"$o"\n'
     + '  fi\n'
     + 'fi\n';
   // The NEXTEST_* and CARGO_MUTANTS_* variables cargo (cargo-mutants, so
@@ -2097,7 +2090,7 @@ const checkConst = (name) => {
 const crateWork = { work: { 'crates/foo/src/lib.rs': 'pub fn f() {}\n' } };
 // Hits out of 10000 at a percentage, rounded to the nearest hundredth.
 const hits = (pct) => String(Math.round(pct * 100));
-test('check.sh full: the project coverage over crates/ is printed, and the prototype is not counted', () => {
+test('check.sh full: the project coverage over crates/ is printed, and a file outside crates/ is not counted', () => {
   const r = checkRun('full', crateWork);
   passes(r, 'full');
   assert.match(r.output, /^lines: 99\.000% \(990 of 1000\), floor [\d.]+%, failing below [\d.]+%$/m, r.output);
@@ -2313,26 +2306,21 @@ test('check.sh fast: the gate scripts\' own tests run when scripts/ changed or n
   }
 });
 
-test('check.sh task: the crates\' tests run once under coverage, then the doc tests and the prototypes, then the crates\' again in a release build', () => {
-  const proto = { 'prototypes/proto-a/Cargo.toml': '[package]\nname = "proto-a"\n\n[dependencies]\nname = "1"\n' };
-  const r = checkRun('task', { files: proto, work: { 'crates/foo/src/lib.rs': 'pub fn f() {}\n' } });
+test('check.sh task: the crates\' tests run once under coverage, then the doc tests, then the crates\' again in a release build', () => {
+  const r = checkRun('task', { work: { 'crates/foo/src/lib.rs': 'pub fn f() {}\n' } });
   passes(r, 'task');
   const runs = r.calls.filter((c) => c.tool === 'cargo' && /^(llvm-cov|test|nextest) /.test(c.args)).map((c) => c.args);
-  assert.equal(runs.length, 4, r.output);
+  assert.equal(runs.length, 3, r.output);
   assert.match(runs[0], /^llvm-cov .*-p sb -p sb-foo /);
   assert.match(runs[1], /^test .*--doc .*-p sb-foo/);
-  assert.equal(runs[2], 'test --locked --quiet -p proto-a');
   // The release build's run: the crates the coverage run tests, under
   // the `release-tests` cargo profile (its own directory) and nextest
   // profile (its per-test timeout, every failure reported).
   const crates = runs[0].match(/(?: -p \S+)+/)[0];
   assert.match(crates, / -p sb -p sb-foo /);
-  assert.equal(runs[3], 'nextest run --locked --cargo-profile release-tests --profile release-tests' + crates);
-  // Without a prototype there is no third run, and none over the workspace.
-  const none = checkRun('task', { work: { 'crates/foo/src/lib.rs': 'pub fn f() {}\n' } });
-  passes(none, 'task');
-  assert.equal(none.calls.filter((c) => c.tool === 'cargo' && c.args.startsWith('nextest run --locked --cargo-profile release-tests ')).length, 1, none.output);
-  assert.ok(!none.calls.some((c) => c.tool === 'cargo' && /^test (?!.*--doc)/.test(c.args)), none.output);
+  assert.equal(runs[2], 'nextest run --locked --cargo-profile release-tests --profile release-tests' + crates);
+  // No cargo test run but the doc tests, and none over the workspace.
+  assert.ok(!r.calls.some((c) => c.tool === 'cargo' && /^test (?!.*--doc)/.test(c.args)), r.output);
 });
 
 // insta removes a stale pending snapshot when a test runs, which fails in
@@ -2403,16 +2391,6 @@ test('check.sh: a file moved into docs/ is no document, and a script moved out o
   const moved = checkRun('fast', { files: fixture, moves: [['scripts/x.sh', 'docs/x.sh']] });
   passes(moved, 'fast');
   assert.equal(guardTestRuns(moved), 1, moved.output);
-});
-
-test('check.sh task: each prototype is named, wherever its [package] section sits', () => {
-  const files = {
-    'prototypes/proto-a/Cargo.toml': '[dependencies]\nname = "1"\n\n[package]\nname = "proto-a"\n',
-    'prototypes/proto-b/Cargo.toml': '[package]\nname = "proto-b"\n',
-  };
-  const r = checkRun('task', { files, work: { 'crates/foo/src/lib.rs': 'pub fn f() {}\n' } });
-  passes(r, 'task');
-  assert.ok(r.calls.some((c) => c.tool === 'cargo' && c.args === 'test --locked --quiet -p proto-a -p proto-b'), r.output);
 });
 
 // The passes run tests as root, and a mutant that bends a path or drops a

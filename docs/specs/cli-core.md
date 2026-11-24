@@ -581,7 +581,6 @@ crates/
   cli-core/        sb-cli-core: startup, clap root, flags, colour, theme,
                    logging setup, cancellation, errors, exit codes, build info
   sb/              the `sb` binary: wires modules into the command tree
-prototypes/        unchanged; evidence only, never a dependency of crates/
 docs/specs/        capability-map.md, cli-core.md, later module specs
 docs/decisions/    ADRs
 ```

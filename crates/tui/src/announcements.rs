@@ -1,6 +1,6 @@
 //! The announcement viewer (tui spec, "The announcement viewer"):
-//! proto-markdown's reviewed design (prototypes/proto-markdown,
-//! FINDINGS.md "Viewer redesign (maintainer review)"). A list of the
+//! proto-markdown's reviewed design (docs/prototypes/proto-markdown.md,
+//! "Viewer redesign (maintainer review)"). A list of the
 //! announcements, newest first, the new ones marked and the older ones
 //! faint, beside the selected one (above it below 70 columns).
 //!

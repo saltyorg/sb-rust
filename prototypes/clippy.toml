@@ -1,5 +1,0 @@
-# Clippy reads the nearest clippy.toml upward from a crate's directory
-# (https://doc.rust-lang.org/clippy/configuration.html), so this file,
-# with no settings, keeps the workspace's clippy.toml off the prototypes:
-# they are throwaway experiments, not sb, and may start processes
-# directly.

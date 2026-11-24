@@ -219,7 +219,7 @@ check_tools() {
   done
 }
 
-# Production crates; prototypes are evidence only.
+# The crates.
 mapfile -t crates < <(find crates -mindepth 2 -maxdepth 2 -name Cargo.toml -printf '%h\n' 2>/dev/null |
   sed 's|^crates/|sb-|; s|^sb-sb$|sb|' | sort)
 pkg_args=()
@@ -228,15 +228,6 @@ for c in "${crates[@]}"; do
   pkg_args+=(-p "$c")
   test_pkg_args+=(--test-package "$c")
 done
-
-# The prototypes: their tests run on their own, outside coverage. sed -s
-# reads each manifest on its own, so one file's [package] range can't run
-# into the next.
-proto_args=()
-while IFS= read -r name; do proto_args+=(-p "$name"); done < <(
-  find prototypes -mindepth 2 -maxdepth 2 -name Cargo.toml -print0 2>/dev/null | sort -z |
-    xargs -0 -r sed -s -n '/^\[package\]/,/^\[/s/^name *= *"\(.*\)"/\1/p'
-)
 
 # Each crate under crates/ inherits the workspace lints (`[lints]` with
 # `workspace = true`; CONSTRAINTS.md, Lint) and has its architecture entry
@@ -1131,8 +1122,8 @@ task() {
   # The crates' unit and integration tests run once, under coverage: a
   # failing test fails cargo-llvm-cov as it fails cargo test
   # (https://github.com/taiki-e/cargo-llvm-cov#usage: "cargo llvm-cov" runs
-  # `cargo test`). It runs no doc tests on a stable toolchain, and no
-  # prototype, so those two run after it (ADR-016).
+  # `cargo test`). It runs no doc tests on a stable toolchain, so those run
+  # after it (ADR-016).
   step "tests (crates), with changed-line coverage >= ${COVERAGE_MIN}%"
   need script
   need setsid
@@ -1146,9 +1137,8 @@ task() {
     echo "in the sandbox; hangup's a_session_scope_stop_takes_the_grace skips (no systemd): run crates/sb/tests/hangup-systemd.sh"
   fi
   in_sandbox cargo llvm-cov --locked --quiet "${pkg_args[@]}" --lcov --output-path target/lcov.info
-  step "tests (doc tests, prototypes)"
+  step "tests (doc tests)"
   in_sandbox cargo test --locked --quiet --doc "${pkg_args[@]}"
-  if ((${#proto_args[@]})); then in_sandbox cargo test --locked --quiet "${proto_args[@]}"; fi
   step "changed-line coverage >= ${COVERAGE_MIN}% (diff-cover)"
   # New files are untracked until committed; without --include-untracked
   # they would not count as changed lines.

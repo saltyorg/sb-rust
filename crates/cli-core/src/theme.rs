@@ -1,9 +1,10 @@
 //! sb's colours (spec: startup step 6; ADR-002).
 //!
 //! One role-named RGB palette (the one the prototypes were reviewed with,
-//! proto-theme) is resolved once at startup for the colour profile:
-//! truecolor as is, or converted with anstyle-lossy, the anstream project's
-//! conversion crate (<https://docs.rs/anstyle-lossy/1.1.5/anstyle_lossy/>).
+//! proto-theme, in git history at f5f05afc) is resolved once at startup
+//! for the colour profile: truecolor as is, or converted with
+//! anstyle-lossy, the anstream project's conversion crate
+//! (<https://docs.rs/anstyle-lossy/1.1.5/anstyle_lossy/>).
 //! The 16-colour palette of a terminal can't be known, so `ansi` matches
 //! against anstyle-lossy's VGA palette, except that the built-in palette's
 //! colours take a reviewed pick per role there (ADR-006): nearest-colour

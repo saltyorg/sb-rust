@@ -1,5 +1,12 @@
 # Prototype: proto-complete
 
+> The prototype's code was removed once its module, sb-completion
+> (crates/completion), was built (the maintainer, 2026-11-06); it is in
+> git history at f5f05afc (`git show
+> f5f05afc:prototypes/proto-complete/`). These findings stay as the
+> record. Figures measured in the prototype's own runs are left out: each
+> result says what was checked and what it showed.
+
 **Question:** Can clap_complete's runtime completion supply Ansible tags
 dynamically in bash, zsh and fish, replacing sb-go's tag_completion?
 
@@ -27,8 +34,8 @@ answers the shell's requests, and the shell is registered with
 - **fish:** not tested. The 1-line registration is generated, but the
   behaviour is unverified.
 - **No per-shell code is ours.** `COMPLETE=<shell>` prints a small
-  clap-generated registration stub (34 lines for bash, 36 for zsh, 1 for
-  fish) that calls the binary at Tab time. The completion logic is a single
+  clap-generated registration stub (a few dozen lines for bash and zsh,
+  one for fish) that calls the binary at Tab time. The completion logic is a single
   Rust function shared by all shells. An `sb completion install` only needs to
   write that stub to each shell's completion directory.
 - **Cosmetic:** with comma lists, the candidate menu shows the whole string

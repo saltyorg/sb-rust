@@ -86,9 +86,6 @@ const isRust = (f) => f.endsWith('.rs');
 // Rust tests live beside the code (#[cfg(test)]) and in tests/.
 const isTest = (f) => isRust(f) && (/(^|\/)tests\//.test(f) || /_test\.rs$/.test(f));
 const isConstraints = (f) => /(^|\/)CONSTRAINTS\.md$/.test(f);
-// Prototypes are throwaway evidence (CLAUDE.md); the floor guards crates/
-// and the repository's own tooling.
-const guarded = (f) => !f.startsWith('prototypes/');
 
 // 1. Silenced checker. #[allow] is also denied by the workspace lints; a new
 // #[expect] needs a CONSTRAINTS.md Exceptions row, so it is reported here.
@@ -126,7 +123,6 @@ const SKIPS = /#\[\s*ignore\b|#\[\s*cfg_attr\s*\(.*\bignore\b|^\s*ignore\s*(=\s*
 const ASSERTS = /\b(assert|assert_eq|assert_ne|debug_assert|prop_assert|insta::assert_\w+)!|\.assert\s*\(\s*\)|^\s*\.(success|failure)\s*\(\s*\)|^\s*\.code\s*\(\s*([^\s)]|$)|^\s*\.(stdout|stderr)\s*\((?!\s*(?:\w+::)*Stdio::)/;
 
 for (const { file, text } of added) {
-  if (!guarded(file)) continue;
   if (isRust(file) && SUPPRESSIONS.test(text)) flag('silenced-checker', file, text);
   if (isRust(file) && STUBS.test(text)) flag('unfinished-work', file, text);
   if (isRust(file) && SKIPS.test(text)) flag('test-made-easier', file, text);
@@ -140,7 +136,7 @@ for (const { file, text } of added) {
 // reported too, for the reviewer.
 const TEST_ATTR = /#\[\s*(?:\w+::)*test\b/;
 const heldTests = (f) => removed.some((l) => l.file === f && TEST_ATTR.test(l.text));
-for (const f of deleted) if (guarded(f) && (isTest(f) || (isRust(f) && heldTests(f)))) flag('test-deleted', f, 'file deleted');
+for (const f of deleted) if (isTest(f) || (isRust(f) && heldTests(f))) flag('test-deleted', f, 'file deleted');
 // A test removed from a file that stays: more test-attribute lines (a test
 // attribute, or the `#[cfg(test)]` of a test module) removed than added.
 // A test renamed or moved within its file, or given another test attribute,
@@ -151,12 +147,12 @@ const TEST_LINE = /#\[\s*(?:\w+::)*test\b|#\[\s*cfg\s*\(\s*test\s*\)\s*\]/;
 const testLines = (lines, f) => lines.filter((l) => l.file === f && !(lines === added && l.text.trim().startsWith('//'))
   && TEST_LINE.test(l.text)).length;
 for (const f of new Set(removed.map((l) => l.file))) {
-  if (!guarded(f) || !isRust(f) || deleted.includes(f)) continue;
+  if (!isRust(f) || deleted.includes(f)) continue;
   const [gone, come] = [testLines(removed, f), testLines(added, f)];
   if (gone > come) flag('test-removed', f, gone + ' test attribute line(s) removed, ' + come + ' added');
 }
 for (const { file, text } of removed) {
-  if (guarded(file) && isRust(file) && !deleted.includes(file) && ASSERTS.test(text)) {
+  if (isRust(file) && !deleted.includes(file) && ASSERTS.test(text)) {
     flag('assertion-removed', file, text);
   }
 }
@@ -521,7 +517,7 @@ for (const f of changed.filter(isGateScript)) {
 
 for (const f of changed) {
   const now = newText(f);
-  if (now === null || !guarded(f)) continue;
+  if (now === null) continue;
   // 5f. A tool configuration file that is new (one finding for the file),
   // or has new lines (one finding for each): each can switch a check off
   // (mutants to skip, lint settings, ignored secrets, build flags, another

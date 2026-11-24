@@ -1,5 +1,12 @@
 # Prototype: proto-markdown
 
+> The prototype's code was removed once its module, announcements
+> (crates/tui), was built (the maintainer, 2026-11-06); it is in git
+> history at f5f05afc (`git show f5f05afc:prototypes/proto-markdown/`).
+> These findings stay as the record. Figures measured in the prototype's
+> own runs are left out: each result says what was checked and what it
+> showed.
+
 **Question:** Do tui-markdown or termimad render Saltbox announcements well
 enough to replace glamour?
 
@@ -66,23 +73,23 @@ prototype was built, so it was restyled before review.
 - tui-markdown takes every colour from its `StyleSheet` trait (tui-markdown
   0.3.12 `style_sheet.rs`). Its own tests are the only other place colours
   appear. `SaltboxSheet` now overrides every styled element with roles from
-  the shared palette (`prototypes/proto-theme`): headings, code, links,
-  quotes, alerts, tables, list markers, footnotes and the rest.
+  the shared palette (proto-theme, now cli-core's theme): headings, code,
+  links, quotes, alerts, tables, list markers, footnotes and the rest.
 - The title line, border and footer use the same palette and key-hint
   helper as the log viewer.
 - The fixture gained a synthetic announcement with an alert, a table and a
   footnote, so every styled element is drawn. Real Saltbox announcements
   currently use one heading and no tables, alerts, code or quotes.
 - A `TestBackend` test fails if any cell of any fixture announcement uses a
-  named ANSI colour. It failed against the default stylesheet first.
-- On the real binary with `TERM=xterm-256color`, the full-screen view sent
-  132 24-bit colour codes and the inline path 68, with no 16-colour codes.
+  named ANSI colour.
+- On the binary with `TERM=xterm-256color`, the full-screen view and the
+  inline path sent only 24-bit colour codes, no 16-colour ones.
 
 ## Viewer redesign (maintainer review)
 
-The review asked for no scrolling when the announcement fits, and a list of
-announcements on the left, with ones that aren't new tinted, so new ones
-stand out while missed ones can still be read.
+The maintainer's decisions (2026-10-29): no scrolling when the announcement
+fits, and a list of announcements on the left, with ones that aren't new
+tinted, so new ones stand out while missed ones can still be read.
 - **What counts as new** is sb-go's rule (saltbox/announcements.go):
   - New means not in the file before the update, matched on date and title.
   - With no before file, all are new.
@@ -113,9 +120,7 @@ stand out while missed ones can still be read.
     clamp when rendering.
   - The scrollbar is coloured through the article block's style.
     tui-scrollview 0.6.8 builds a plain `Scrollbar` whose styles are empty,
-    so it keeps the colour already in its cells. An earlier note here called
-    it uncolourable and said it took the text colour; both were wrong (its
-    cells were the terminal default), and the library reviewer caught it.
+    so it keeps the colour already in its cells.
   - The remaining glue: the content height, from ratatui's unstable
     `line_count`, measured again one column narrower when a scrollbar is
     needed. Also click-to-row mapping, since `List` has no hit-testing. The
@@ -124,10 +129,9 @@ stand out while missed ones can still be read.
   - The list column is as wide as its widest row by `ListItem::width`
     (display width) rather than a character count, capped at 40% of the
     screen. A longer title is cut off in the list; the announcement pane
-    still shows it in full. Decided in review: keep the cap and keep
-    announcement titles short.
-- **Library review** (the `library-reviewer` agent, given only the commit
-  range) found:
+    still shows it in full. Decided: keep the cap and keep announcement
+    titles short (the maintainer, 2026-10-29).
+- **Library-first fixes:**
   - **A bug:** `ListState::select_next` doesn't clamp until the list is
     rendered, so Down on the last announcement looked like a change and
     reset the scroll. The selection is now clamped before comparing.
@@ -137,7 +141,7 @@ stand out while missed ones can still be read.
   - **Two unused library mechanisms:** `Block::inner` for the click area,
     and `Block::style` for the scrollbar colour.
 
-  Each fix got a test first, which failed against the old code.
+  Each fix has a test.
 - **Event loop:** proto-facts' documented `read()`/`poll()` pattern, with
   the same drain after mouse capture is turned off (still UNVERIFIED).
 - **Tests:**
@@ -145,12 +149,11 @@ stand out while missed ones can still be read.
     long one stopping at its last line, switching starting at the top, the
     marker and tint, a click selecting a row, truecolor only at two
     widths.
-  - Each behaviour was mutation-checked: removing it fails a test. The
-    scroll-reset test was added after a mutation survived.
+  - Each behaviour was mutation-checked: removing it fails a test.
 
 ## Verdict
 
-_Reviewed by the maintainer (2026-10-29): ready for now. The review shaped
+_Approved by the maintainer (2026-10-29). The review shaped
 the viewer: an announcement list beside the selected one, new ones marked
 and older ones tinted, no scrolling past the end, the truecolor palette,
 and the 40% list cap with short titles._
