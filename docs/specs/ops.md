@@ -23,7 +23,9 @@ Amended 2026-11-21 by the maintainer's choice: bench takes the ruled
 layout (section "`sb bench`", "Layout"; decision 43, differences 67 to
 69). Amended 2026-11-23 by the maintainer's decisions: Speedtest's
 retired nodes are dropped or replaced, and a node whose server is gone
-says `Server gone` (decision 48, difference 74).*
+says `Server gone` (decision 48, difference 74). Amended 2026-11-24 by
+the maintainer's decision: bench adds a Johannesburg, ZA node (decision
+50, difference 76).*
 
 Module of the approved capability map (`ops`): the workflow commands
 that tie the other modules together. The build order puts `ops` last
@@ -625,11 +627,13 @@ in either answer are never printed or logged.
   (docs/platform-notes/speedtest.md), the rest of sb's environment kept
   as sb-go's;
 - nodes, sb-go's (bench_script.sh:115-128) in its order, less the ones
-  Ookla retired (decision 48, difference 74): Speedtest.net (no id), Los
-  Angeles, US 14236 (Frontier; sb-go's 7190 is gone), Dallas, US 22288,
-  Montreal, CA 64420, Paris, FR 61933, Amsterdam, NL 41423, Hong Kong,
-  CN 32155, Singapore, SG 13623, Taipei, CN 65092, Tokyo, JP 48463;
-  ten nodes, the heading's `10 nodes`;
+  Ookla retired (decision 48, difference 74), with Johannesburg added
+  (decision 50, difference 76): Speedtest.net (no id), Los Angeles, US
+  14236 (Frontier; sb-go's 7190 is gone), Dallas, US 22288, Montreal,
+  CA 64420, Paris, FR 61933, Amsterdam, NL 41423, Johannesburg, ZA
+  48611 (Openserve; not in sb-go's list), Hong Kong, CN 32155,
+  Singapore, SG 13623, Taipei, CN 65092, Tokyo, JP 48463; eleven
+  nodes, the heading's `11 nodes`;
 - columns `Node`, `Upload`, `Download` and `Latency` (the ruled layout
   above; until 2026-11-21 a `Speedtest` title row over bench.sh's
   `Node Name | Upload Speed | Download Speed | Latency`): the JSON's
@@ -1570,14 +1574,14 @@ decision 46):
 
 bench's retired Speedtest nodes (the maintainer, 2026-11-23; decision
 48):
-74. Speedtest runs ten nodes: Los Angeles is Frontier's server 14236,
-    and Suzhou and Ningbo are gone. sb-go's bench_script.sh and
-    upstream bench.sh still run Los Angeles 7190, Suzhou 5396 and
-    Ningbo 59387, servers Ookla no longer has, so those rows always
-    say `Test failed`. A node whose server Ookla no longer has says
-    `Server gone`, in Warn, in the live section and the printed
-    report; bench.sh's `Test failed`, in Problem, stays for a test
-    that ran and failed (the network, the server's own error).
+74. Of bench.sh's nodes, Speedtest runs ten: Los Angeles is Frontier's
+    server 14236, and Suzhou and Ningbo are gone. sb-go's
+    bench_script.sh and upstream bench.sh still run Los Angeles 7190,
+    Suzhou 5396 and Ningbo 59387, servers Ookla no longer has, so those
+    rows always say `Test failed`. A node whose server Ookla no longer
+    has says `Server gone`, in Warn, in the live section and the
+    printed report; bench.sh's `Test failed`, in Problem, stays for a
+    test that ran and failed (the network, the server's own error).
 
 No apt refresh in `update` (the maintainer, 2026-11-23; decision 49):
 75. `update` runs no `apt-get update` of its own and has no "Updating
@@ -1586,6 +1590,11 @@ No apt refresh in `update` (the maintainer, 2026-11-23; decision 49):
     checkouts (`cmd/update.go:90-97`). sb refreshes them only before an
     apt install or after moving a source aside: `setup` and `gha`
     (twice, as sb-go), and the deadsnakes cleanup on 22.04.
+
+bench's Johannesburg node (the maintainer, 2026-11-24; decision 50):
+76. Speedtest runs an eleventh node, Johannesburg, ZA (Openserve's
+    server 48611), between Amsterdam and Hong Kong. Neither sb-go's
+    bench_script.sh nor upstream bench.sh has a node in Africa.
 
 ## Scope
 
@@ -2461,10 +2470,11 @@ the real services.
     gets a live server, picked by evidence: in Ookla's list, a real
     test through it completed, and a well-connected host or carrier;
     Suzhou and Ningbo are dropped, the list's order otherwise kept
-    (ten nodes). Such a node's row says `Server gone`, in Warn, found
-    from the parsed log line (`type` `log`, `level` `error`, the
-    `message` containing `NoServersException`); any other failure keeps
-    `Test failed`, in Problem (difference 74). Decided:
+    (ten nodes; decision 50 adds an eleventh). Such a node's row says
+    `Server gone`, in Warn, found from the parsed log line (`type`
+    `log`, `level` `error`, the `message` containing
+    `NoServersException`); any other failure keeps `Test failed`, in
+    Problem (difference 74). Decided:
     Frontier's 14236 (2026-11-23; Spectrum's 57682 completed too):
     a carrier's own host, long in Ookla's list (a low id), and the
     lower latency of the two from the test container; the log line is
@@ -2508,6 +2518,15 @@ the real services.
       installs nothing with apt, so `reinstall-python` has none (sb-go's
       58e7cf3 gave it one, which sb-go dropped in 1651dba). Host's
       refreshed-lists record went with libpq-dev on 2026-11-21.
+50. **bench adds a Johannesburg, ZA node** (the maintainer,
+    2026-11-24): Ookla server 48611, sponsor Openserve (Telkom's
+    wholesale network), between Amsterdam, NL and Hong Kong, CN, the
+    list running roughly west to east; named in the list's `City, CC`
+    style (difference 76). Why: bench.sh's list has no node in Africa.
+    The server meets decision 48's standard for Los Angeles: in Ookla's
+    server list (one of its Johannesburg servers), a carrier's own
+    host, and a real test through it with the pinned CLI 1.2.0
+    completed in a container (2026-11-24).
 
 ## Known limits
 

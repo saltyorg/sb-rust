@@ -3,7 +3,7 @@ source: crates/ops/src/bench/mod.rs
 expression: "live.text(&frame(width, *interrupted), &Theme::plain(), example_layout(width))"
 ---
 
-Speedtest  10 nodes
+Speedtest  11 nodes
 --------------------------------------------------------------
 Node                         Upload      Download    Latency
 Speedtest.net             ⠋ testing
@@ -12,6 +12,7 @@ Dallas, US
 Montreal, CA
 Paris, FR
 Amsterdam, NL
+Johannesburg, ZA
 Hong Kong, CN
 Singapore, SG
 Taipei, CN

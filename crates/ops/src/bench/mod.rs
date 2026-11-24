@@ -1440,16 +1440,18 @@ mod tests {
         }
     }
 
-    /// The example's Speedtest: nine nodes measured, one failed.
+    /// The example's Speedtest: ten nodes measured, one failed.
     fn example_nodes() -> speedtest::Outcome {
         use speedtest::Measured;
-        let speeds = [
+        // One entry per node: `zip` would drop a node left without one.
+        let speeds: [Option<(&str, &str, &str)>; speedtest::NODES.len()] = [
             Some(("900.00", "950.00", "1.00")),
             Some(("800.00", "850.00", "150.00")),
             Some(("700.00", "750.00", "120.00")),
             None,
             Some(("500.00", "550.00", "20.00")),
             Some(("400.00", "450.00", "10.00")),
+            Some(("250.00", "300.00", "160.00")),
             Some(("300.00", "350.00", "200.00")),
             Some(("200.00", "250.00", "250.00")),
             Some(("100.00", "150.00", "220.00")),
@@ -2067,7 +2069,7 @@ mod tests {
         drop(runner);
         // The blank line before the section, as `Out` writes it.
         let rows = screen.rows();
-        assert_eq!(rows[..2], ["", "Speedtest  10 nodes"], "{rows:#?}");
+        assert_eq!(rows[..2], ["", "Speedtest  11 nodes"], "{rows:#?}");
         assert!(
             rows[4].starts_with("Speedtest.net") && rows[4].ends_with("interrupted"),
             "{rows:#?}"

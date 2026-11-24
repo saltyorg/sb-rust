@@ -75,7 +75,7 @@ impl Pin {
     }
 }
 
-/// A node bench.sh tests against: its name and Ookla server id (none for
+/// A node bench tests against: its name and Ookla server id (none for
 /// Speedtest.net's choice).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Node {
@@ -86,8 +86,9 @@ pub struct Node {
 /// bench.sh's nodes, in its order (`speed`, bench_script.sh:115-128),
 /// less the ones Ookla retired (ops decision 48, 2026-11-23): Suzhou
 /// (5396) and Ningbo (59387) dropped, no mainland-China server being
-/// left in Ookla's list for them, and Los Angeles moved off 7190.
-pub const NODES: [Node; 10] = [
+/// left in Ookla's list for them, and Los Angeles moved off 7190; with
+/// Johannesburg added (ops decision 50, 2026-11-24).
+pub const NODES: [Node; 11] = [
     Node {
         name: "Speedtest.net",
         id: None,
@@ -115,6 +116,14 @@ pub const NODES: [Node; 10] = [
     Node {
         name: "Amsterdam, NL",
         id: Some("41423"),
+    },
+    // Openserve's Johannesburg server (sponsor `Openserve`, Telkom's
+    // wholesale network), chosen 2026-11-24: in Ookla's server list, a
+    // real test through it with the CLI 1.2.0 completed, a carrier's own
+    // host. Not one of bench.sh's nodes.
+    Node {
+        name: "Johannesburg, ZA",
+        id: Some("48611"),
     },
     Node {
         name: "Hong Kong, CN",
@@ -623,7 +632,8 @@ mod tests {
 
     /// bench.sh's nodes less the ones Ookla retired (ops decision 48):
     /// Los Angeles on Frontier's server, Suzhou and Ningbo dropped, the
-    /// order kept.
+    /// order kept; and Johannesburg on Openserve's server, an addition
+    /// to bench.sh's (ops decision 50), between Amsterdam and Hong Kong.
     #[test]
     fn the_nodes_are_bench_sh_s_live_ones() {
         assert_eq!(
@@ -637,7 +647,8 @@ mod tests {
         assert_eq!(
             ids,
             [
-                "14236", "22288", "64420", "61933", "41423", "32155", "13623", "65092", "48463"
+                "14236", "22288", "64420", "61933", "41423", "48611", "32155", "13623", "65092",
+                "48463"
             ]
         );
         let names: Vec<_> = NODES.iter().map(|node| node.name).collect();
@@ -650,6 +661,7 @@ mod tests {
                 "Montreal, CA",
                 "Paris, FR",
                 "Amsterdam, NL",
+                "Johannesburg, ZA",
                 "Hong Kong, CN",
                 "Singapore, SG",
                 "Taipei, CN",
@@ -658,7 +670,7 @@ mod tests {
         );
         assert_eq!(
             live_heading().render(&Theme::plain(), false, 4),
-            "Speedtest  10 nodes\n----\n"
+            "Speedtest  11 nodes\n----\n"
         );
     }
 

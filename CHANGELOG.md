@@ -142,9 +142,10 @@ you could trip over.
   Ctrl-C leaves the section in progress on the screen marked
   `interrupted`. Resizing the terminal mid-run redraws the section in
   progress at the new width without leaving copies.
-- **`sb bench` tests 10 Speedtest nodes, all of them live:** Ookla no
+- **`sb bench` tests 11 Speedtest nodes, all of them live:** Ookla no
   longer has three of bench.sh's servers, so Los Angeles moves to a live
-  server and Suzhou and Ningbo are dropped. A node whose server Ookla
+  server and Suzhou and Ningbo are dropped, and a Johannesburg node is
+  added, bench.sh having none in Africa. A node whose server Ookla
   retires now shows `Server gone` as a warning instead of `Test failed`,
   which stays for a test that ran and failed.
 - **A missing CA bundle is named, with its fix:** when the system's CA

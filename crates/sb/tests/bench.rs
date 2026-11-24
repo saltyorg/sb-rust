@@ -192,10 +192,10 @@ fn bench_asks_the_fakes_and_keeps_the_addresses_out() {
     ] {
         assert!(stdout.contains(row), "{row}\n{stdout}");
     }
-    // Every node failed: bench's ten (ops decision 48).
+    // Every node failed: bench's eleven (ops decisions 48 and 50).
     assert_eq!(
         stdout.matches("Failed to parse results").count(),
-        10,
+        11,
         "{stdout}"
     );
     assert!(!stdout.contains("No ISP detected"), "{stdout}");
