@@ -6,14 +6,16 @@
 #                                  and lints, fmt, clippy, floor guard (and
 #                                  the guard's own tests when scripts/ changed,
 #                                  the release scripts' when scripts/ or
-#                                  .github/ did), secrets
+#                                  .github/ did), the workflows' linters
+#                                  (when .github/ changed), secrets
 #   scripts/check.sh task [base]   before handing work back: fast + tests
 #                                  (under coverage, then in a release
 #                                  build), changed-line coverage, mutation
 #                                  score, startup budget
 #   scripts/check.sh full [base]   before committing (and CI): commit
 #                                  messages after base, then task +
-#                                  project coverage floors, dependencies,
+#                                  project coverage floors, the workflows'
+#                                  linters (always), dependencies,
 #                                  architecture, binary size, the
 #                                  aarch64 build under QEMU
 #
@@ -111,6 +113,8 @@ RUNTIME_RELEASES=(22.04 24.04 26.04)
 #   all (a run over a clean tree checks everything).
 # - release_changed: the same, for a file under scripts/ or .github/ (the
 #   release workflow's scripts and the Saltbox updater's action).
+# - github_changed: the same, for a file under .github/ (the workflows,
+#   their actions and actionlint's settings).
 mapfile -d '' -t changed_files < <(
   # --no-renames: a file moved into docs/ is listed under its old path
   # too, so a moved test fixture or script isn't taken for a document.
@@ -120,9 +124,11 @@ mapfile -d '' -t changed_files < <(
 documents_only=0
 scripts_changed=0
 release_changed=0
+github_changed=0
 if ((${#changed_files[@]} == 0)); then
   scripts_changed=1
   release_changed=1
+  github_changed=1
 else
   documents_only=1
   for f in "${changed_files[@]}"; do
@@ -132,6 +138,7 @@ else
     esac
     case $f in scripts/*) scripts_changed=1 ;; esac
     case $f in scripts/* | .github/*) release_changed=1 ;; esac
+    case $f in .github/*) github_changed=1 ;; esac
   done
 fi
 
@@ -154,9 +161,12 @@ need() { command -v "$1" >/dev/null || { echo "check: $1 not installed (see CONS
 #   https://pkg.go.dev/cmd/go#hdr-Print_Go_version
 # - go, from `go version` ("go version go1.27.3 linux/amd64"), whole: a
 #   pre-release (go1.27rc1) is no version number, and fails every rule.
+# - shellcheck, from the `version: 0.8.0` line of its `--version`, whose
+#   first line names the tool only.
 # - The rest, from the first version number `--version` prints on stdout
 #   (a warning on stderr can hold a number too):
 #   "diff-cover 9.7.2", "v24.20.0" (node), "script from util-linux 2.39.3",
+#   "v1.7.12" (actionlint), "zizmor 1.32.0",
 #   "Docker version 29.7.2, build ..." (the client's; no daemon is asked).
 tool_version() {
   local out=''
@@ -169,6 +179,7 @@ tool_version() {
       awk '$1 == "mod" && $2 == "github.com/zricethezav/gitleaks/v8" { sub(/^v/, "", $3); print $3 }') || out=''
     ;;
   go) out=$(go version | sed -nE '1s/^go version go([^ ]+) .*/\1/p') || out='' ;;
+  shellcheck) out=$(shellcheck --version | sed -nE 's/^version: ([0-9]+(\.[0-9]+)*).*/\1/p') || out='' ;;
   *) out=$("$1" --version 2>/dev/null | sed -nE '1s/^[^0-9]*([0-9]+(\.[0-9]+)*).*/\1/p') || out='' ;;
   esac
   printf '%s\n' "$out"
@@ -335,6 +346,21 @@ fast() {
     in_sandbox python3 -I "$action/isolation_test.py"
   else
     skip "nothing under scripts/ or .github/ changed since $base"
+  fi
+  # The workflows and their actions (CONSTRAINTS.md, Workflows), which
+  # only GitHub can run: actionlint (its settings in .github/actionlint.yaml),
+  # which runs shellcheck on each `run:` script and silently skips that
+  # when it is missing, so its version is checked too; then zizmor's
+  # offline audits at its default persona. Any finding fails. At fast when
+  # .github/ changed, at full always.
+  step "workflows (actionlint, zizmor)"
+  if ((github_changed)) || [[ $stage == full ]]; then
+    # Checked here, not with the stage's tools: only this step runs them.
+    check_tools actionlint shellcheck zizmor
+    actionlint
+    zizmor --offline --no-progress .github/
+  else
+    skip "nothing under .github/ changed since $base"
   fi
   step "floor guard"
   node scripts/floor-guard.mjs --base "$base"

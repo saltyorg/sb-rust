@@ -1157,6 +1157,9 @@ const TOOLS_MD = `# Constraints
 | Docker | 29 | minimum | system package |
 | jq | 1.6 | minimum | system package |
 | python3 | 3.10 | minimum | system package |
+| actionlint | 1.7.12 | exact | go install |
+| zizmor | 1.32.0 | exact | uv |
+| shellcheck | 0.8 | minimum | system package |
 
 ## Exceptions
 `;
@@ -1171,6 +1174,7 @@ const VERSIONS = {
   'cargo-deny': '0.20.2', hyperfine: '2.0.0', gitleaks: '8.30.1', go: '1.27.3', node: '24.20.0', script: '2.39.3', cross: '0.2.5',
   docker: '29.7.2',
   jq: '1.7.1', python3: '3.12.3',
+  actionlint: '1.7.12', zizmor: '1.32.0', shellcheck: '0.8.0',
 };
 // check.sh's MUTATION_TESTERS names sb-journal, sb-host and sb-tui, so
 // they are here beside sb-foo and the binary.
@@ -1209,6 +1213,15 @@ const stubs = (versions, arch) => {
     docker: version('Docker version ' + versions.docker + ', build a7dcaa6'),
     jq: version('jq-' + versions.jq),
     python3: version('Python ' + versions.python3),
+    // The workflows' linters: a finding fails each, with zizmor's own
+    // status for a high one (14), when WORKFLOW_FINDING names it.
+    actionlint: version('v' + versions.actionlint)
+      + 'if [ "${WORKFLOW_FINDING:-}" = actionlint ]; then echo ".github/workflows/ci.yml:1:1: finding [syntax-check]"; exit 1; fi\n',
+    zizmor: version('zizmor ' + versions.zizmor)
+      + 'if [ "${WORKFLOW_FINDING:-}" = zizmor ]; then echo "error[unpinned-uses]: unpinned action reference"; exit 14; fi\n',
+    // Its first line names the tool only.
+    shellcheck: 'if [ "$1" = --version ]; then printf \'ShellCheck - shell script analysis tool\\nversion: %s\\nlicense: GPLv3\\n\' "'
+      + versions.shellcheck + '"; exit 0; fi\n',
     go: 'if [ "$1 $2" = "version -m" ]; then printf \'%s: go1.27.3\\n\\tpath\\tgithub.com/zricethezav/gitleaks/v8\\n'
       + '\\tmod\\tgithub.com/zricethezav/gitleaks/v8\\tv' + versions.gitleaks + '\\th1:x=\\n\' "$3"; exit 0; fi\n'
       + 'echo "go version go' + versions.go + ' linux/amd64"\n',
@@ -2304,6 +2317,47 @@ test('check.sh fast: the gate scripts\' own tests run when scripts/ changed or n
     // The guard itself always runs.
     assert.ok(r.calls.some((c) => c.tool === 'node' && c.args.startsWith('scripts/floor-guard.mjs')), r.output);
   }
+});
+
+const workflowLints = (r) => r.calls.filter((c) => ['actionlint', 'zizmor'].includes(c.tool) && c.args !== '--version')
+  .map((c) => (c.tool + ' ' + c.args).trim());
+
+test('check.sh: the workflows\' linters run at fast when .github/ changed or nothing did, at full always, and are skipped otherwise', () => {
+  const both = ['actionlint', 'zizmor --offline --no-progress .github/'];
+  for (const [stage, work] of [['fast', {}], ['fast', { '.github/workflows/x.yml': 'name: x\n' }],
+    ['task', { '.github/actionlint.yaml': 'paths: {}\n' }], ['full', { 'crates/foo/src/lib.rs': 'pub fn f() {}\n' }],
+    ['full', { 'docs/x.md': 'x\n' }]]) {
+    const r = checkRun(stage, { work });
+    passes(r, stage);
+    assert.deepEqual(workflowLints(r), both, stage + ' ' + Object.keys(work) + '\n' + r.output);
+  }
+  for (const [stage, work] of [['fast', { 'crates/foo/src/lib.rs': 'pub fn f() {}\n' }], ['fast', { 'scripts/new.sh': 'true\n' }],
+    ['task', { 'docs/x.md': 'x\n' }]]) {
+    const r = checkRun(stage, { work });
+    passes(r, stage);
+    assert.deepEqual(workflowLints(r), [], r.output);
+    assert.match(r.output, /skipped: nothing under \.github\/ changed/, r.output);
+  }
+});
+
+test('check.sh: a finding from actionlint or zizmor fails the gate with its status', () => {
+  refuses(checkRun('fast', { env: { WORKFLOW_FINDING: 'actionlint' } }), 1, /\[syntax-check\]/);
+  const r = checkRun('full', { work: { 'crates/foo/src/lib.rs': 'pub fn f() {}\n' }, env: { WORKFLOW_FINDING: 'zizmor' } });
+  refuses(r, 14, /unpinned-uses/);
+  // It fails before the stage's tests.
+  assert.ok(!cargoSubs(r).includes('llvm-cov'), r.output);
+});
+
+test('check.sh: the workflows\' linters are held to the Tools table when their step runs, shellcheck to a minimum', () => {
+  refuses(checkRun('fast', { versions: { actionlint: '1.7.11' } }), 2, /actionlint is 1\.7\.11/);
+  refuses(checkRun('fast', { versions: { zizmor: '1.33.1' } }), 2, /zizmor is 1\.33\.1/);
+  refuses(checkRun('fast', { versions: { shellcheck: '0.7.2' } }), 2, /shellcheck is 0\.7\.2/);
+  // actionlint skips its shellcheck rule when shellcheck is missing.
+  refuses(checkRun('fast', { versions: { shellcheck: null } }), 2, /shellcheck not installed/);
+  passes(checkRun('fast', { versions: { shellcheck: '0.11.0' } }), 'fast');
+  // Not asked for when the step doesn't run.
+  passes(checkRun('fast', { versions: { zizmor: null, actionlint: null, shellcheck: null },
+    work: { 'crates/foo/src/lib.rs': 'pub fn f() {}\n' } }), 'fast');
 });
 
 test('check.sh task: the crates\' tests run once under coverage, then the doc tests, then the crates\' again in a release build', () => {

@@ -55,6 +55,7 @@ tooling.
 | Lint | Zero clippy warnings, with the whole `clippy::pedantic` group and rustc's `missing_debug_implementations` and `trivial_numeric_casts` on for `crates/` (workspace `[lints]`); opting one lint out workspace-wide needs an ADR | `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo clippy --workspace --lib --bins -- -D warnings` for the build without dev-dependency features (the first leaves out `disallowed_methods`, which binds library and binary code only, and the second denies it); `check.sh`'s crate check, that each crate has `[lints] workspace = true` | fast | Warnings left in place get ignored; pedantic catches missing `# Errors` docs, `#[must_use]` and lossy casts (maintainer, 2026-11-05) |
 | Floor guard | Zero blocking findings in the diff without the maintainer's approval: the gate's configuration, its thresholds and the suppressions (below); removed assertions, removed or deleted tests and changed gate-script lines are printed for the code reviewer and don't block | `node scripts/floor-guard.mjs --base <base>` | fast | Catches the cheap roads to green where a silent change does the most harm; the rest is review's ([ADR-029](docs/decisions/ADR-029-floor-guard-narrowed.md), a loosening by the maintainer's decision, 2026-11-24) |
 | Secrets | Zero findings in the diff | `gitleaks stdin --redact` on `git diff <base>` plus untracked files | fast | Redacted: the value never reaches a log |
+| Workflows | Zero findings in `.github/`: actionlint's on the workflows, shellcheck's on their `run:` scripts included, and zizmor's at its default persona on the workflows and the Saltbox updater's action; a third-party action is pinned to a full commit hash with its version in a comment, saltyorg's own to a published version tag (`.github/zizmor.yml`); a suppression is a `# zizmor: ignore[<audit>]` comment on the finding, or an entry in `.github/actionlint.yaml` for what the pinned actionlint predates, each with its reason beside it | `actionlint` (`.github/actionlint.yaml`), then `zizmor --offline --no-progress .github/` (`.github/zizmor.yml`) | fast when `.github/` changed; full always | Workflows run only on GitHub, so the first push is their first run; zizmor's `unpinned-uses` asks for every action pinned to a hash (maintainer, 2026-11-24) |
 | Tests | All pass | `check.sh`'s check that no insta pending snapshot (`.pending-snap`, `.snap.new`) is under `crates/`, then `cargo llvm-cov` for the crates' unit and integration tests (the coverage run), then `cargo test --doc` for the crates, then `cargo nextest run` (the `release-tests` cargo and nextest profiles: the release profile's code, every failure reported) for the crates' tests in a release build; each of these runs, the startup timing, the floor guard's own tests and the release scripts' tests (`scripts/release.test.sh` and the Saltbox updater's in `.github/actions/update-saltbox-python/`, at fast when `scripts/` or `.github/` changed), as root in the mutation passes' sandbox (ADR-021: every mount read-only but the run's own `TMPDIR`, `target/` and the tests' log directory, the namespace's own `/proc`, `/dev/pts`, a private `/tmp` and a private `/dev/shm`; `/proc/sys`, `/sys` and `/dev` read-only; `/run` empty; its own loopback and PID namespace); hangup's session-scope test, which needs systemd, runs by hand in `crates/sb/tests/hangup-systemd.sh` | task | The crates' unit and integration tests run once in each build (ADR-016): a failure that showed only in a release build passed the debug run (maintainer, 2026-11-16); every test run in the sandbox, after a completion test wrote the host's /etc/fish (maintainer, 2026-11-17) |
 | Coverage | Changed lines ≥ 90% covered | `cargo llvm-cov --lcov` + `diff-cover --fail-under=90` | task | Maintainer chose stricter than the 80% default |
 | Project coverage (`crates/`) | at least 98.40% of lines, at least 97.66% of functions, totalled over the files under `crates/`; tolerance at most 0.5 points below either, a headroom shared by the changes until a floor is reset; measured as root, as the gate runs (without the root tests coverage reads lower) | `check.sh`'s `project_coverage`: the coverage run's lcov report (`target/lcov.info`), each file's line counts (`LF`, `LH`) and function counts (`FNF`, `FNH`) under `crates/` added up, compared in whole hundredths of a percent; the figures printed every run | full | The finished tree's figures, as ADR-025 measured them; enforced once every command was in place (maintainer, 2026-11-18, [ADR-025](docs/decisions/ADR-025-ratchet-enforced.md)) |
@@ -80,8 +81,9 @@ What a run covers follows the files that differ from the base
 ([ADR-016](docs/decisions/ADR-016-lighter-process.md)). A change under
 `docs/` and `tasks/` only ends `task` and `full` after the fast checks
 (and `full`'s commit messages). The gate scripts' own tests run in `fast`
-when a file under `scripts/` changed. With nothing changed since the
-base, every step runs.
+when a file under `scripts/` changed, and the workflows' linters when a
+file under `.github/` changed (at `full`, always). With nothing changed
+since the base, every step runs.
 
 The journal matrix and the fuzz harness run by hand, capped, at each
 checkpoint and after any task that touches journal reading: a change
@@ -127,11 +129,14 @@ doesn't fail every run.
 | cargo-deny | 0.20.2 | exact | `cargo install --locked cargo-deny` |
 | hyperfine | 2.0.0 | exact | `cargo install --locked hyperfine` |
 | gitleaks | 8.30.1 | exact | `go install github.com/zricethezav/gitleaks/v8@v8.30.1` |
-| Go | 1.27 | minimum | system package (installs gitleaks and reports its version) |
+| actionlint | 1.7.12 | exact | `go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12` |
+| zizmor | 1.32.0 | exact | `uv tool install zizmor==1.32.0` |
+| Go | 1.27 | minimum | system package (installs gitleaks and actionlint, and reports gitleaks' version) |
 | node | 24 | major | system package (runs the floor guard) |
 | jq | 1.6 | minimum | system package (the release scripts and their tests; checked when their step runs) |
 | python3 | 3.10 | minimum | system package (the Saltbox updater's isolation tests; checked when their step runs) |
 | script (util-linux) | 2.39 | minimum | system package (gives the colour tests a terminal) |
+| shellcheck | 0.8 | minimum | system package (actionlint runs it on each workflow `run:` script; checked when the workflows step runs) |
 | cross | 0.2.5 | exact | `cargo install --locked cross --version 0.2.5` (the production glibc build, in the image `Cross.toml` names, ADR-020) |
 | Docker | 29 | minimum | system package (builds and runs cross's image from `build/Dockerfile`, and the `ubuntu:<release>` containers the binary runs in; the first run pulls them) |
 

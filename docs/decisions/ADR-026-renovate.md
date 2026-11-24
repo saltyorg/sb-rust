@@ -2,9 +2,9 @@
 
 ## Status
 
-Accepted (maintainer, 2026-11-18). The config is written locally for the
-future `saltyorg/sb-rust` repository; nothing is pushed and no
-repository is created.
+Accepted (maintainer, 2026-11-18); amended 2026-11-24 (see Amendments).
+The config is written locally for the future `saltyorg/sb-rust`
+repository; nothing is pushed and no repository is created.
 
 ## Date
 
@@ -104,3 +104,15 @@ Both are the maintainer's to do when the repository is created.
   Their patch releases are the risk the pins exist for.
 - **Dependabot:** rejected. sb-go uses Renovate, and Dependabot has no
   regex managers for the values outside Cargo.
+
+## Amendments
+
+- 2026-11-24 (maintainer, before the first push): third-party GitHub
+  Actions are pinned to full commit hashes with their version in a
+  comment, `uses: owner/repo@<40-hex> # vX.Y.Z`, and
+  `helpers:pinGitHubActionDigests` keeps each digest and comment in
+  step; saltyorg's own actions stay on their published version tags
+  (`pinDigests: false`). The gate's zizmor (CONSTRAINTS.md, Workflows)
+  requires the hashes. Item 4 gains actionlint (GitHub releases) and
+  zizmor (PyPI), each tracked in CONSTRAINTS.md and in the workflows'
+  install lines.

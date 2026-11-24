@@ -26,6 +26,15 @@ on:
 permissions:
   contents: read
 
+# A release reads and writes no Actions cache: a cache entry another run
+# saved could poison the published binaries. zizmor's cache-poisoning
+# remediation: "disable caching entirely by setting `cache-mode: none`"
+# (https://docs.zizmor.sh/audits/#cache-poisoning); GitHub's key:
+# https://docs.github.com/actions/reference/workflows-and-actions/workflow-syntax#cache-mode
+# The setup actions' own caches are switched off below as well, so they
+# don't even try.
+cache-mode: none
+
 defaults:
   run:
     shell: bash
@@ -47,7 +56,7 @@ jobs:
       prerelease: ${{ steps.plan.outputs.prerelease }}
       assets: ${{ steps.plan.outputs.assets }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 0
@@ -81,7 +90,7 @@ jobs:
         run: |
           scripts/release.sh notes "$TAG" "$GITHUB_REPOSITORY" >"$RUNNER_TEMP/release-notes.md"
           cat "$RUNNER_TEMP/release-notes.md"
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-notes
           path: ${{ runner.temp }}/release-notes.md
@@ -93,23 +102,26 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 240
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Toolchain
         run: rustup toolchain install && rustup show active-toolchain
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "24"
-      - uses: actions/setup-go@v7
+          package-manager-cache: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version: "1.27"
-      - uses: taiki-e/install-action@v2
+          cache: false
+      - uses: taiki-e/install-action@fe3acb53a98b62c772db35de75ce0e4595e7ca8c # v2.90.8
         with:
-          tool: cargo-llvm-cov@0.9.1,cargo-mutants@27.1.0,cargo-nextest@0.9.151,cargo-deny@0.20.2,hyperfine@2.0.0,cross@0.2.5
-      - name: gitleaks and diff-cover
+          tool: cargo-llvm-cov@0.9.1,cargo-mutants@27.1.0,cargo-nextest@0.9.151,cargo-deny@0.20.2,hyperfine@2.0.0,cross@0.2.5,zizmor@1.32.0
+      - name: gitleaks, diff-cover and actionlint
         run: |
           go install github.com/zricethezav/gitleaks/v8@v8.30.1
+          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
           echo "$(go env GOPATH)/bin" >>"$GITHUB_PATH"
           pipx install diff-cover==9.7.2
           rustup component add llvm-tools
@@ -126,23 +138,26 @@ jobs:
       matrix:
         runner: [ubuntu-22.04-arm, ubuntu-24.04-arm, ubuntu-26.04-arm]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Toolchain
         run: rustup toolchain install && rustup show active-toolchain
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "24"
-      - uses: actions/setup-go@v7
+          package-manager-cache: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version: "1.27"
-      - uses: taiki-e/install-action@v2
+          cache: false
+      - uses: taiki-e/install-action@fe3acb53a98b62c772db35de75ce0e4595e7ca8c # v2.90.8
         with:
-          tool: cargo-llvm-cov@0.9.1,cargo-mutants@27.1.0,cargo-nextest@0.9.151,cargo-deny@0.20.2,hyperfine@2.0.0
-      - name: gitleaks and diff-cover
+          tool: cargo-llvm-cov@0.9.1,cargo-mutants@27.1.0,cargo-nextest@0.9.151,cargo-deny@0.20.2,hyperfine@2.0.0,zizmor@1.32.0
+      - name: gitleaks, diff-cover and actionlint
         run: |
           go install github.com/zricethezav/gitleaks/v8@v8.30.1
+          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
           echo "$(go env GOPATH)/bin" >>"$GITHUB_PATH"
           pipx install diff-cover==9.7.2
           rustup component add llvm-tools
@@ -156,12 +171,12 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Toolchain
         run: rustup toolchain install && rustup show active-toolchain
-      - uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@fe3acb53a98b62c772db35de75ce0e4595e7ca8c # v2.90.8
         with:
           tool: cross@0.2.5
       - name: Completion shells
@@ -207,12 +222,12 @@ jobs:
       matrix:
         asset: ${{ fromJSON(needs.plan.outputs.assets) }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Toolchain
         run: rustup toolchain install && rustup show active-toolchain
-      - uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@fe3acb53a98b62c772db35de75ce0e4595e7ca8c # v2.90.8
         with:
           tool: cross@0.2.5
       # Cross.toml passes SB_VERSION, SB_GIT_COMMIT and SB_CHANNEL into
@@ -252,7 +267,7 @@ jobs:
           printf '%s\n' "$json"
           jq -e --arg v "$VERSION" --arg c "$CHANNEL" \
             '.version == $v and .channel == $c and (.uv_version | test("^[0-9]+\\.[0-9]+\\.[0-9]+$"))' <<<"$json"
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: asset-${{ matrix.asset.arch }}-${{ matrix.asset.channel }}
           path: ${{ env.ASSET }}
@@ -268,24 +283,33 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v8
+      # Each artifact in a directory of its own name (merge-multiple off),
+      # so a file of the same name in another `asset-*` artifact can't
+      # replace a built one unseen:
+      # https://github.com/actions/download-artifact#download-all-artifacts
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          path: dist
+          path: assets
           pattern: asset-*
-          merge-multiple: true
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release-notes
           path: notes
-      # Exactly the plan's assets: an `asset-*` artifact another job of the
-      # run uploaded is no asset.
+      # Exactly the plan's assets: each planned artifact holds its one
+      # binary, a regular file, and an `asset-*` artifact another job of
+      # the run uploaded is no asset. Then the binaries go to dist/.
       - name: The assets are the plan's
         env:
           ASSETS: ${{ needs.plan.outputs.assets }}
         run: |
-          want=$(jq -r '.[] | "sb_linux_\(.arch)\(if .channel == "beta" then "_beta" else "" end)"' <<<"$ASSETS" | sort)
-          got=$(find dist -mindepth 1 -printf '%P\n' | sort)
-          [[ $got == "$want" ]] || { printf 'dist has:\n%s\nnot the plan'"'"'s:\n%s\n' "$got" "$want" >&2; exit 1; }
+          want=$(jq -r '.[] | "asset-\(.arch)-\(.channel)" as $a
+            | $a, "\($a)/sb_linux_\(.arch)\(if .channel == "beta" then "_beta" else "" end)"' <<<"$ASSETS" | sort)
+          got=$(find assets -mindepth 1 -printf '%P\n' | sort)
+          files=$(find assets -mindepth 2 -type f -printf '%P\n' | sort)
+          [[ $got == "$want" && $files == "$(grep / <<<"$want")" ]] ||
+            { printf 'assets has:\n%s\nnot the plan'"'"'s:\n%s\n' "$got" "$want" >&2; exit 1; }
+          mkdir dist
+          mv assets/asset-*/sb_linux_* dist/
       # The action would create a missing tag on target_commitish; the
       # release is only ever the built commit's.
       - name: The tag still names the built commit
@@ -307,8 +331,14 @@ jobs:
       # latest, so a backport (1.0.5 after 1.1.0) doesn't become
       # install.sh's; a prerelease is never latest:
       # https://docs.github.com/en/rest/releases/releases#create-a-release
-      - name: Publish
-        uses: softprops/action-gh-release@v3
+      # zizmor's superfluous-actions asks for the runner's `gh` instead.
+      # `gh release create --latest` sends make_latest "true" or "false"
+      # only, so `legacy` would take `gh api` to create the release and
+      # `gh release upload` for the assets: a rewrite of this step that
+      # only a real release would test. The action stays, as sb-go
+      # publishes, pinned to its commit.
+      - name: Publish # zizmor: ignore[superfluous-actions] kept as sb-go publishes, see above
+        uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
         with:
           tag_name: ${{ needs.plan.outputs.version }}
           target_commitish: ${{ github.sha }}
@@ -331,10 +361,10 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release-notes
           path: ${{ runner.temp }}/notes
@@ -372,7 +402,7 @@ jobs:
       run: ${{ steps.gate.outputs.run }}
       uv-version: ${{ steps.gate.outputs.uv-version }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       # GitHub's record of the published release, and the published
@@ -406,17 +436,17 @@ jobs:
     outputs:
       changed: ${{ steps.prepare.outputs.changed }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - id: prepare
-        uses: ./.github/actions/update-saltbox-python
+        uses: $/.github/actions/update-saltbox-python
         with:
           mode: prepare
           sb-release: ${{ needs.plan.outputs.version }}
           uv-version: ${{ needs.saltbox-gate.outputs.uv-version }}
           directory: ${{ runner.temp }}/saltbox-update
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: saltbox-update
           path: ${{ runner.temp }}/saltbox-update
@@ -440,16 +470,16 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: saltbox-update
           path: ${{ runner.temp }}/saltbox-update
       - name: Create Saltbox toolchain update token
         id: saltbox-token
-        uses: actions/create-github-app-token@v3.3.0
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           client-id: ${{ vars.SALTBOX_AUTOMATION_APP_ID }}
           private-key: ${{ secrets.SALTBOX_AUTOMATION_PRIVATE_KEY }}
@@ -457,7 +487,7 @@ jobs:
           repositories: Saltbox
           permission-contents: write
       - name: Update supported Python toolchain for Saltbox
-        uses: ./.github/actions/update-saltbox-python
+        uses: $/.github/actions/update-saltbox-python
         with:
           mode: commit
           token: ${{ steps.saltbox-token.outputs.token }}

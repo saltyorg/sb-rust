@@ -36,8 +36,8 @@ jobs:
       matrix:
         # arm64 ships (maintainer, 2026-11-18): its tests run natively on
         # the arm runners, as emulated runs would be slow and flaky.
-        # actionlint 1.7.12 doesn't know the 26.04 labels yet; GitHub's
-        # runner-images README lists ubuntu-26.04 and ubuntu-26.04-arm.
+        # The 26.04 labels are newer than the pinned actionlint: they are
+        # in .github/actionlint.yaml, with GitHub's source.
         runner:
           - ubuntu-22.04
           - ubuntu-24.04
@@ -46,29 +46,30 @@ jobs:
           - ubuntu-24.04-arm
           - ubuntu-26.04-arm
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 0
       - name: Toolchain
         run: rustup toolchain install && rustup show active-toolchain
-      - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-node@v7
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "24"
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version: "1.27"
       # The tools at CONSTRAINTS.md's Tools pins, prebuilt (nextest's own
       # docs point CI at this action:
       # https://nexte.st/docs/installation/pre-built-binaries/); check.sh
       # refuses any other version before a stage runs.
-      - uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@fe3acb53a98b62c772db35de75ce0e4595e7ca8c # v2.90.8
         with:
-          tool: cargo-llvm-cov@0.9.1,cargo-mutants@27.1.0,cargo-nextest@0.9.151,cargo-deny@0.20.2,hyperfine@2.0.0
-      - name: gitleaks and diff-cover
+          tool: cargo-llvm-cov@0.9.1,cargo-mutants@27.1.0,cargo-nextest@0.9.151,cargo-deny@0.20.2,hyperfine@2.0.0,zizmor@1.32.0
+      - name: gitleaks, diff-cover and actionlint
         run: |
           go install github.com/zricethezav/gitleaks/v8@v8.30.1
+          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
           echo "$(go env GOPATH)/bin" >>"$GITHUB_PATH"
           pipx install diff-cover==9.7.2
           rustup component add llvm-tools
@@ -99,12 +100,12 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Toolchain
         run: rustup toolchain install && rustup show active-toolchain
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Build without SB_VERSION
         run: cargo build --locked --release -p sb
       - name: uv_version is a version

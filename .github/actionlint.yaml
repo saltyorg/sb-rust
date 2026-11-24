@@ -1,0 +1,31 @@
+# actionlint's settings, at its pinned version (CONSTRAINTS.md's Tools
+# table): https://github.com/rhysd/actionlint/blob/v1.7.12/docs/config.md
+# Only what that version predates; remove an entry once the pinned
+# actionlint knows it.
+
+# GitHub-hosted runner labels newer than the pinned actionlint's list,
+# which it can only be given as self-hosted ones. GitHub's runner-images
+# README lists both: "Ubuntu 26.04 | x64 | `ubuntu-latest` or
+# `ubuntu-26.04`" and "Ubuntu 26.04 Arm64 | arm64 | `ubuntu-26.04-arm`"
+# (https://github.com/actions/runner-images#available-images).
+self-hosted-runner:
+  labels:
+    - ubuntu-26.04
+    - ubuntu-26.04-arm
+
+paths:
+  .github/workflows/release.yml:
+    ignore:
+      # The workflow-level `cache-mode` key (GitHub, 2026-09-10:
+      # https://github.blog/changelog/2026-09-10-control-github-actions-cache-access-with-cache-mode,
+      # https://docs.github.com/actions/reference/workflows-and-actions/workflow-syntax#cache-mode).
+      - 'unexpected key "cache-mode" for "workflow" section'
+  .github/workflows/{release,saltbox-toolchain}.yml:
+    ignore:
+      # The self-repository `$/` form of the Saltbox updater's action
+      # (GitHub, 2026-07-30:
+      # https://github.blog/changelog/2026-07-30-reference-same-repository-actions-with-self-repository-syntax),
+      # which actionlint reads as a remote action without a ref. Until it
+      # reads `$/`, it doesn't check those steps' inputs against the
+      # action's action.yml either.
+      - 'specifying action "\$/\.github/actions/update-saltbox-python" in invalid format because ref is missing'

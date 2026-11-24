@@ -3,6 +3,7 @@
     "description": "sb-rust's dependency updates (ADR-026): patch updates of ordinary crates automerge once CI passes; minor and major updates, the exact pins (ADR-001), the toolchain, the build image and every value outside Cargo always open a PR for review.",
     "extends": [
         "config:recommended",
+        "helpers:pinGitHubActionDigests",
         ":semanticCommits",
         ":separateMajorReleases",
         ":ignoreUnstable",
@@ -222,6 +223,16 @@
                 "github-actions",
                 "major"
             ]
+        },
+        {
+            "description": "saltyorg's own actions stay on their published version tags, never digests (the maintainer's consumer rule; .github/zizmor.yml allows them)",
+            "matchManagers": [
+                "github-actions"
+            ],
+            "matchPackageNames": [
+                "saltyorg/**"
+            ],
+            "pinDigests": false
         }
     ],
     "customManagers": [
@@ -296,6 +307,41 @@
             "datasourceTemplate": "github-releases",
             "extractVersionTemplate": "^v(?<version>.*)$",
             "versioningTemplate": "semver"
+        },
+        {
+            "customType": "regex",
+            "description": "actionlint (CONSTRAINTS.md's Tools table: its version and its install line; the workflows' install lines; the settings' docs link)",
+            "managerFilePatterns": [
+                "/(^|/)CONSTRAINTS\\.md$/",
+                "/(^|/)\\.github/workflows/[^/]+\\.yml$/",
+                "/(^|/)\\.github/actionlint\\.yaml$/"
+            ],
+            "matchStrings": [
+                "\\| actionlint \\| (?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+) \\| exact \\|",
+                "github\\.com/rhysd/actionlint/cmd/actionlint@v(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)",
+                "https://github\\.com/rhysd/actionlint/blob/v(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)/"
+            ],
+            "depNameTemplate": "actionlint",
+            "packageNameTemplate": "rhysd/actionlint",
+            "datasourceTemplate": "github-releases",
+            "extractVersionTemplate": "^v(?<version>.*)$",
+            "versioningTemplate": "semver"
+        },
+        {
+            "customType": "regex",
+            "description": "zizmor (CONSTRAINTS.md's Tools table: its version and its install line; the workflows' install-action tool lists)",
+            "managerFilePatterns": [
+                "/(^|/)CONSTRAINTS\\.md$/",
+                "/(^|/)\\.github/workflows/[^/]+\\.yml$/"
+            ],
+            "matchStrings": [
+                "\\| zizmor \\| (?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+) \\| exact \\|",
+                "`uv tool install zizmor==(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)`",
+                "\\bzizmor@(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)\\b"
+            ],
+            "depNameTemplate": "zizmor",
+            "datasourceTemplate": "pypi",
+            "versioningTemplate": "pep440"
         }
     ],
     "customDatasources": {

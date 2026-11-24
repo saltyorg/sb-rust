@@ -1,0 +1,12 @@
+# zizmor's settings (https://docs.zizmor.sh/configuration/). unpinned-uses:
+# every action pinned to a full commit hash, zizmor's default, but
+# saltyorg's own, which stay on their published version tags (the
+# maintainer, 2026-11-24). A configured policy replaces the default, so
+# the hash rule for the rest is written out:
+# https://docs.zizmor.sh/audits/#unpinned-uses
+rules:
+  unpinned-uses:
+    config:
+      policies:
+        "saltyorg/*": ref-pin
+        "*": hash-pin
