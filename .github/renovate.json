@@ -266,14 +266,17 @@
         },
         {
             "customType": "regex",
-            "description": "The gate's cargo-installed tools (CONSTRAINTS.md's Tools table, exact versions)",
+            "description": "The gate's cargo-installed tools (CONSTRAINTS.md's Tools table, exact versions; the workflows' install-action tool lists and their cargo install lines). Under install-action's `fallback: none` (ci.yml), a version newer than the pinned install-action's manifest fails CI until that action's own update lands; rebase the PR then",
             "managerFilePatterns": [
-                "/(^|/)CONSTRAINTS\\.md$/"
+                "/(^|/)CONSTRAINTS\\.md$/",
+                "/(^|/)\\.github/workflows/[^/]+\\.yml$/"
             ],
             "matchStrings": [
                 "\\| (?<depName>cargo-llvm-cov|cargo-mutants|cargo-nextest|cargo-deny|hyperfine) \\| (?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+) \\| exact \\|",
                 "\\| (?<depName>cross) \\| (?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+) \\| exact \\|",
-                "`cargo install --locked (?<depName>cross) --version (?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)`"
+                "`cargo install --locked (?<depName>cross) --version (?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)`",
+                "\\b(?<depName>cargo-llvm-cov|cargo-mutants|cargo-nextest|cargo-deny|hyperfine|cross)@(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)\\b",
+                "cargo install --locked (?<depName>cargo-mutants) --version (?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)"
             ],
             "datasourceTemplate": "crate",
             "versioningTemplate": "semver"
@@ -329,7 +332,7 @@
         },
         {
             "customType": "regex",
-            "description": "zizmor (CONSTRAINTS.md's Tools table: its version and its install line; the workflows' install-action tool lists)",
+            "description": "zizmor (CONSTRAINTS.md's Tools table: its version and its install line; the workflows' install-action tool lists). Under install-action's `fallback: none` (ci.yml), a version newer than the pinned install-action's manifest fails CI until that action's own update lands; rebase the PR then",
             "managerFilePatterns": [
                 "/(^|/)CONSTRAINTS\\.md$/",
                 "/(^|/)\\.github/workflows/[^/]+\\.yml$/"

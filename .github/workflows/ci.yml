@@ -62,10 +62,29 @@ jobs:
       # The tools at CONSTRAINTS.md's Tools pins, prebuilt (nextest's own
       # docs point CI at this action:
       # https://nexte.st/docs/installation/pre-built-binaries/); check.sh
-      # refuses any other version before a stage runs.
+      # refuses any other version before a stage runs. `fallback: none`:
+      # the action checks each release archive's SHA-256 from its own
+      # manifest, and a tool it has no release for is an error instead of
+      # its default fallback, cargo-binstall, unchecked by the action
+      # (https://github.com/taiki-e/install-action/blob/v2.90.8/README.md, "Inputs").
       - uses: taiki-e/install-action@fe3acb53a98b62c772db35de75ce0e4595e7ca8c # v2.90.8
         with:
-          tool: cargo-llvm-cov@0.9.1,cargo-mutants@27.1.0,cargo-nextest@0.9.151,cargo-deny@0.20.2,hyperfine@2.0.0,zizmor@1.32.0
+          tool: cargo-llvm-cov@0.9.1,cargo-nextest@0.9.151,cargo-deny@0.20.2,hyperfine@2.0.0,zizmor@1.32.0
+          fallback: none
+      # cargo-mutants publishes no aarch64 Linux build (the action's
+      # manifest for 27.1.0 has x86_64 alone:
+      # https://github.com/taiki-e/install-action/blob/v2.90.8/manifests/cargo-mutants.json),
+      # so arm64 builds it from crates.io, each crate checked against the
+      # index's checksum, its dependencies at its own Cargo.lock.
+      - name: cargo-mutants (x86_64)
+        if: runner.arch == 'X64'
+        uses: taiki-e/install-action@fe3acb53a98b62c772db35de75ce0e4595e7ca8c # v2.90.8
+        with:
+          tool: cargo-mutants@27.1.0
+          fallback: none
+      - name: cargo-mutants (arm64)
+        if: runner.arch == 'ARM64'
+        run: cargo install --locked cargo-mutants --version 27.1.0
       - name: gitleaks, diff-cover and actionlint
         run: |
           go install github.com/zricethezav/gitleaks/v8@v8.30.1

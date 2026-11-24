@@ -116,3 +116,10 @@ Both are the maintainer's to do when the repository is created.
   requires the hashes. Item 4 gains actionlint (GitHub releases) and
   zizmor (PyPI), each tracked in CONSTRAINTS.md and in the workflows'
   install lines.
+- 2026-11-24 (the maintainer: install-action without its unchecked
+  fallback): item 4's cargo-installed tools are tracked in the workflows
+  too, in install-action's tool lists and in the arm64
+  `cargo install --locked cargo-mutants --version` lines, so a bump moves
+  them with CONSTRAINTS.md's row. A version newer than the pinned
+  install-action's manifest fails CI until that action's update lands
+  (`fallback: none`).
