@@ -605,6 +605,29 @@ for (const f of changed) {
   }
 }
 
+// 5k. The workflow linters' suppressions (the maintainer, 2026-11-24):
+// actionlint's settings, read from .github/actionlint.yaml or .yml
+// (https://github.com/rhysd/actionlint/blob/v1.7.12/docs/config.md), and
+// zizmor's, read from .github/zizmor.yml or .yaml, or zizmor.yml or .yaml
+// at the root (https://docs.zizmor.sh/configuration/). Each holds ignores,
+// runner labels or pin policies, so any edit to one blocks: a line of
+// code added or removed (a policy taken out loosens as well), the file
+// added or deleted. And a `# zizmor: ignore[...]` comment added anywhere
+// under .github/, a moved one included, since it then silences another
+// line (https://docs.zizmor.sh/usage/#ignoring-results). A removed
+// ignore comment tightens, and is clean.
+const LINTER_CONFIGS = ['.github/actionlint.yaml', '.github/actionlint.yml', '.github/zizmor.yml', '.github/zizmor.yaml',
+  'zizmor.yml', 'zizmor.yaml'];
+const ZIZMOR_IGNORE = /\bzizmor\s*:\s*ignore\b/;
+for (const f of changed.filter((x) => LINTER_CONFIGS.includes(x))) {
+  if (oldText(f) === null) flag('linter-config-changed', f, 'file added');
+  else if (deleted.includes(f)) flag('linter-config-changed', f, 'file deleted');
+  else for (const l of [...added, ...removed]) if (l.file === f && isCode(f, l.text)) flag('linter-config-changed', f, l.text);
+}
+for (const { file, text } of added) {
+  if (file.startsWith('.github/') && ZIZMOR_IGNORE.test(text)) flag('zizmor-ignore-added', file, text);
+}
+
 // 6. The reported findings (ADR-029): printed for the code reviewer, who
 // judges each against the commit message; they never fail the run.
 const REPORTED = ['assertion-removed', 'test-removed', 'test-deleted', 'gate-line-removed'];

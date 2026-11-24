@@ -96,8 +96,9 @@ blocks as a failing check does.
 
 A blocking floor finding (a threshold, a lint level, deny.toml, the
 toolchain pin, a tool configuration, a gate step switched off, a new
-`#[ignore]`, `#[expect]`, `coverage(off)` or `mutants::skip`, a
-CONSTRAINTS.md rule or number) passes only with the maintainer's approval
+`#[ignore]`, `#[expect]`, `coverage(off)` or `mutants::skip`, an edit to
+actionlint's or zizmor's settings or a new `# zizmor: ignore[...]`
+comment under `.github/`, a CONSTRAINTS.md rule or number) passes only with the maintainer's approval
 ([ADR-029](docs/decisions/ADR-029-floor-guard-narrowed.md)). An agent asks
 the maintainer first and never writes an approval on its own. Approved,
 the commit that causes the finding carries

@@ -385,6 +385,62 @@ test('nextest.toml: a changed timeout is flagged, a comment is clean', () => {
   clean(config, edit(config, NEXTEST, '[profile', '# Why.\n[profile'));
 });
 
+// The workflow linters' suppressions (the maintainer, 2026-11-24): any
+// edit to actionlint's or zizmor's settings, and an added zizmor ignore
+// comment under .github/.
+const ACTIONLINT = '.github/actionlint.yaml';
+const ZIZMOR = '.github/zizmor.yml';
+const linterConfigs = {
+  [ACTIONLINT]: '# Why each entry is here.\nself-hosted-runner:\n  labels:\n    - ubuntu-26.04\n',
+  [ZIZMOR]: '# Why each policy is here.\nrules:\n  unpinned-uses:\n    config:\n      policies:\n        "saltyorg/*": ref-pin\n        "*": hash-pin\n',
+};
+
+test('actionlint.yaml and zizmor.yml: an added, changed or removed setting is flagged, a comment is clean', () => {
+  flags(linterConfigs, edit(linterConfigs, ACTIONLINT, '    - ubuntu-26.04\n', '    - ubuntu-26.04\n    - my-runner\n'),
+    'linter-config-changed ' + ACTIONLINT);
+  flags(linterConfigs, edit(linterConfigs, ACTIONLINT, '    - ubuntu-26.04\n', ''), 'linter-config-changed ' + ACTIONLINT);
+  flags(linterConfigs, edit(linterConfigs, ZIZMOR, '"*": hash-pin', '"*": ref-pin'),
+    ['linter-config-changed ' + ZIZMOR, 'linter-config-changed ' + ZIZMOR]);
+  flags(linterConfigs, edit(linterConfigs, ZIZMOR, '        "*": hash-pin\n', ''), 'linter-config-changed ' + ZIZMOR);
+  flags(linterConfigs, edit(linterConfigs, ZIZMOR, 'rules:\n', 'rules:\n  template-injection:\n    disable: true\n'),
+    ['linter-config-changed ' + ZIZMOR, 'linter-config-changed ' + ZIZMOR], { commit: true });
+  clean(linterConfigs, edit(linterConfigs, ZIZMOR, '# Why each policy is here.\n', '# Why each policy is here,\n# with its source.\n'));
+  clean(linterConfigs, edit(linterConfigs, ACTIONLINT, '# Why each entry is here.\n', ''));
+});
+
+for (const config of [ACTIONLINT, '.github/actionlint.yml', ZIZMOR, '.github/zizmor.yaml', 'zizmor.yml', 'zizmor.yaml']) {
+  test('a new or deleted workflow linter config is flagged: ' + config, () => {
+    flags({}, { [config]: 'rules: {}\n' }, 'linter-config-changed ' + config);
+    flags({}, { [config]: '# comments only\n' }, 'linter-config-changed ' + config, { commit: true });
+    flags({ [config]: 'rules: {}\n' }, { [config]: null }, 'linter-config-changed ' + config);
+  });
+}
+
+test('a workflow linter config name elsewhere is clean', () => {
+  clean({}, { 'docs/zizmor.yml': 'rules: {}\n', '.github/workflows/actionlint.yaml': 'on: push\n' });
+});
+
+test('an added zizmor ignore comment under .github/ is flagged, a removed one and one elsewhere are clean', () => {
+  const WORKFLOW = '.github/workflows/ci.yml';
+  const ACTION = '.github/actions/update/action.yml';
+  const files = {
+    [WORKFLOW]: 'jobs:\n  a:\n    steps:\n      - name: Build # zizmor: ignore[artipacked]\n        run: make\n',
+    [ACTION]: 'runs:\n  using: composite\n',
+  };
+  flags(files, edit(files, WORKFLOW, '        run: make\n', '        # zizmor: ignore[template-injection]\n        run: make\n'),
+    'zizmor-ignore-added ' + WORKFLOW);
+  flags(files, edit(files, WORKFLOW, 'ignore[artipacked]', 'ignore[artipacked,ref-confusion]'), 'zizmor-ignore-added ' + WORKFLOW);
+  flags(files, edit(files, ACTION, 'composite\n', 'composite # zizmor :  ignore[unpinned-uses]\n'), 'zizmor-ignore-added ' + ACTION,
+    { commit: true });
+  flags({}, { [WORKFLOW]: files[WORKFLOW] }, 'zizmor-ignore-added ' + WORKFLOW);
+  // Moved to another line, it silences another finding.
+  flags(files, edit(files, WORKFLOW, ' # zizmor: ignore[artipacked]\n        run: make\n', '\n        run: make # zizmor: ignore[artipacked]\n'),
+    'zizmor-ignore-added ' + WORKFLOW);
+  clean(files, edit(files, WORKFLOW, ' # zizmor: ignore[artipacked]', ''));
+  clean(files, edit(files, WORKFLOW, '        run: make\n', '        run: make test\n'));
+  clean({}, { 'docs/notes.md': 'a `# zizmor: ignore[artipacked]` comment\n' });
+});
+
 const COMPARE = 'crates/journal/tests/compare.sh';
 const testScripts = {
   [COMPARE]: `#!/usr/bin/env bash

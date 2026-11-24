@@ -132,3 +132,12 @@ Limits:
   a requirement in the same direction as its number. Unattended work
   pauses there for the maintainer.
 - No merge conflicts over an append-only file.
+
+## Amendments
+
+- 2026-11-24 (the maintainer): the guard also blocks the workflow
+  linters' suppressions, `linter-config-changed` (a line of code added or
+  removed in actionlint's or zizmor's settings, `.github/actionlint.yaml`
+  or `.yml`, `.github/zizmor.yml` or `.yaml`, `zizmor.yml` or `.yaml`, or
+  the file added or deleted) and `zizmor-ignore-added` (a
+  `# zizmor: ignore[...]` comment added under `.github/`).
