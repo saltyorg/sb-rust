@@ -3,7 +3,7 @@
 # container per supported Ubuntu release (motd spec, Testing, "Container
 # matrix"; the results are docs/platform-notes/motd-sources.md).
 #
-#   [SBM_BIN=binary] [SBM_PREFIX=name] [SBM_FIXTURES=dir] \
+#   [SBM_BIN=binary] [SBM_PREFIX=name] [SBM_FIXTURES=dir] [SBM_DOCKER_OPTS=options] \
 #     crates/motd/tests/matrix.sh [RELEASE]...
 #
 # Default: 22.04 24.04 26.04. SBM_BIN is an sb built on the oldest
@@ -20,15 +20,19 @@
 # mount of it added), and
 # lspci's display controllers (sb-go's BMC exclusions applied).
 # SBM_FIXTURES gets each release's last and loginctl output (the list,
-# and show-session's states) for the unit tests, the kernel release
-# replaced by a placeholder.
+# and show-session's states) for the unit tests. The run's own values
+# never reach them: the kernel release, the boot and login times, the
+# durations, the session IDs and their leaders' PIDs become the invented
+# capture's (booted Sat Nov 14 23:00, logins on Sun Nov 15 2026).
 #
 # The container is not privileged: it gets CAP_SYS_ADMIN and no AppArmor
 # profile only so that its systemd can remount its own cgroup (private
 # cgroup namespace) writable and the test can mount; /sys and /proc/sys
 # stay read-only and no device is passed. It is capped at 2 CPUs and
-# 2 GB, and removed on exit with its anonymous volume. Needs Docker and the ubuntu:<release>
-# images (pulled on first use); the packages come from Ubuntu's archive.
+# 2 GB, and removed on exit with its anonymous volume; SBM_DOCKER_OPTS
+# adds `docker run` options, such as `--cpuset-cpus`. Needs Docker and the
+# ubuntu:<release> images (pulled on first use); the packages come from
+# Ubuntu's archive.
 set -euo pipefail
 
 cd "$(dirname "$0")/../../.."
@@ -170,21 +174,54 @@ gpu_tool=$(lspci 2>/dev/null | grep -E 'VGA compatible controller|3D controller|
 check gpu "$(sb gpu)" "$gpu_tool"
 
 if [ -n "${SBM_FIXTURES_IN:-}" ]; then
+  # The invented capture's values, in place of the run's own: the session
+  # IDs and leader PIDs in list order (only 26.04's list has leaders), and
+  # the logins' time.
+  case $rel in
+    22.04) ids=(101 102) at=09:00 ;;
+    24.04) ids=(201 202) at=09:00 ;;
+    *) ids=(c2 c3 c4) at=09:01 ;;
+  esac
+  leaders=(1201 1242 1278)
+  mapfile -t real < <(loginctl list-sessions --no-legend | awk '{print $1}')
+  if [ "${#real[@]}" -eq 0 ] || [ "${#real[@]}" -gt "${#ids[@]}" ]; then
+    echo "  FAIL  fixtures: ${#real[@]} sessions, ${#ids[@]} invented IDs"; exit 1
+  fi
+  # Each ID and PID to a token first, then each token to its value, so no
+  # replacement rewrites an earlier one's output.
+  to_token=() to_value=()
+  for i in "${!real[@]}"; do
+    leader=$(loginctl show-session -p Leader --value "${real[$i]}")
+    to_token+=(-e "s/\"session\":\"${real[$i]}\"/\"session\":\"@s$i@\"/g" -e "s/^Id=${real[$i]}\$/Id=@s$i@/"
+      -e "s/\"leader\":$leader,/\"leader\":@l$i@,/g")
+    to_value+=(-e "s/@s$i@/${ids[$i]}/g" -e "s/@l$i@/${leaders[$i]}/g")
+  done
+  invent() { sed "${to_token[@]}" | sed "${to_value[@]}"; }
   k=$(uname -r)
-  # The kernel release and the boot time are the machine's: placeholders.
   scrub() {
     sed -E -e "s/$k/6.8.0-1-generic/g" -e "s/${k:0:16}/6.8.0-1-generic/g" \
       -e '/^reboot /s/[A-Z][a-z]{2} [A-Z][a-z]{2} [ 0-9][0-9] [0-9]{2}:[0-9]{2}/Sat Nov 14 23:00/' \
-      -e 's/^(wtmp(db)? begins ).*/\1Sat Nov 14 23:00:00 2026/'
+      -e 's/^(wtmp(db)? begins ).*/\1Sat Nov 14 23:00:00 2026/' \
+      -e "/^sbuser /{s/[A-Z][a-z]{2} [A-Z][a-z]{2} [ 0-9][0-9] [0-9]{2}:[0-9]{2}/Sun Nov 15 $at/;s/- [0-9]{2}:[0-9]{2} /- $at /;s/\([0-9+:]+\)\$/(00:00)/}"
   }
   last -w -n 5 | scrub >"$SBM_FIXTURES_IN/last"
   case $rel in
     22.04 | 24.04) loginctl list-sessions --output=json ;;
     *) loginctl list-sessions --json=short ;;
-  esac >"$SBM_FIXTURES_IN/loginctl.json"
-  # shellcheck disable=SC2046 # one argument per session ID
-  loginctl show-session -p Id -p State $(loginctl list-sessions --no-legend | awk '{print $1}') \
-    >"$SBM_FIXTURES_IN/show-session"
+  esac | invent >"$SBM_FIXTURES_IN/loginctl.json"
+  loginctl show-session -p Id -p State "${real[@]}" | invent >"$SBM_FIXTURES_IN/show-session"
+  # Only invented values may be left; anything else, or grep failing,
+  # removes the fixtures.
+  id_re=$(IFS='|'; echo "${ids[*]}") leader_re=$(IFS='|'; echo "${leaders[*]}")
+  {
+    grep -oE '"(session|leader|since)":("[^"]*"|[^,}]*)' "$SBM_FIXTURES_IN/loginctl.json"
+    grep -E '^Id=' "$SBM_FIXTURES_IN/show-session"
+    grep -oE '[A-Z][a-z]{2} [A-Z][a-z]{2} [ 0-9][0-9] [0-9]{2}:[0-9]{2}' "$SBM_FIXTURES_IN/last"
+  } | grep -vxE "\"session\":\"($id_re)\"|Id=($id_re)|\"leader\":($leader_re)|\"since\":null|Sun Nov 15 $at|Sat Nov 14 23:00" \
+    >/dev/null && st=0 || st=$?
+  if [ "$st" -ne 1 ]; then
+    rm -f "$SBM_FIXTURES_IN"/*; echo "  FAIL  fixtures: a value of the run's own is left"; exit 1
+  fi
 fi
 # A command over SSH without a terminal: logind lists it, utmp doesn't
 # (a note for the platform note, not a check).
@@ -202,7 +239,8 @@ for rel in "${releases[@]}"; do
   name="$prefix-${rel/./}"
   containers+=("$name")
   docker rm -f "$name" >/dev/null 2>&1 || true
-  docker run -d --name "$name" --cpus 2 --memory 2g \
+  # shellcheck disable=SC2086 # SBM_DOCKER_OPTS is a list of options.
+  docker run -d --rm --name "$name" --cpus 2 --memory 2g ${SBM_DOCKER_OPTS:-} \
     --cgroupns=private --cap-add SYS_ADMIN --security-opt apparmor=unconfined \
     --tmpfs /run --tmpfs /run/lock -v /sbm-volume "ubuntu:$rel" sh -c "$boot" >/dev/null
   for _ in $(seq 1 300); do

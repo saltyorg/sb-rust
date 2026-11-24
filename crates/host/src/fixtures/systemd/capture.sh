@@ -8,9 +8,33 @@
 # cgroup namespace, made writable for systemd), installs the units below,
 # and writes the four calls' outputs to <release>/. The container is
 # removed afterwards. Runs no command on the host's own systemd.
+# SBH_DOCKER_OPTS adds `docker run` options, such as `--cpuset-cpus`.
+#
+# The run's own values never reach the fixtures. They become the invented
+# capture's (Thu 2026-01-15): the units' timestamps become the release's
+# stamp below, and each timer's next elapse (and time left) its invented
+# value, which follow a boot at 10:00:00, 10:00:10 and 10:00:20 UTC; the
+# timers are then sorted as systemctl sorts them. A timer with no invented
+# value, a timer that has run, a field or a timestamp left unreplaced
+# stops the capture. Needs jq.
 set -euo pipefail
 cd "$(dirname "$0")"
 prefix=${SBH_PREFIX:-sbh-systemd}
+command -v jq >/dev/null || { echo "capture.sh: jq not installed" >&2; exit 2; }
+
+# The invented capture: <release>'s units' timestamp, and its timers' next
+# elapses in microseconds.
+invented() {
+  case $1 in
+    22.04) stamp='Thu 2026-01-15 10:00:03 UTC'
+      next='{"systemd-tmpfiles-clean.timer":1768472100000000,"motd-news.timer":1768489200000000,"dpkg-db-backup.timer":1768521600000000,"saltbox_managed_job.timer":1768521600000000,"apt-daily.timer":1768543200000000,"apt-daily-upgrade.timer":1768545000000000,"e2scrub_all.timer":1768705800000000}' ;;
+    24.04) stamp='Thu 2026-01-15 10:00:16 UTC'
+      next='{"systemd-tmpfiles-clean.timer":1768472110000000,"motd-news.timer":1768482000000000,"dpkg-db-backup.timer":1768521600000000,"saltbox_managed_job.timer":1768521600000000,"apt-daily.timer":1768528800000000,"apt-daily-upgrade.timer":1768545300000000,"e2scrub_all.timer":1768705810000000}' ;;
+    26.04) stamp='Thu 2026-01-15 10:00:29 UTC'
+      next='{"systemd-tmpfiles-clean.timer":1768472120000000,"motd-news.timer":1768500000000000,"apt-daily.timer":1768518000000000,"dpkg-db-backup.timer":1768521600000000,"saltbox_managed_job.timer":1768521600000000,"apt-daily-upgrade.timer":1768545240000000,"e2scrub_all.timer":1768705820000000}' ;;
+    *) echo "capture.sh: no invented values for $1" >&2; exit 2 ;;
+  esac
+}
 
 units() {
   cat <<'INNER'
@@ -34,10 +58,15 @@ sleep 2
 INNER
 }
 
+for rel in "$@"; do invented "$rel"; done
+c=
+trap '[ -z "$c" ] || docker rm -f "$c" >/dev/null 2>&1 || true' EXIT
 for rel in "$@"; do
+  invented "$rel"
   c=$prefix-${rel/./}
   docker rm -f "$c" >/dev/null 2>&1 || true
-  docker run -d --name "$c" --memory 2g --cpus 2 --cgroupns=private --cap-add SYS_ADMIN \
+  # shellcheck disable=SC2086 # SBH_DOCKER_OPTS is a list of options.
+  docker run -d --rm --name "$c" --memory 2g --cpus 2 ${SBH_DOCKER_OPTS:-} --cgroupns=private --cap-add SYS_ADMIN \
     --security-opt apparmor=unconfined --security-opt seccomp=unconfined \
     --tmpfs /run --tmpfs /run/lock --tmpfs /tmp -e container=docker "ubuntu:$rel" bash -c '
       export DEBIAN_FRONTEND=noninteractive
@@ -56,11 +85,24 @@ for rel in "$@"; do
   mkdir -p "$rel"
   docker exec "$c" systemctl list-units --type=service,timer --all --output=json > "$rel/list-units.json"
   docker exec "$c" systemctl list-unit-files --type=service --output=json > "$rel/list-unit-files.json"
-  docker exec "$c" systemctl list-timers --all --output=json > "$rel/list-timers.json"
+  docker exec "$c" systemctl list-timers --all --output=json | jq -c --argjson next "$next" '
+    map(if keys != ["activates", "last", "left", "next", "passed", "unit"] then
+        error("capture.sh: \(.unit) has fields with no invented value")
+      elif .last != 0 or .passed != 0 then error("capture.sh: \(.unit) has run; capture again")
+      elif .next == null then .
+      else .next = ($next[.unit] // error("capture.sh: no invented next elapse for \(.unit)")) | .left = .next end)
+    | sort_by(.next == null, .next, .unit)' > "$rel/list-timers.json"
   docker exec "$c" systemctl show --timestamp=utc --property=Id,ActiveEnterTimestamp,StateChangeTimestamp \
     docker.service saltbox_managed_crash.service saltbox_managed_gone.service saltbox_managed_job.service \
     saltbox_managed_left.service saltbox_managed_once.service saltbox_managed_restart.service \
-    saltbox_managed_web.service > "$rel/show.txt"
+    saltbox_managed_web.service |
+    sed -E "s/[A-Z][a-z]{2} [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2} UTC/$stamp/" > "$rel/show.txt"
+  # Only these lines may be left; anything else, or grep failing, removes
+  # the file.
+  grep -vxE "(Id=.*|[A-Za-z]+Timestamp=(n/a|$stamp)?)?" "$rel/show.txt" >/dev/null && st=0 || st=$?
+  if [ "$st" -ne 1 ]; then
+    rm "$rel/show.txt"; echo "capture.sh: $rel: a value in show.txt has no invented one" >&2; exit 1
+  fi
   docker exec "$c" systemctl --version | head -1
   docker rm -f "$c" >/dev/null
 done
