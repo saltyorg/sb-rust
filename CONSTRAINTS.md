@@ -39,7 +39,10 @@ tooling.
 - No test made easier: no new `#[ignore]`, no deleted test, no assertion
   removed from code that stays, without a reason in the commit message.
 - No silenced checker: no `#[coverage(off)]`, `#[mutants::skip]`,
-  `gitleaks:allow` or cargo-deny `ignore` without an Exceptions row.
+  `gitleaks:allow` or cargo-deny `ignore` without an Exceptions row. A
+  workflow linter's suppression (an entry in `.github/actionlint.yaml` or
+  `.github/zizmor.yml`, a `# zizmor: ignore[...]` comment) has its reason
+  in place, next to it, instead of a row (the maintainer, 2026-11-24).
 - No secrets in source, tests or logs.
 - Library first (CLAUDE.md): every commit changing Rust carries a
   `Library-check:` line.
@@ -160,7 +163,12 @@ cross builds and keeps its own images from `build/Dockerfile`
 
 Every `#[expect]`, `#[coverage(off)]`, `#[mutants::skip]`, cargo-deny
 `ignore` and other suppression in production code has a row here, is
-called out in review, and expires.
+called out in review, and expires. The workflow linters' suppressions
+are the exception: an entry in `.github/actionlint.yaml` or
+`.github/zizmor.yml` and a `# zizmor: ignore[...]` comment document their
+reason in place, next to the suppression, and have no row; the floor
+guard blocks a change to any of them without the maintainer's approval
+(the maintainer, 2026-11-24).
 
 | ID | Rule | Path | Reason | Owner | Expires |
 |---|---|---|---|---|---|
