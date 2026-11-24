@@ -55,3 +55,23 @@ download_failure_is_retryable() {
             ;;
     esac
 }
+
+# verify_sha256 FILE SUM_FILE NAME: FILE's SHA-256 is the one SUM_FILE
+# publishes for NAME, a single line in sha256sum's format: 64 lower-case
+# hex digits, a space, a space or `*`, then NAME, as uv's releases publish
+# `<asset>.sha256` beside each asset.
+verify_sha256() {
+    local file=$1 sum_file=$2 name=$3 line want got
+    line=$(< "$sum_file")
+    if [[ ! $line =~ ^([0-9a-f]{64})\ [\ *](.+)$ || ${BASH_REMATCH[2]} != "$name" ]]; then
+        echo "The published checksum file for $name is not one SHA-256 line naming it" >&2
+        return 1
+    fi
+    want=${BASH_REMATCH[1]}
+    got=$(sha256sum -- "$file") || return 1
+    got=${got%% *}
+    if [[ $got != "$want" ]]; then
+        echo "$name's SHA-256 is $got, not the published $want" >&2
+        return 1
+    fi
+}

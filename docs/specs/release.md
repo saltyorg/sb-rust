@@ -531,6 +531,14 @@ repository's).
     Its preparation and its commit are separate jobs, so the write token
     never meets the preflight's package code; sb-go did both in one
     ("Saltbox's toolchain update").
+19. The updater checks the uv archive against the SHA-256 uv's release
+    publishes beside it (`<asset>.sha256`) before it reads it, and what
+    its lock compiles resolve themselves sits behind a 7-day age floor
+    (uv's `--exclude-newer`, a timestamp 7 days back). The versions
+    master's lock pins, Saltbox's own, are kept and exempt from it, and
+    a lock Saltbox's CI would not reproduce with the header's command
+    (no floor) is refused. sb-go did neither (the maintainer,
+    2026-11-24).
 
 ### Scope
 

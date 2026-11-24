@@ -5,6 +5,7 @@ Ported from sb-go's isolation_test.py (4006309); the action test runs the
 prepare mode, sb-go's dry run.
 """
 
+import hashlib
 import json
 import os
 import shutil
@@ -17,6 +18,7 @@ import tarfile
 import tempfile
 import time
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 ACTION = Path(__file__).resolve().parent
@@ -278,118 +280,291 @@ class IsolationTests(unittest.TestCase):
 
 
 class ActionTests(unittest.TestCase):
+    """The prepare mode, end to end, against a fixture Saltbox, a fake curl
+    serving a fixture uv archive and its checksum, and a fixture uv."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix="sb-action-dry-run-")
+        self.addCleanup(self.tmp.cleanup)
+        self.root = root = Path(self.tmp.name)
+        self.repo = repo = root / "saltbox"
+        (repo / "requirements").mkdir(parents=True)
+        (repo / ".github").mkdir()
+        (repo / ".python-version").write_text("3.12.13\n")
+        (repo / ".uv-version").write_text("0.12.7\n")
+        (repo / ".github/renovate.json").write_text(
+            '{"constraints": {"uv": "0.12.7"}}\n'
+        )
+        (repo / "requirements/requirements-saltbox.in").write_text("fixture==1.0\n")
+        (repo / "requirements/requirements-saltbox.txt").write_text(MASTER_LOCK)
+        for args in (
+            ["init", "-b", "master"],
+            ["add", "."],
+            [
+                "-c",
+                "user.name=fixture",
+                "-c",
+                "user.email=fixture@example.test",
+                "commit",
+                "-m",
+                "test: create fixture",
+            ],
+        ):
+            git(repo, *args)
+        self.original = git(repo, "rev-parse", "HEAD")
+        uv = root / "uv"
+        uv.write_text(UV_FIXTURE)
+        uv.chmod(0o755)
+        self.archive = root / "uv.tar.gz"
+        with tarfile.open(self.archive, "w:gz") as tar:
+            tar.add(uv, arcname="uv-x86_64-unknown-linux-gnu/uv")
+        self.bin_dir = root / "bin"
+        self.bin_dir.mkdir()
+        curl = self.bin_dir / "curl"
+        # The archive, or its published checksum for a `.sha256` URL, as
+        # uv's releases publish it: "<sha256>  <asset>".
+        curl.write_text(
+            "#!/bin/bash\n"
+            'url=""; out=""\n'
+            "while (($#)); do case $1 in --output) out=$2; shift 2;; --write-out) shift 2;; -*) shift;; *) url=$1; shift;; esac; done\n"
+            'echo "$url" >> "$TEST_CURL_LOG"\n'
+            'if [[ $url == *.sha256 ]]; then printf "%s" "$TEST_UV_SHA256" > "$out"; else cp "$TEST_UV_ARCHIVE" "$out"; fi\n'
+            "printf 200\n"
+        )
+        curl.chmod(0o755)
+        digest = hashlib.sha256(self.archive.read_bytes()).hexdigest()
+        self.published = f"{digest}  uv-x86_64-unknown-linux-gnu.tar.gz\n"
+
+    def run_update(self, name, extra=None, hostile=False):
+        caller = self.root / name
+        caller.mkdir()
+        if hostile:
+            (caller / "uv.toml").write_text("invalid = [")
+            (caller / ".python-version").write_text("0.0.0")
+        log = self.root / f"calls-{name}.jsonl"
+        output = self.root / f"update-{name}"
+        env = {
+            "PATH": str(self.bin_dir) + ":/usr/bin:/bin",
+            "HOME": str(self.root),
+            "GITHUB_ACTION_PATH": str(ACTION),
+            "UV_VERSION": "0.12.10",
+            "PYTHON_MINOR": "3.12",
+            "SB_RELEASE": "1.0.0",
+            "OUTPUT_DIR": str(output),
+            "SALTBOX_CLONE_URL": str(self.repo),
+            "TEST_UV_ARCHIVE": str(self.archive),
+            "TEST_UV_SHA256": self.published,
+            "TEST_CURL_LOG": str(self.root / f"curl-{name}.log"),
+            "TEST_UV_LOG": str(log),
+            "SSL_CERT_FILE": "ca.pem",
+            "TEST_CERT_FILE": str(caller / "ca.pem"),
+        }
+        if hostile:
+            env |= {
+                "UV_CONFIG_FILE": "/missing/config",
+                "UV_WORKING_DIR": "/missing/cwd",
+                "UV_CACHE_DIR": "/missing/cache",
+                "PYTHONHOME": "/missing/python",
+                "PYTHONPATH": "/missing/path",
+                "TMPDIR": "/missing/tmp",
+            }
+        result = subprocess.run(  # nosec B603
+            ["/bin/bash", str(ACTION / "update.sh")],
+            check=False,
+            cwd=caller,
+            env=env | (extra or {}),
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        calls = (
+            [json.loads(line) for line in log.read_text().splitlines()]
+            if log.exists()
+            else []
+        )
+        return result, output, calls
+
     def test_dry_run_is_independent_of_ambient_configuration(self):
-        with tempfile.TemporaryDirectory(prefix="sb-action-dry-run-") as tmp:
-            root = Path(tmp)
-            repo = root / "saltbox"
-            (repo / "requirements").mkdir(parents=True)
-            (repo / ".github").mkdir()
-            (repo / ".python-version").write_text("3.12.13\n")
-            (repo / ".uv-version").write_text("0.12.7\n")
-            (repo / ".github/renovate.json").write_text(
-                '{"constraints": {"uv": "0.12.7"}}\n'
+        results = []
+        for hostile in (False, True):
+            result, output, calls = self.run_update(
+                "hostile" if hostile else "clean", hostile=hostile
             )
-            (repo / "requirements/requirements-saltbox.in").write_text("fixture==1.0\n")
-            (repo / "requirements/requirements-saltbox.txt").write_text("old lock\n")
-            for args in (
-                ["init", "-b", "master"],
-                ["add", "."],
-                [
-                    "-c",
-                    "user.name=fixture",
-                    "-c",
-                    "user.email=fixture@example.test",
-                    "commit",
-                    "-m",
-                    "test: create fixture",
-                ],
-            ):
-                git(repo, *args)
-            original = git(repo, "rev-parse", "HEAD")
-            uv = root / "uv"
-            uv.write_text(UV_FIXTURE)
-            uv.chmod(0o755)
-            archive = root / "uv.tar.gz"
-            with tarfile.open(archive, "w:gz") as tar:
-                tar.add(uv, arcname="uv-x86_64-unknown-linux-gnu/uv")
-            bin_dir = root / "bin"
-            bin_dir.mkdir()
-            curl = bin_dir / "curl"
-            curl.write_text(
-                '#!/bin/bash\nwhile (($#)); do if [[ $1 == --output ]]; then cp "$TEST_UV_ARCHIVE" "$2"; shift 2; else shift; fi; done\nprintf 200\n'
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("+3.12.14", result.stdout)
+            self.assertIn("+0.12.10", result.stdout)
+            self.assertIn('+{"constraints": {"uv": "0.12.10"}}', result.stdout)
+            self.assertNotIn("sb-python-action-", result.stdout)
+            self.assertEqual((output / "changed").read_text(), "true\n")
+            self.assertEqual((output / "base-commit").read_text(), self.original)
+            self.assertEqual(
+                (output / "files/.python-version").read_text(), "3.12.14\n"
             )
-            curl.chmod(0o755)
-            results = []
-            for hostile in (False, True):
-                caller = root / ("hostile" if hostile else "clean")
-                caller.mkdir()
-                if hostile:
-                    (caller / "uv.toml").write_text("invalid = [")
-                    (caller / ".python-version").write_text("0.0.0")
-                log = root / f"calls-{hostile}.jsonl"
-                output = root / f"update-{hostile}"
-                env = {
-                    "PATH": str(bin_dir) + ":/usr/bin:/bin",
-                    "HOME": str(root),
-                    "GITHUB_ACTION_PATH": str(ACTION),
-                    "UV_VERSION": "0.12.10",
-                    "PYTHON_MINOR": "3.12",
-                    "SB_RELEASE": "1.0.0",
-                    "OUTPUT_DIR": str(output),
-                    "SALTBOX_CLONE_URL": str(repo),
-                    "TEST_UV_ARCHIVE": str(archive),
-                    "TEST_UV_LOG": str(log),
-                    "SSL_CERT_FILE": "ca.pem",
-                    "TEST_CERT_FILE": str(caller / "ca.pem"),
-                }
-                if hostile:
-                    env |= {
-                        "UV_CONFIG_FILE": "/missing/config",
-                        "UV_WORKING_DIR": "/missing/cwd",
-                        "UV_CACHE_DIR": "/missing/cache",
-                        "PYTHONHOME": "/missing/python",
-                        "PYTHONPATH": "/missing/path",
-                        "TMPDIR": "/missing/tmp",
-                    }
-                result = subprocess.run(  # nosec B603
-                    ["/bin/bash", str(ACTION / "update.sh")],
-                    check=False,
-                    cwd=caller,
-                    env=env,
-                    capture_output=True,
-                    text=True,
-                    timeout=30,
+            self.assertEqual((output / "files/.uv-version").read_text(), "0.12.10\n")
+            self.assertEqual(
+                (output / "files/.github/renovate.json").read_text(),
+                '{"constraints": {"uv": "0.12.10"}}\n',
+            )
+            self.assertEqual(
+                (output / "files/requirements/requirements-saltbox.txt").read_text(),
+                "# stable fixture lock\nfixture==1.0\n",
+            )
+            # The preflight's, the lock's and Saltbox CI's recompile.
+            self.assertEqual(
+                sum(call["args"][:2] == ["pip", "compile"] for call in calls), 3
+            )
+            self.assertEqual(git(self.repo, "rev-parse", "HEAD"), self.original)
+            results.append(result.stdout)
+        self.assertEqual(results[0], results[1])
+
+    def test_uv_archive_is_checked_against_the_published_sha256(self):
+        result, _, _ = self.run_update("checked")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        base = "https://github.com/astral-sh/uv/releases/download/0.12.10/uv-x86_64-unknown-linux-gnu.tar.gz"
+        self.assertEqual(
+            (self.root / "curl-checked.log").read_text().splitlines(),
+            [base, base + ".sha256"],
+        )
+
+    def test_checksum_failure_stops_before_uv_runs(self):
+        digest = hashlib.sha256(self.archive.read_bytes()).hexdigest()
+        other = "0" * 64
+        for name, published, message in (
+            (
+                "mismatch",
+                f"{other}  uv-x86_64-unknown-linux-gnu.tar.gz\n",
+                f"uv-x86_64-unknown-linux-gnu.tar.gz's SHA-256 is {digest}, not the published {other}",
+            ),
+            (
+                "other-asset",
+                f"{digest}  uv-aarch64-unknown-linux-gnu.tar.gz\n",
+                "not one SHA-256 line naming it",
+            ),
+            (
+                "two-lines",
+                self.published + self.published,
+                "not one SHA-256 line naming it",
+            ),
+            ("empty", "", "not one SHA-256 line naming it"),
+            (
+                "upper-case",
+                f"{digest.upper()}  uv-x86_64-unknown-linux-gnu.tar.gz\n",
+                "not one SHA-256 line naming it",
+            ),
+        ):
+            with self.subTest(case=name):
+                result, output, calls = self.run_update(
+                    name, extra={"TEST_UV_SHA256": published}
                 )
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertIn("+3.12.14", result.stdout)
-                self.assertIn("+0.12.10", result.stdout)
-                self.assertIn('+{"constraints": {"uv": "0.12.10"}}', result.stdout)
-                self.assertNotIn("sb-python-action-", result.stdout)
-                self.assertEqual((output / "changed").read_text(), "true\n")
-                self.assertEqual((output / "base-commit").read_text(), original)
-                self.assertEqual(
-                    (output / "files/.python-version").read_text(), "3.12.14\n"
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertIn(message, result.stderr)
+                self.assertEqual(calls, [], "uv ran before its archive was checked")
+                self.assertFalse(output.exists())
+        result, _, _ = self.run_update(
+            "binary-mode",
+            extra={"TEST_UV_SHA256": f"{digest} *uv-x86_64-unknown-linux-gnu.tar.gz\n"},
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def compiles(self, calls):
+        return [call for call in calls if call["args"][:2] == ["pip", "compile"]]
+
+    def test_both_compiles_resolve_behind_the_seven_day_age_floor(self):
+        before = datetime.now(timezone.utc).replace(microsecond=0)
+        result, _, calls = self.run_update("age-floor")
+        after = datetime.now(timezone.utc)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        compiles = self.compiles(calls)
+        self.assertEqual(len(compiles), 3, calls)
+        floors = set()
+        for call in compiles[:2]:
+            args = call["args"]
+            self.assertEqual(args.count("--exclude-newer"), 1, args)
+            floors.add(args[args.index("--exclude-newer") + 1])
+        self.assertEqual(len(floors), 1, floors)
+        (floor,) = floors
+        self.assertRegex(floor, r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+        at = datetime.strptime(floor, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        self.assertLessEqual(before - timedelta(days=7), at)
+        self.assertLessEqual(at, after - timedelta(days=7))
+        self.assertIn(
+            f"published before {floor} (7-day age floor), but for the 2 master's lock pins",
+            result.stderr,
+        )
+        # Saltbox's CI recompiles with the header's command, which has none.
+        custom = compiles[1]["args"][
+            compiles[1]["args"].index("--custom-compile-command") + 1
+        ]
+        self.assertNotIn("exclude-newer", custom)
+        self.assertNotIn("--exclude-newer", compiles[2]["args"])
+        self.assertNotIn("--exclude-newer-package", compiles[2]["args"])
+
+    def test_master_lock_pins_are_kept_and_exempt_from_the_floor(self):
+        before = datetime.now(timezone.utc).replace(microsecond=0)
+        result, _, calls = self.run_update("pins")
+        after = datetime.now(timezone.utc)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        compiles = self.compiles(calls)
+        for call in compiles:
+            # Every compile starts from master's lock, whose pins uv keeps;
+            # the CI recompile from the lock this run wrote.
+            self.assertEqual(
+                call["seed"],
+                MASTER_LOCK
+                if call is not compiles[2]
+                else "# stable fixture lock\nfixture==1.0\n",
+            )
+        for call in compiles[:2]:
+            args = call["args"]
+            exempt = [
+                args[i + 1]
+                for i, a in enumerate(args)
+                if a == "--exclude-newer-package"
+            ]
+            self.assertEqual(
+                [e.split("=")[0] for e in exempt], ["fixture", "young-pkg"]
+            )
+            for e in exempt:
+                at = datetime.strptime(e.split("=")[1], "%Y-%m-%dT%H:%M:%SZ").replace(
+                    tzinfo=timezone.utc
                 )
-                self.assertEqual(
-                    (output / "files/.uv-version").read_text(), "0.12.10\n"
-                )
-                self.assertEqual(
-                    (output / "files/.github/renovate.json").read_text(),
-                    '{"constraints": {"uv": "0.12.10"}}\n',
-                )
-                self.assertEqual(
-                    (
-                        output / "files/requirements/requirements-saltbox.txt"
-                    ).read_text(),
-                    "# stable fixture lock\nfixture==1.0\n",
-                )
-                calls = [json.loads(line) for line in log.read_text().splitlines()]
-                self.assertEqual(
-                    sum(call["args"][:2] == ["pip", "compile"] for call in calls), 2
-                )
-                self.assertEqual(git(repo, "rev-parse", "HEAD"), original)
-                results.append(result.stdout)
-            self.assertEqual(results[0], results[1])
+                self.assertLessEqual(before, at)
+                self.assertLessEqual(at, after)
+
+    def test_a_lock_saltbox_ci_would_not_reproduce_is_refused(self):
+        result, output, calls = self.run_update(
+            "late-wheel", extra={"TEST_UV_LATE_WHEEL": "1"}
+        )
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn(
+            "Saltbox's CI, recompiling without the age floor, would not reproduce this lock",
+            result.stderr,
+        )
+        self.assertIn("--hash=sha256:late", result.stderr)
+        self.assertEqual(len(self.compiles(calls)), 3)
+        self.assertFalse(output.exists())
+
+    def test_a_failed_compile_stops_the_run_after_naming_the_age_floor(self):
+        result, output, calls = self.run_update(
+            "unresolved", extra={"TEST_UV_COMPILE_FAILS": "1"}
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("(7-day age floor)", result.stderr)
+        self.assertIn("no solution found", result.stderr)
+        self.assertEqual(len(self.compiles(calls)), 1)
+        self.assertFalse(output.exists())
+
+
+# Master's lock in the fixture Saltbox: two pins, as uv writes them.
+MASTER_LOCK = """# This file was autogenerated by uv via the following command:
+#    uv pip compile --python-version 3.12.13 --generate-hashes --output-file requirements/requirements-saltbox.txt requirements/requirements-saltbox.in
+fixture==0.9 \\
+    --hash=sha256:1111111111111111111111111111111111111111111111111111111111111111
+    # via -r requirements/requirements-saltbox.in
+young-pkg==2.0 \\
+    --hash=sha256:2222222222222222222222222222222222222222222222222222222222222222
+    # via fixture
+"""
 
 
 UV_FIXTURE = r"""#!/usr/bin/python3
@@ -402,8 +577,12 @@ for key in ["UV_CONFIG_FILE", "UV_WORKING_DIR", "PYTHONHOME", "PYTHONPATH", "UV_
         sys.exit("ambient setting reached managed uv: " + key)
 if os.environ.get("SSL_CERT_FILE") != os.environ["TEST_CERT_FILE"]:
     sys.exit("relative certificate resolved from the wrong directory")
+entry = dict(args=args, cwd=os.getcwd())
+if args[:2] == ["pip", "compile"]:
+    output = pathlib.Path(args[args.index("--output-file")+1])
+    entry["seed"] = output.read_text() if output.exists() else None
 with open(os.environ["TEST_UV_LOG"], "a") as log:
-    log.write(json.dumps(dict(args=args, cwd=os.getcwd())) + "\n")
+    log.write(json.dumps(entry) + "\n")
 python_script = '#!/bin/bash\nif [[ ${1:-} == -I ]]; then shift; fi\nif [[ ${1:-} == --version ]]; then echo "Python 3.12.14"; else exec /usr/bin/python3 -I "$@"; fi\n'
 def executable(path, content):
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -418,7 +597,10 @@ elif args[:2] == ["python", "install"]:
 elif args[:2] == ["python", "find"]:
     print(pathlib.Path(os.environ["UV_PYTHON_INSTALL_DIR"]) / "bin/python3")
 elif args[:2] == ["pip", "compile"]:
-    pathlib.Path(args[args.index("--output-file")+1]).write_text("# stable fixture lock\nfixture==1.0\n")
+    if os.environ.get("TEST_UV_COMPILE_FAILS"):
+        sys.exit("no solution found")
+    late = os.environ.get("TEST_UV_LATE_WHEEL") and "--exclude-newer" not in args
+    pathlib.Path(args[args.index("--output-file")+1]).write_text("# stable fixture lock\nfixture==1.0\n" + ("    --hash=sha256:late\n" if late else ""))
 elif args[0] == "venv":
     venv = pathlib.Path(args[-1])
     executable(venv / "bin/python", python_script)

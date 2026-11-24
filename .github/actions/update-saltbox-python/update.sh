@@ -35,9 +35,13 @@ trap 'rm -rf "$workdir"' EXIT
 archive="$workdir/uv.tar.gz"
 # shellcheck disable=SC1091 # GitHub supplies GITHUB_ACTION_PATH at action runtime.
 source "$GITHUB_ACTION_PATH/download.sh"
-download_with_retry \
-    "https://github.com/astral-sh/uv/releases/download/$uv_version/uv-x86_64-unknown-linux-gnu.tar.gz" \
-    "$archive"
+# The archive is checked against the SHA-256 uv's release publishes beside
+# it (`<asset>.sha256`) before anything reads it.
+uv_asset=uv-x86_64-unknown-linux-gnu.tar.gz
+uv_release_url="https://github.com/astral-sh/uv/releases/download/$uv_version"
+download_with_retry "$uv_release_url/$uv_asset" "$archive"
+download_with_retry "$uv_release_url/$uv_asset.sha256" "$archive.sha256"
+verify_sha256 "$archive" "$archive.sha256" "$uv_asset"
 tar --extract --gzip --file "$archive" --directory "$workdir"
 uv_bin=$(find "$workdir" -type f -path '*/uv' -print -quit)
 if [[ -z "$uv_bin" ]]; then
@@ -111,9 +115,39 @@ if [[ "$(printf '%s\n%s\n' "$current_uv" "$uv_version" | sort -V | tail -n 1)" !
     echo "sb's uv $uv_version would downgrade Saltbox's uv requirement $current_uv" >&2
     exit 1
 fi
+# The age floor (the maintainer, 2026-11-24): what the updater resolves
+# itself comes from the packages PyPI had 7 days ago (uv's
+# --exclude-newer, an RFC 3339 timestamp:
+# https://docs.astral.sh/uv/reference/cli/#uv-pip-compile--exclude-newer),
+# so a release younger than that, while a compromised upload may not yet
+# be reported and yanked, isn't brought in by it; a fix released a week
+# ago is.
+# - The versions master's lock pins are Saltbox's own choice (its
+#   Renovate, its maintainers), and are kept as they are: both compiles start
+#   from that lock, whose pins uv keeps
+#   (https://docs.astral.sh/uv/pip/compile/#upgrading-requirements), and
+#   each package it pins is exempt from the floor
+#   (--exclude-newer-package NAME=now). Without that the floor would
+#   downgrade any pin younger than 7 days, or find no resolution for a
+#   direct requirement pinned to one.
+# - So the floor covers each package new to the lock. A pinned package
+#   that the new Python makes uv choose afresh is still exempt: the limit
+#   of a per-package exemption.
+exclude_newer_days=7
+exclude_newer=$(date -u -d "@$(($(date -u +%s) - exclude_newer_days * 86400))" +%Y-%m-%dT%H:%M:%SZ)
+resolved_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+master_lock="$workdir/saltbox/requirements/requirements-saltbox.txt"
+cp -- "$master_lock" "$workdir/master-lock.txt"
+age_floor=(--exclude-newer "$exclude_newer")
+while IFS= read -r name; do
+    age_floor+=(--exclude-newer-package "$name=$resolved_at")
+done < <(sed -nE 's/^([A-Za-z0-9][A-Za-z0-9._-]*)==[^ ]+.*$/\1/p' "$workdir/master-lock.txt")
+echo "Resolving from packages published before $exclude_newer (${exclude_newer_days}-day age floor), but for the $(((${#age_floor[@]} - 2) / 2)) master's lock pins" >&2
 candidate_lock="$workdir/requirements-saltbox.txt"
+cp -- "$workdir/master-lock.txt" "$candidate_lock"
 managed_python_command "$workdir" uv "$workdir/saltbox" "$uv_bin" pip compile \
     --python-version "$candidate" \
+    "${age_floor[@]}" \
     --generate-hashes \
     --output-file "$candidate_lock" \
     requirements/requirements-saltbox.in
@@ -153,12 +187,33 @@ path.write_text(updated, encoding="utf-8")
 PY
     # Saltbox CI regenerates this public command; keep launch isolation out of
     # the persisted header so its byte-for-byte lockfile check stays stable.
+    local saltbox_command="uv pip compile --python-version $candidate --generate-hashes --output-file requirements/requirements-saltbox.txt requirements/requirements-saltbox.in"
+    managed_python_command "$workdir" uv "$workdir/saltbox" "$uv_bin" pip compile \
+        --python-version "$candidate" \
+        "${age_floor[@]}" \
+        --generate-hashes \
+        --custom-compile-command "$saltbox_command" \
+        --output-file requirements/requirements-saltbox.txt \
+        requirements/requirements-saltbox.in
+    # Saltbox's CI recompiles the lock with that command, with no age
+    # floor, and requires the same bytes (its
+    # .github/scripts/check-python-environment.sh). uv's floor leaves out
+    # each file uploaded after it, so a wheel uploaded since for a version
+    # the floor picked would be in CI's lock and not in this one: refuse a
+    # lock CI wouldn't reproduce.
+    local ci_lock="$workdir/saltbox-ci-lock.txt"
+    cp -- "$workdir/saltbox/requirements/requirements-saltbox.txt" "$ci_lock"
     managed_python_command "$workdir" uv "$workdir/saltbox" "$uv_bin" pip compile \
         --python-version "$candidate" \
         --generate-hashes \
-        --custom-compile-command "uv pip compile --python-version $candidate --generate-hashes --output-file requirements/requirements-saltbox.txt requirements/requirements-saltbox.in" \
-        --output-file requirements/requirements-saltbox.txt \
+        --custom-compile-command "$saltbox_command" \
+        --output-file "$ci_lock" \
         requirements/requirements-saltbox.in
+    if ! cmp -s -- "$workdir/saltbox/requirements/requirements-saltbox.txt" "$ci_lock"; then
+        echo "Saltbox's CI, recompiling without the age floor, would not reproduce this lock:" >&2
+        diff -- "$workdir/saltbox/requirements/requirements-saltbox.txt" "$ci_lock" >&2 || true
+        exit 1
+    fi
 }
 
 # shellcheck source-path=SCRIPTDIR source=commit.sh # GitHub supplies GITHUB_ACTION_PATH.
