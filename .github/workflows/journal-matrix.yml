@@ -85,8 +85,11 @@ jobs:
         run: |
           bin=$(crates/journal/tests/example.sh)
           echo "bin=$bin" >> "$GITHUB_OUTPUT"
+      # check.sh's clippy step's arguments: disallowed_methods binds
+      # library and binary code only, which check.sh's next step (in
+      # ci.yml) checks; the tests here start threads directly.
       - name: Clippy
-        run: cargo clippy --locked -p sb-journal --all-targets -- -D warnings
+        run: cargo clippy --locked -p sb-journal --all-targets -- -D warnings -A clippy::disallowed_methods
       - name: Tests
         run: cargo test --locked -p sb-journal
       - name: Release rows
