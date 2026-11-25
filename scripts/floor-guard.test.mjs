@@ -1327,15 +1327,22 @@ const stubs = (versions, arch) => {
   // (under TMPDIR, deleted at the end).
   // A decoy outside that copy is started beside it, then a helper shell's
   // stand-in. Their pids (leak, decoy, shell) go to LEAK_PIDS, the TMPDIR
-  // to LEAK_PIDS.tmpdir.
+  // to LEAK_PIDS.tmpdir. The two copies of sleep keep its name: Ubuntu
+  // 26.04's sleep is uutils' multicall binary (rust-coreutils 0.10.0),
+  // which takes the program to be from its own file name, and a copy
+  // named sb exits at once ("coreutils: unknown program 'sb'"). Whether
+  // each copy runs as sleep (`sleep 0`) goes to LEAK_PIDS.copies first,
+  // "runs" or "fails" a line, so that a stand-in that never ran can't
+  // pass for one the sweep killed.
   out.cargo += 'if [ "$1" = mutants ] && [ -n "${LEAK_PIDS:-}" ]; then\n'
     + '  case " $* " in *" --list "*) case " $* " in *" -p sb-foo "*) echo "crates/foo/src/lib.rs:1:1: replace f with ()" ;; esac; exit 0 ;; esac\n'
     + '  echo "${TMPDIR-unset}" >"$LEAK_PIDS.tmpdir"\n'
     + '  copy="${TMPDIR:-/tmp}/cargo-mutants-repo-stub.tmp"; $LEAK_MKDIR -p "$copy/target/debug" "$LEAK_DECOY_DIR"\n'
-    + '  $LEAK_CP "$LEAK_SLEEP" "$copy/target/debug/sb"; $LEAK_CP "$LEAK_SLEEP" "$LEAK_DECOY_DIR/sb"\n'
+    + '  $LEAK_CP "$LEAK_SLEEP" "$copy/target/debug/sleep"; $LEAK_CP "$LEAK_SLEEP" "$LEAK_DECOY_DIR/sleep"\n'
+    + '  for c in "$copy/target/debug/sleep" "$LEAK_DECOY_DIR/sleep"; do if "$c" 0; then echo runs; else echo "fails ($?)"; fi; done >"$LEAK_PIDS.copies" 2>&1\n'
     // One after the other, so the leak's pid is the first line.
     + '  k=0\n'
-    + '  for exe in "$copy/target/debug/sb" "$LEAK_DECOY_DIR/sb"; do\n'
+    + '  for exe in "$copy/target/debug/sleep" "$LEAK_DECOY_DIR/sleep"; do\n'
     + '    k=$((k + 1))\n'
     + '    $LEAK_SETSID /bin/sh -c \'trap "" HUP INT TERM; echo $$ >>"$1"; exec "$0" 600\' "$exe" "$LEAK_PIDS" </dev/null >/dev/null 2>&1 &\n'
     + '    n=0; while [ "$($LEAK_WC -l <"$LEAK_PIDS")" -lt "$k" ] && [ $((n += 1)) -lt 100 ]; do $LEAK_SLEEP 0.05; done\n'
@@ -1358,16 +1365,18 @@ const stubs = (versions, arch) => {
   // copy, orphaned too, and an orphaned shell's stand-in (its executable
   // outside the copy, its working directory in it). Their pids go to
   // LEAK_DURING in that order. A live child of the copy,
-  // its parent this run, stands for a test's sb. What is still running
-  // when the wait ends goes to LEAK_DURING.result.
+  // its parent this run, stands for a test's sb. Whether the copies run
+  // goes to LEAK_DURING.copies, as for LEAK_PIDS, and what is still
+  // running when the wait ends to LEAK_DURING.result.
   out.cargo += 'if [ "$1" = mutants ] && [ -n "${LEAK_DURING:-}" ]; then\n'
     + '  case " $* " in *" --list "*) case " $* " in *" -p sb-foo "*) echo "crates/foo/src/lib.rs:1:1: replace f with ()" ;; esac; exit 0 ;; esac\n'
     + '  copy="${TMPDIR:-/tmp}/cargo-mutants-repo-stub.tmp"; $LEAK_MKDIR -p "$copy/target/debug" "$LEAK_DECOY_DIR"\n'
-    + '  $LEAK_CP "$LEAK_SLEEP" "$copy/target/debug/sb"; $LEAK_CP "$LEAK_SLEEP" "$LEAK_DECOY_DIR/sb"\n'
-    + '  "$copy/target/debug/sb" 600 </dev/null >/dev/null 2>&1 &\n'
+    + '  $LEAK_CP "$LEAK_SLEEP" "$copy/target/debug/sleep"; $LEAK_CP "$LEAK_SLEEP" "$LEAK_DECOY_DIR/sleep"\n'
+    + '  for c in "$copy/target/debug/sleep" "$LEAK_DECOY_DIR/sleep"; do if "$c" 0; then echo runs; else echo "fails ($?)"; fi; done >"$LEAK_DURING.copies" 2>&1\n'
+    + '  "$copy/target/debug/sleep" 600 </dev/null >/dev/null 2>&1 &\n'
     + '  live=$!\n'
     + '  k=0\n'
-    + '  for exe in "$copy/target/debug/sb" "$LEAK_DECOY_DIR/sb"; do\n'
+    + '  for exe in "$copy/target/debug/sleep" "$LEAK_DECOY_DIR/sleep"; do\n'
     + '    k=$((k + 1))\n'
     // The subshell ends at once, so init adopts the process.
     + '    ( $LEAK_SETSID /bin/sh -c \'trap "" HUP INT TERM; echo $$ >>"$1"; exec "$0" 600\' "$exe" "$LEAK_DURING" </dev/null >/dev/null 2>&1 & )\n'
@@ -1822,6 +1831,7 @@ test('check.sh: a signal-ignoring process left by a mutation pass is gone after 
     started = readFileSync(pids, 'utf8').split('\n').filter(Boolean).map(Number);
     passes(r, 'task');
     assert.equal(started.length, 3, r.output);
+    assert.equal(readFileSync(pids + '.copies', 'utf8'), 'runs\nruns\n', 'a copy of sleep does not run as sleep:\n' + r.output);
     const passTmp = readFileSync(pids + '.tmpdir', 'utf8').trim();
     assert.match(passTmp, new RegExp('^' + dir + '/sb-mutants-0\\.\\w+$'), r.output);
     assert.ok(!existsSync(passTmp), 'the pass directory is left: ' + passTmp);
@@ -1867,7 +1877,8 @@ function leakDuringPass(age) {
     const r = checkRun('task', { work: { 'crates/foo/src/lib.rs': 'pub fn f() {}\n' }, logDir: dir, env });
     started = readFileSync(pids, 'utf8').split('\n').filter(Boolean).map(Number);
     const left = existsSync(pids + '.result') ? readFileSync(pids + '.result', 'utf8') : '';
-    return { r, started, left, decoyAlive: started.length > 1 && alive(started[1]) };
+    const copies = existsSync(pids + '.copies') ? readFileSync(pids + '.copies', 'utf8') : '';
+    return { r, started, left, copies, decoyAlive: started.length > 1 && alive(started[1]) };
   } finally {
     for (const pid of started) { try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ } }
     rmSync(dir, { recursive: true, force: true });
@@ -1948,9 +1959,10 @@ test('check.sh: the test runs start with SIGINT, SIGQUIT and SIGTERM not ignored
 });
 
 test('check.sh: an orphan of a mutation pass is killed during it, a live child and a process outside are not', () => {
-  const { r, started, left, decoyAlive } = leakDuringPass('0');
+  const { r, started, left, copies, decoyAlive } = leakDuringPass('0');
   passes(r, 'task');
   assert.equal(started.length, 3, r.output);
+  assert.equal(copies, 'runs\nruns\n', 'a copy of sleep does not run as sleep:\n' + r.output);
   assert.doesNotMatch(left, /orphan/, 'the orphan ran on until the pass ended:\n' + r.output);
   assert.doesNotMatch(left, /shell/, 'the orphaned shell ran on until the pass ended:\n' + r.output);
   assert.match(left, /^live$/m, 'the live child was killed during the pass:\n' + r.output);
@@ -1966,9 +1978,10 @@ test('check.sh: an orphan of a mutation pass is killed during it, a live child a
 // any test (120 s) is killed during the pass. The sweep after the pass
 // still ends it.
 test('check.sh: a young orphan of a mutation pass is left running during it by default', () => {
-  const { r, started, left } = leakDuringPass(undefined);
+  const { r, started, left, copies } = leakDuringPass(undefined);
   passes(r, 'task');
   assert.equal(started.length, 3, r.output);
+  assert.equal(copies, 'runs\nruns\n', 'a copy of sleep does not run as sleep:\n' + r.output);
   assert.match(left, /^orphan$/m, 'a young orphan was killed during the pass:\n' + r.output);
   assert.match(left, /^shell$/m, 'a young orphaned shell was killed during the pass:\n' + r.output);
   assert.doesNotMatch(r.output, /during the pass/, r.output);
