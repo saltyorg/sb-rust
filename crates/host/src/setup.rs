@@ -40,6 +40,12 @@ pub enum SetupError {
     DesktopQuery(PackageQueryError),
 }
 
+/// The variable a test build of sb reads its machine from instead of
+/// `uname(2)` ([`Setup::for_sb`]): sb's end-to-end tests run on any CPU,
+/// and setup refuses all but `x86_64`.
+#[cfg(feature = "testing")]
+pub const MACHINE_VAR: &str = "SB_TEST_MACHINE";
+
 /// The setup checks, with the programs and the machine they read.
 #[derive(Debug, Clone)]
 pub struct Setup {
@@ -65,6 +71,19 @@ impl Setup {
             timeout: CHECK_TIMEOUT,
             machine,
         }
+    }
+
+    /// The checks `sb` runs with: [`Setup::new`]; in a build with the
+    /// `testing` feature (the sb `cargo test` runs), the machine
+    /// [`MACHINE_VAR`] names when it is set, as python-env's `for_sb`
+    /// takes its stand-in tree.
+    #[must_use]
+    pub fn for_sb() -> Self {
+        #[cfg(feature = "testing")]
+        if std::env::var_os(MACHINE_VAR).is_some() {
+            return Self::new().with_machine(|| std::env::var(MACHINE_VAR).unwrap_or_default());
+        }
+        Self::new()
     }
 
     /// Run `program` as systemd-detect-virt instead (tests).

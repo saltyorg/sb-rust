@@ -26,6 +26,7 @@ use std::process::{Command, Output};
 use assert_cmd::prelude::*;
 use predicates::prelude::*;
 use raw_pty::Pty;
+use sb_host::setup::MACHINE_VAR;
 use sb_ops::testing::{Host, Remote, git};
 use sb_python_env::testing::{ROOT_VAR, Tree};
 use sb_release::testing::BASES_VARIABLE;
@@ -104,7 +105,8 @@ impl World {
     }
 
     /// `program <args>` in the namespace, with sb's test environment and
-    /// the world's.
+    /// the world's, on an `x86_64` machine whatever the host's (setup
+    /// refuses any other, as sb-go does).
     fn namespaced(&self, program: &Path, args: &[&str]) -> Command {
         let prepare = format!(
             "mkdir -p /etc/apt/sources.list.d\nmount --bind '{}' /etc/os-release",
@@ -114,6 +116,7 @@ impl World {
         common::apply_sb_env(&mut cmd);
         cmd.env(ROOT_VAR, self.tree.root.path())
             .env(BASES_VARIABLE, self.tree.bases())
+            .env(MACHINE_VAR, "x86_64")
             .env("SB_SALTBOX_DIR", self.root())
             .env("SB_LOG_DIR", self.logs())
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
@@ -189,6 +192,35 @@ fn setup_is_hidden_with_sb_gos_flags_and_the_branch_ones() {
         .args(["setup", "--keep-branch", "--reset-branch"])
         .assert()
         .code(2);
+}
+
+/// An ARM machine is refused in sb-go's words, before the checkout or
+/// any program it would run (host spec; sb-go's `CheckArchitecture`).
+#[test]
+fn another_cpu_is_refused_before_any_change() {
+    if !root_gate::requested() {
+        return;
+    }
+    let world = World::new();
+    let sb = test_build();
+    let out = world
+        .namespaced(
+            Path::new("/usr/bin/setsid"),
+            &["-w", sb.as_str(), "setup", "--color=never"],
+        )
+        .env(MACHINE_VAR, "aarch64")
+        .output()
+        .expect("run sb setup");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "{stderr}");
+    assert!(
+        stderr.contains(
+            "UNSUPPORTED CPU Architecture - Install cancelled: aarch64 is not supported. Supported: x86_64"
+        ),
+        "{stderr}"
+    );
+    assert!(!world.root().exists(), "{stderr}");
+    assert!(world.host.calls().is_empty(), "{:?}", world.host.calls());
 }
 
 /// The guard's refusals through the binary: before any step, nothing run.

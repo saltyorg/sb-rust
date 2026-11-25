@@ -46,7 +46,7 @@ pub fn setup(args: &SetupArgs, shutdown: &Shutdown, log: Option<&RunLog>) -> any
         log.id().clone_into(&mut python.run_id);
     }
     let (checks, apt, dirs, locale) = (
-        sb_host::setup::Setup::new(),
+        sb_host::setup::Setup::for_sb(),
         Apt::new(),
         Dirs::saltbox(),
         Locale::system(),
