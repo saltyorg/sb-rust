@@ -307,9 +307,12 @@ The maintainer's decisions of 2026-11-18.
       architectures; prerelease tags: `_beta` only);
     - checks each binary's `version --json` (the tag's version, the
       asset's channel, a valid `uv_version`);
-    - publishes the release, as a prerelease for rc tags, through the
-      `release` environment, whose required reviewers approve it, with
-      notes made from the commits ("Release notes and announcement");
+    - publishes the release, as a prerelease for rc tags, with notes
+      made from the commits ("Release notes and announcement"). No
+      environment and no required reviewer stand in between (the
+      maintainer, 2026-11-25), so pushing the tag, which the
+      repository's `version tags` ruleset restricts, is the decision to
+      publish;
     - then announces it on Discord and, for a stable release only,
       updates Saltbox's Python toolchain ("Saltbox's toolchain update").
   - The release runs only for a commit on `main` whose ci.yml run
@@ -374,12 +377,9 @@ when `scripts/` or `.github/` changed).
   token. It builds the payload on every release (so a broken one shows)
   and posts it when the `DISCORD_WEBHOOK` secret is set; unset, it says
   `DISCORD_WEBHOOK isn't set: no announcement` and passes. The secret is
-  an environment secret of the `release` environment, which only the
-  release tags may use, and the job declares `environment: release`
-  (the maintainer, 2026-11-24): a repository secret would reach every
-  workflow on every branch. The job so waits for the environment's
-  required reviewers too, after the publication. The payload keeps
-  sb-go's look:
+  a repository secret, as announce uses no environment (the maintainer,
+  2026-11-25); only the post step reads it, and GitHub passes no secret
+  to a fork's pull request. The payload keeps sb-go's look:
   - user name `GitHub` and its avatar, no mentions parsed
     (`allowed_mentions`); one embed titled `🚀 New Release:
     <tag>`, colour 5814783, linking the release page, the time of the
@@ -866,13 +866,13 @@ No test reaches the network or replaces an installed sb.
   release, which fetches sb-rust's newest release (sb-go's change).
   sb-rust keeps `version --json`'s `uv_version` and bare tags, as the
   update-saltbox-python action reads sb's version that way.
-- **The workflows are unrun:** written locally, never pushed. The
-  `release` environment is set up (the maintainer, 2026-11-24): the
-  maintainer as its required reviewer, its `DISCORD_WEBHOOK` secret and
-  its limit to the release tags. The other settings they rely on (a
-  ruleset on who may push version tags, sb-rust among the selected
-  repositories of the Saltbox App's organisation variable and secret)
-  wait for the maintainer. GitHub's 22.04 runners are
+- **The workflows are unrun:** written locally, never pushed. Publish
+  and announce use no environment, and `DISCORD_WEBHOOK` is a
+  repository secret (the maintainer, 2026-11-25). The `version tags`
+  ruleset limits creating, moving and deleting version tags to the role
+  it lets bypass it. The Saltbox jobs' settings (sb-rust among the
+  selected repositories of the Saltbox App's organisation variable and
+  secret) wait for the maintainer. GitHub's 22.04 runners are
   deprecated from 2026-09-17 and unsupported from 2027-04-17; the 22.04
   jobs need a plan by then.
 - The proxy and GitHub are trusted for the digest; a compromised GitHub

@@ -302,14 +302,14 @@ jobs:
           path: ${{ env.ASSET }}
           if-no-files-found: error
 
-  # The `release` environment's required reviewers approve each
-  # publication, and the announcement after it (set up with the
-  # repository: a remote setting the maintainer authorises separately).
+  # No environment and no required reviewer (sb-rust has none set up on
+  # GitHub, the maintainer, 2026-11-25): pushing the version tag, which
+  # the repository's tag ruleset restricts, is the decision to publish,
+  # and plan above checks the tagged commit.
   publish:
     name: publish
     needs: [plan, build]
     runs-on: ubuntu-24.04
-    environment: release
     permissions:
       contents: write # to create the release and upload its assets
     steps:
@@ -381,18 +381,17 @@ jobs:
           fail_on_unmatched_files: true
 
   # sb-go's "Notify Discord" step, as its own job: no write token, and a
-  # failed post leaves the publication alone (re-run this job only, which
-  # the environment's reviewers approve again). The payload is built (and
-  # so checked) on every release; it is sent when the DISCORD_WEBHOOK
-  # secret is set. The secret is the `release` environment's, which only
-  # the release tags may use (the maintainer, 2026-11-24); only a job
-  # that references the environment gets it, once approved:
-  # https://docs.github.com/actions/reference/workflows-and-actions/deployments-and-environments#environment-secrets
+  # failed post leaves the publication alone (re-run this job only). The
+  # payload is built (and so checked) on every release; it is sent when
+  # the DISCORD_WEBHOOK secret is set. The secret is a repository secret
+  # (publish and announce use no environment, the maintainer,
+  # 2026-11-25), read by this step alone; GitHub passes none to a fork's
+  # pull request:
+  # https://docs.github.com/actions/how-tos/write-workflows/choose-what-workflows-do/use-secrets
   announce:
     name: announce on Discord
     needs: [plan, publish]
     runs-on: ubuntu-24.04
-    environment: release
     timeout-minutes: 10
     permissions:
       contents: read
@@ -414,7 +413,7 @@ jobs:
             "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" >"$RUNNER_TEMP/discord.json"
       - name: Notify Discord
         env:
-          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }} # zizmor: ignore[secrets-outside-env] announce uses no environment; DISCORD_WEBHOOK is a repository secret (see the job's comment)
         run: |
           if [[ -z $DISCORD_WEBHOOK ]]; then
             echo "DISCORD_WEBHOOK isn't set: no announcement"
