@@ -491,6 +491,11 @@ pub struct Sources {
     pub disks: fn() -> Option<Vec<Mounted>>,
     /// How long `disks` may take.
     pub disks_limit: Duration,
+    /// The machine (sysinfo's `cpu_arch`, uname's), which decides how
+    /// the CPU rows are read: on ARM, lscpu's way.
+    pub arch: fn() -> String,
+    /// On ARM, the CPU part's name as lscpu gives it ([`Arm::brand`]).
+    pub arm_brand: fn() -> String,
 }
 
 impl Default for Sources {
@@ -507,8 +512,23 @@ impl Default for Sources {
             zpool: PathBuf::from("zpool"),
             disks: mounted_disks,
             disks_limit: DISKS_TIMEOUT,
+            arch: System::cpu_arch,
+            arm_brand: sysinfo_brand,
         }
     }
+}
+
+/// sysinfo's name for this host's CPU part, which it takes from
+/// cpuinfo's `CPU implementer` and `CPU part` as lscpu does; empty when
+/// sysinfo can't read the CPUs.
+/// <https://docs.rs/sysinfo/0.40.0/sysinfo/struct.Cpu.html#method.brand>
+fn sysinfo_brand() -> String {
+    System::new_with_specifics(RefreshKind::nothing().with_cpu(CpuRefreshKind::nothing()))
+        .inspect_err(|err| tracing::warn!(what = "CPU brand", error = %err, "value not read"))
+        .ok()
+        .as_ref()
+        .and_then(|system| system.cpus().first())
+        .map_or_default(|cpu| cpu.brand().to_owned())
 }
 
 /// This host's [`Facts`]: [`gather_local`], then [`with_network`].
@@ -686,19 +706,10 @@ async fn zpools(program: &Path, token: &CancellationToken) -> Usage {
 /// sysinfo's calls: <https://docs.rs/sysinfo/0.40.0/sysinfo/struct.System.html>.
 fn read_host(sources: &Sources) -> anyhow::Result<Facts> {
     let logged = |what: &'static str| move |err: &dyn std::fmt::Display| tracing::warn!(what, error = %err, "value not read");
-    let arch = System::cpu_arch();
-    let arm = (arch.starts_with("aarch64") || arch.starts_with("arm")).then(|| {
-        let system =
-            System::new_with_specifics(RefreshKind::nothing().with_cpu(CpuRefreshKind::nothing()))
-                .inspect_err(|err| logged("CPU brand")(err))
-                .ok();
-        Arm {
-            brand: system
-                .as_ref()
-                .and_then(|system| system.cpus().first())
-                .map_or_default(|cpu| cpu.brand().to_owned()),
-            max_mhz: max_mhz(&max_freqs(&sources.cpus)),
-        }
+    let arch = (sources.arch)();
+    let arm = (arch.starts_with("aarch64") || arch.starts_with("arm")).then(|| Arm {
+        brand: (sources.arm_brand)(),
+        max_mhz: max_mhz(&max_freqs(&sources.cpus)),
     });
     let cpuinfo = read_file(&sources.cpuinfo, logged("cpuinfo")).unwrap_or_default();
     let os_release = read_file(&sources.os_release, logged("os-release"));
@@ -1331,6 +1342,11 @@ Region               Saxony"
                 }])
             },
             disks_limit: DISKS_TIMEOUT,
+            // An x86_64 machine whatever the host's, so the CPU rows are
+            // the given cpuinfo's: on an ARM host sysinfo's name and
+            // cpufreq's maximum would replace them.
+            arch: || "x86_64".to_owned(),
+            arm_brand: || unreachable!("asked for an ARM CPU's name on x86_64"),
         }
     }
 
@@ -1358,8 +1374,50 @@ Region               Saxony"
         // This host's own values: present, whatever they are.
         assert!(facts.uptime.is_some_and(|up| up > 0));
         assert!(facts.load.is_some());
-        assert_eq!(facts.arch, std::env::consts::ARCH);
+        assert_eq!(facts.arch, "x86_64");
         assert!(facts.kernel.is_some_and(|k| !k.is_empty()));
+    }
+
+    /// On ARM the CPU rows are lscpu's, as bench.sh's: sysinfo's name for
+    /// the part and cpufreq's largest maximum, with cpuinfo's count and
+    /// flags; whatever machine runs the test.
+    #[tokio::test]
+    async fn gather_on_arm_takes_the_parts_name_and_cpufreqs_maximum() {
+        let _spawns = crate::bench::SPAWNS.lock().await;
+        let dir = tempfile::tempdir().expect("dir");
+        std::fs::write(dir.path().join("aarch64"), AARCH64).expect("cpuinfo");
+        for (cpu, khz) in [("cpu0", "2000000\n"), ("cpu1", "3000000\n")] {
+            let freq = dir.path().join("cpus").join(cpu).join("cpufreq");
+            std::fs::create_dir_all(&freq).expect("cpufreq");
+            std::fs::write(freq.join("cpuinfo_max_freq"), khz).expect("max freq");
+        }
+        let sources = Sources {
+            cpuinfo: dir.path().join("aarch64"),
+            cpus: dir.path().join("cpus"),
+            arch: || "aarch64".to_owned(),
+            arm_brand: || "Neoverse-N1".to_owned(),
+            ..sources(dir.path())
+        };
+        let facts = gather(&sources, None, &CancellationToken::new())
+            .await
+            .expect("gather");
+        assert_eq!(
+            facts.cpu,
+            Cpu {
+                model: "Neoverse-N1".to_owned(),
+                cores: 2,
+                mhz: Some("3000.0000".to_owned()),
+                cache: None,
+                aes: true,
+                virt: false,
+            }
+        );
+        assert_eq!(facts.arch, "aarch64");
+    }
+
+    #[test]
+    fn the_default_machine_is_this_hosts() {
+        assert_eq!((Sources::default().arch)(), std::env::consts::ARCH);
     }
 
     #[tokio::test]
