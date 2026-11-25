@@ -151,8 +151,10 @@ jobs:
           scripts/install-check-jsonschema.sh "$RUNNER_TEMP/check-jsonschema" "$RUNNER_TEMP/bin"
           echo "$RUNNER_TEMP/bin" >>"$GITHUB_PATH"
           rustup component add llvm-tools
+      # GITHUB_ACTIONS through sudo too: check.sh full skips its CI
+      # rehearsal here, where ci.yml runs itself.
       - name: check.sh full
-        run: sudo --preserve-env=PATH,HOME,CARGO_HOME,RUSTUP_HOME env "PATH=$PATH" scripts/check.sh full
+        run: sudo --preserve-env=PATH,HOME,CARGO_HOME,RUSTUP_HOME,GITHUB_ACTIONS env "PATH=$PATH" scripts/check.sh full
 
   # The test suite on arm64, natively (its full gate's x86_64-only steps
   # ran above).

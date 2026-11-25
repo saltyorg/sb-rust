@@ -2,3 +2,5 @@
 # insta writes these when a snapshot differs; never committed.
 *.pending-snap
 *.snap.new
+# Python bytecode (the CI rehearsal's job runner and its tests).
+__pycache__/

@@ -70,14 +70,15 @@ tooling.
 | Architecture | Crates depend only along the capability map's "Depends on" column | cargo-deny `bans.deny` with `wrappers`, one entry per crate (`deny.toml`); `check.sh`'s crate check, that each crate but `sb` has its entry (at fast) | full | The compiler can't see the map; cargo-deny can |
 | Binary size | Production glibc binary ≤ 45,711,520 bytes, and `sb version` runs on each release of the host spec's runtime list | `stat` after `cross build --profile production --target x86_64-unknown-linux-gnu` in `build/Dockerfile`'s image of the oldest supported release (`Cross.toml`), in its own target directory (ADR-020); then `docker run` of the binary in an `ubuntu:<release>` container of each release; then the aarch64 production build in the same image, and its `sb version` under QEMU user-mode on the oldest release's arm64 glibc (`build/qemu.Dockerfile`, no binfmt handler); a host of another architecture skips them all with a printed line | full | Never larger than sb-go's binary (2026-10-30); a binary one supported release can't load never ships (ADR-020); arm64 ships too, and its build breaking shows before CI's arm runners (maintainer, 2026-11-18) |
 | Production binary size | at most 21031072 bytes; tolerance at most 5% above it, a headroom shared by the changes until the value is reset | `stat` of the same production glibc build, against that size plus the tolerance; the figures printed every run | full | The finished tree's size; Binary size's ceiling above still holds (maintainer, 2026-11-18, [ADR-025](docs/decisions/ADR-025-ratchet-enforced.md); lowered to the tree's size after the size cut of 2026-11-20) |
+| CI rehearsal | ci.yml's `task` job passes on each of its amd64 runners, rehearsed in a container on that Ubuntu release's root filesystem, provisioned as GitHub's runner images are: the image's apt packages, git and rustup, a non-root `runner` user with passwordless sudo, the checkout at `/home/runner/work/sb-rust/sb-rust` in a 0750 home; the job's steps read from ci.yml and run as the runner runs them (each `run` step as written, each action from its pinned commit, `actions/checkout` replaced by a clone of the tree with its uncommitted changes), so its tools come at ci.yml's versions the way CI installs them and `check.sh task` runs as root through sudo, as a push to main does; its root is the container's, with the capabilities the sandbox and the tests use, so the container is no boundary beyond the gate's own root runs; the job runner's own tests first, on that image's Python | `scripts/ci-rehearsal.sh --arch amd64` (`scripts/ci-rehearsal/`: `job.py` and its tests, `provision.sh`); its arm64 runners by hand, `scripts/ci-rehearsal.sh --arch arm64`: under QEMU user-mode (`rootfs.sh`), in a user namespace mapped to host ids 100000-165535 with a binfmt_misc handler in its own instance, where a write clears the setuid bit root keeps (CAP_FSETID), so sb-config's `owner_and_mode_are_kept_as_root` fails there alone | full, when a file under `.github/`, `scripts/`, `crates/*/tests/` or `.config/`, `rust-toolchain.toml` or `CONSTRAINTS.md` changed; never in GitHub Actions | What only a runner shows fails before a push: a prebuilt tool its release's glibc can't load, a checkout `nobody` can't reach, its release's coreutils (the maintainer, 2026-11-25). Not reproduced: systemd, a VM's kernel (and on arm64 its root), the image's other software and its toolcache (the setup actions download the same builds), the GitHub token, rust-cache's cache service (every run is cold), the post steps, a runner's CPU count |
 | Commit messages | Each commit after the base: a Conventional Commits subject whose description's first letter is lower case, a `Library-check:` line when it changes Rust, a `Review:` line when it changes a file outside `docs/` and `tasks/`, each `Floor-approved:` line in its form; a true merge is skipped | `scripts/check-commit-messages.sh <base> HEAD` | full, when the base isn't HEAD | Public repository rules and Library first (CLAUDE.md) |
 | Review line | The body of every commit that changes a file outside `docs/` and `tasks/` says which reviewers ran, on what diff, and what was fixed or declined | `scripts/check-commit-messages.sh` (`Review:`) | full, when the base isn't HEAD | Fresh-context review, by tier (CLAUDE.md, ADR-016) |
 | Logging | Every root run writes its run record and outcome; logs never contain secret values | Tests in `sb-cli-core` (run log) and in each module that handles secrets (facts, accounts, credentials): the test feeds a known secret and asserts it isn't in the captured log | task | Decision 11; the run log is kept on the host |
 | Journal matrix | compare.sh, compat.sh, follow.sh and stress.sh pass on each supported release, with only the journal spec's listed Differences | `crates/journal/tests/` (the journal spec, [docs/specs/journal.md](docs/specs/journal.md), "Commands") | by hand (below) | journalctl of each release is the reference the reader must match (journal spec, assumption 4 and success criterion 3) |
 | Journal fuzz | The fuzz harness passes, its bounds enforced by itself | the `fuzz` example over seeds from `crates/journal/tests/seeds.sh` (journal spec, "Commands") | by hand (below) | The reader's bounds must hold on damaged and mutated files (journal spec, success criterion 4) |
 
-All of the above but the two journal rows run through
-`scripts/check.sh fast|task|full [base]`.
+All of the above but the two journal rows (and the CI rehearsal's arm64
+runners) run through `scripts/check.sh fast|task|full [base]`.
 `fast` runs after edits, `task` before handing work back (a few minutes),
 and `full` before committing. In CI, ci.yml runs `task` and release.yml
 runs `full` on each release tag. Every failing check blocks.
@@ -146,12 +147,12 @@ doesn't fail every run.
 | python3 | 3.10 | minimum | system package (`scripts/install-diff-cover.sh` builds diff-cover's environment on it) |
 | script (util-linux) | 2.37 | minimum | system package (gives the colour tests a terminal; they use only `-e`, `-q` and `-c`, which Ubuntu 22.04's 2.37.2 has) |
 | cross | 0.2.5 | exact | `cargo install --locked cross --version 0.2.5` (the production glibc build, in the image `Cross.toml` names, ADR-020) |
-| Docker | 29 | minimum | system package (builds and runs cross's image from `build/Dockerfile`, and the `ubuntu:<release>` containers the binary runs in; the first run pulls them) |
+| Docker | 29 | minimum | system package (builds and runs cross's image from `build/Dockerfile`, and the `ubuntu:<release>` containers the binary runs in; the first run pulls them; the CI rehearsal's images and containers, which download what they install) |
 
 ## Images the gate keeps
 
-`check.sh full` leaves one Docker image of its own on the host, as a
-cache:
+`check.sh full` leaves Docker images of its own on the host, as a
+cache: its QEMU check's, and the CI rehearsal's (below).
 
 - `sb-rust-gate/qemu-check:<hash>`, the first 12 hex digits of
   `build/qemu.Dockerfile`'s SHA-256, built only when missing, so a change
@@ -159,6 +160,23 @@ cache:
   under QEMU user-mode (Binary size row). Remove it, and older tags left
   by earlier versions of the file, with
   `docker images sb-rust-gate/qemu-check --format '{{.Repository}}:{{.Tag}}' | xargs -r docker rmi`.
+
+The CI rehearsal (`scripts/ci-rehearsal.sh`) keeps its images, each
+named by the first 12 hex digits of the SHA-256 of what makes it, made
+only when missing (or with `--rebuild`), an older one of the same kind
+removed when its successor is made:
+
+- `sb-rust-rehearsal/launcher:<hash>`: `ubuntu:26.04` with QEMU
+  user-mode, the reader of ci.yml and arm64's host side;
+- `sb-rust-rehearsal/runner:<release>-amd64-<hash>`: `ubuntu:<release>`
+  provisioned (`provision.sh`);
+- `sb-rust-rehearsal/runner:<release>-arm64-<hash>`: the launcher with an
+  arm64 root filesystem of that release (`rootfs.sh`, `provision.sh`).
+
+Remove them with
+`docker images 'sb-rust-rehearsal/*' --format '{{.Repository}}:{{.Tag}}' | xargs -r docker rmi`.
+Each provisioning reads runner-images' current package lists, so
+`--rebuild` follows a change to GitHub's images.
 
 cross builds and keeps its own images from `build/Dockerfile`
 (`Cross.toml`), and the release runs pull `ubuntu:<release>`.

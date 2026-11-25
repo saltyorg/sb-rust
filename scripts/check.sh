@@ -115,6 +115,12 @@ RUNTIME_RELEASES=(22.04 24.04 26.04)
 #   release workflow and its scripts).
 # - github_changed: the same, for a file under .github/ (the workflows,
 #   their actions and zizmor's settings).
+# - rehearsal_changed: the same, for a file whose effect CI's task job
+#   shows on a runner and this host may not (the CI rehearsal, at full):
+#   under .github/ or scripts/ (the workflows, the tools they install,
+#   this gate), a crate's tests (crates/*/tests/), .config/ (nextest's
+#   profiles), rust-toolchain.toml, or CONSTRAINTS.md (the Tools table
+#   read above).
 mapfile -d '' -t changed_files < <(
   # --no-renames: a file moved into docs/ is listed under its old path
   # too, so a moved test fixture or script isn't taken for a document.
@@ -125,10 +131,12 @@ documents_only=0
 scripts_changed=0
 release_changed=0
 github_changed=0
+rehearsal_changed=0
 if ((${#changed_files[@]} == 0)); then
   scripts_changed=1
   release_changed=1
   github_changed=1
+  rehearsal_changed=1
 else
   documents_only=1
   for f in "${changed_files[@]}"; do
@@ -139,6 +147,9 @@ else
     case $f in scripts/*) scripts_changed=1 ;; esac
     case $f in scripts/* | .github/*) release_changed=1 ;; esac
     case $f in .github/*) github_changed=1 ;; esac
+    case $f in
+    .github/* | scripts/* | crates/*/tests/* | .config/* | rust-toolchain.toml | CONSTRAINTS.md) rehearsal_changed=1 ;;
+    esac
   done
 fi
 
@@ -1405,6 +1416,31 @@ full() {
       exit 1
     fi
     echo "aarch64 (QEMU): ${out%%$'\n'*}"
+  fi
+  # The CI rehearsal (CONSTRAINTS.md, "CI rehearsal"): ci.yml's task job,
+  # read from ci.yml and run as a runner runs it, on each of its amd64
+  # runners, in containers made as GitHub's images are, with a non-root
+  # runner user and the checkout in its 0750 home
+  # (scripts/ci-rehearsal.sh): what only a runner shows (its release's
+  # tools, the tools as the workflow installs them, a checkout `nobody`
+  # can't reach) fails here, not on the first push. When a file whose
+  # effect it shows changed (rehearsal_changed); never inside GitHub's
+  # own runs, where ci.yml is the real thing (release.yml passes
+  # GITHUB_ACTIONS through sudo). Its arm64 runners run emulated, for
+  # hours: by hand (`scripts/ci-rehearsal.sh --arch arm64`).
+  step "CI rehearsal: ci.yml's task job on its amd64 runners (scripts/ci-rehearsal.sh)"
+  if [[ ${GITHUB_ACTIONS:-} == true ]]; then
+    skip "in GitHub Actions, where ci.yml runs itself"
+  elif [[ $arch != x86_64 ]]; then
+    skip "the rehearsal runs on an x86_64 host, and this host is $arch"
+  elif ((rehearsal_changed == 0)); then
+    skip "nothing under .github/, scripts/, crates/*/tests/ or .config/, nor rust-toolchain.toml or CONSTRAINTS.md, changed since $base"
+  else
+    local status=0
+    scripts/ci-rehearsal.sh --arch amd64 || status=$?
+    # 2: it could not run (no Docker, an image it could not make).
+    if ((status == 2)); then exit 2; fi
+    ((status == 0))
   fi
 }
 

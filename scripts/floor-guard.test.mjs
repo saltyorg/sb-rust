@@ -1218,6 +1218,13 @@ const TOOLS_MD = `# Constraints
 // own content is tested by running them, not here.
 const RELEASE_TESTS = Object.fromEntries(['scripts/release.test.sh', 'scripts/workflow-schemas.test.sh']
   .map((f) => [f, '#!/bin/sh\n']));
+// The CI rehearsal check.sh full runs: a stub logging its call as the
+// stubbed tools do, its status REHEARSAL_STATUS (0 by default). Its own
+// content is tested in each rehearsal container (its test_job.py).
+const REHEARSAL = {
+  'scripts/ci-rehearsal.sh': '#!/bin/sh\nprintf \'%s|%s|%s|%s|%s\\n\' ci-rehearsal - - - "$*" >>"$STUB_LOG"\n'
+    + 'exit "${REHEARSAL_STATUS:-0}"\n',
+};
 // A workflow and an action, for the workflow linters to be run on.
 const WORKFLOWS = { '.github/workflows/ci.yml': 'on: push\n', '.github/actions/a/action.yml': 'runs:\n  using: composite\n' };
 const VERSIONS = {
@@ -1571,7 +1578,11 @@ const checkRun = (stage, { files = {}, work = {}, commits = [], base = 'HEAD', v
     // own there.
     const tmp = join(dir, 'tmp');
     mkdirSync(tmp);
-    const scratch = { ...env, HOME: dir, XDG_CONFIG_HOME: dir, PATH: bin + ':' + sys, STUB_LOG: logFile, TMPDIR: tmp, ...extra };
+    // GITHUB_ACTIONS unset, as on a host, unless a test sets it: in
+    // release.yml's gate it is passed through, and check.sh full skips
+    // the CI rehearsal for it.
+    const scratch = { ...env, HOME: dir, XDG_CONFIG_HOME: dir, PATH: bin + ':' + sys, STUB_LOG: logFile, TMPDIR: tmp,
+      GITHUB_ACTIONS: '', ...extra };
     const git = (...args) => execFileSync('git', args, { cwd: repo, env: scratch, stdio: 'pipe' });
     mkdirSync(join(repo, 'target'), { recursive: true });
     symlinkSync(logs, join(repo, 'target', 'test-logs'));
@@ -1580,7 +1591,7 @@ const checkRun = (stage, { files = {}, work = {}, commits = [], base = 'HEAD', v
       'scripts/check.sh': readFileSync(join(SCRIPTS, 'check.sh'), 'utf8'),
       'build/qemu.Dockerfile': readFileSync(join(SCRIPTS, '../build/qemu.Dockerfile'), 'utf8'),
       'scripts/check-commit-messages.sh': readFileSync(join(SCRIPTS, 'check-commit-messages.sh'), 'utf8'),
-      ...RELEASE_TESTS, ...WORKFLOWS,
+      ...RELEASE_TESTS, ...REHEARSAL, ...WORKFLOWS,
       'CONSTRAINTS.md': TOOLS_MD, '.gitignore': '/target/\n', ...CRATES, ...files,
     }, 0o755);
     const commit = (message) => git('-c', 'user.name=test', '-c', 'user.email=test', 'commit', '-q', '--allow-empty', '-m', message);
@@ -2283,6 +2294,44 @@ test('check.sh full: another architecture says it skips the production build, an
   passes(r, 'full');
   assert.match(r.output, /skipped: .*aarch64/);
   assert.equal(r.calls.filter((c) => c.tool === 'cross' || c.tool === 'docker').length, 0, r.output);
+  assert.equal(rehearsals(r).length, 0, r.output);
+  assert.match(r.output, /skipped: the rehearsal runs on an x86_64 host, and this host is aarch64/, r.output);
+});
+
+// The CI rehearsal (CONSTRAINTS.md, "CI rehearsal"): at full, on the
+// amd64 runners, when a file whose effect only a runner shows changed;
+// never at task, nor inside GitHub Actions.
+const rehearsals = (r) => r.calls.filter((c) => c.tool === 'ci-rehearsal').map((c) => c.args);
+test('check.sh full: the CI rehearsal runs when a file CI reads differently changed, on the amd64 runners', () => {
+  for (const f of ['crates/foo/tests/t.rs', '.github/workflows/ci.yml', 'scripts/x.sh', '.config/nextest.toml',
+    'rust-toolchain.toml', 'CONSTRAINTS.md']) {
+    const r = checkRun('full', { work: { [f]: (f === 'CONSTRAINTS.md' ? TOOLS_MD : '') + '# changed\n' } });
+    passes(r, 'full');
+    assert.deepEqual(rehearsals(r), ['--arch amd64'], f + ':\n' + r.output);
+  }
+  // Nothing changed since the base: every step, this one too.
+  const clean = checkRun('full');
+  passes(clean, 'full');
+  assert.deepEqual(rehearsals(clean), ['--arch amd64'], clean.output);
+});
+
+test('check.sh full: the CI rehearsal is skipped for other changes, at task, and in GitHub Actions', () => {
+  const src = checkRun('full', { work: { 'crates/foo/src/lib.rs': 'pub fn f() {}\n' } });
+  passes(src, 'full');
+  assert.deepEqual(rehearsals(src), [], src.output);
+  assert.match(src.output, /skipped: nothing under \.github\/, scripts\/, crates\/\*\/tests\/ or \.config\//, src.output);
+  const task = checkRun('task', { work: { 'crates/foo/tests/t.rs': '// changed\n' } });
+  passes(task, 'task');
+  assert.deepEqual(rehearsals(task), [], task.output);
+  const ci = checkRun('full', { env: { GITHUB_ACTIONS: 'true' } });
+  passes(ci, 'full');
+  assert.deepEqual(rehearsals(ci), [], ci.output);
+  assert.match(ci.output, /skipped: in GitHub Actions, where ci\.yml runs itself/, ci.output);
+});
+
+test('check.sh full: a failed CI rehearsal fails the gate, and one that could not run is no verdict', () => {
+  refuses(checkRun('full', { env: { REHEARSAL_STATUS: '1' } }), 1, /CI rehearsal/);
+  refuses(checkRun('full', { env: { REHEARSAL_STATUS: '2' } }), 2, /CI rehearsal/);
 });
 
 // msgRun(commits): check-commit-messages.sh over the commits made after a
