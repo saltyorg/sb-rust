@@ -43,8 +43,6 @@ jobs:
       matrix:
         # arm64 ships (maintainer, 2026-11-18): its tests run natively on
         # the arm runners, as emulated runs would be slow and flaky.
-        # The 26.04 labels are newer than the pinned actionlint: they are
-        # in .github/actionlint.yaml, with GitHub's source.
         runner:
           - ubuntu-22.04
           - ubuntu-24.04
@@ -92,15 +90,21 @@ jobs:
       - name: cargo-mutants (arm64)
         if: runner.arch == 'ARM64'
         run: cargo install --locked cargo-mutants --version 27.1.0
-      # diff-cover from its hash-pinned lock, in a virtual environment of
-      # its own (scripts/install-diff-cover.sh), with the uv above, at the
+      # Python 3.12, which scripts/install-check-jsonschema.sh makes
+      # check-jsonschema's environment on, the same on every Ubuntu release.
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      # diff-cover and check-jsonschema from their hash-pinned locks, each
+      # in a virtual environment of its own (scripts/install-diff-cover.sh,
+      # scripts/install-check-jsonschema.sh), with the uv above, at the
       # version sb installs (crates/cli-core/src/build_info.rs).
-      - name: gitleaks, diff-cover and actionlint
+      - name: gitleaks, diff-cover and check-jsonschema
         run: |
           go install github.com/zricethezav/gitleaks/v8@v8.30.1
-          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
           echo "$(go env GOPATH)/bin" >>"$GITHUB_PATH"
           scripts/install-diff-cover.sh "$RUNNER_TEMP/diff-cover" "$RUNNER_TEMP/bin"
+          scripts/install-check-jsonschema.sh "$RUNNER_TEMP/check-jsonschema" "$RUNNER_TEMP/bin"
           echo "$RUNNER_TEMP/bin" >>"$GITHUB_PATH"
           rustup component add llvm-tools
       # A pull request is checked against what it merges into; a push to

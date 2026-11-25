@@ -214,6 +214,34 @@
             "automerge": false
         },
         {
+            "description": "check-jsonschema's lock is pip-compile's to regenerate, hashes and all, as diff-cover's",
+            "matchManagers": [
+                "pip_requirements"
+            ],
+            "matchFileNames": [
+                "scripts/check-jsonschema/requirements.txt"
+            ],
+            "enabled": false
+        },
+        {
+            "description": "check-jsonschema: its lock (pip-compile) and CONSTRAINTS.md's Tools row (custom.regex) move together, in one PR for review",
+            "matchPackageNames": [
+                "check-jsonschema"
+            ],
+            "groupName": "check-jsonschema",
+            "automerge": false
+        },
+        {
+            "description": "The Python actions/setup-python provides (ci.yml, release.yml) is check-jsonschema's, also named by scripts/install-check-jsonschema.sh (`--python 3.12`) and its lock's header (`--python-version=3.12`): it moves by hand with them, never alone; setup-python takes the newest 3.12 patch release on each run",
+            "matchManagers": [
+                "github-actions"
+            ],
+            "matchDepNames": [
+                "python"
+            ],
+            "enabled": false
+        },
+        {
             "description": "GitHub Actions: minor and patch updates, grouped (sb-go's)",
             "matchManagers": [
                 "github-actions"
@@ -254,22 +282,25 @@
         }
     ],
     "pip-compile": {
-        "description": "diff-cover's hash-pinned lock (scripts/diff-cover/requirements.txt, compiled by uv from requirements.in; scripts/install-diff-cover.sh installs it with --require-hashes)",
+        "description": "The gate's hash-pinned Python locks, each compiled by uv from its requirements.in and installed with --require-hashes: diff-cover's (scripts/install-diff-cover.sh) and check-jsonschema's (scripts/install-check-jsonschema.sh)",
         "managerFilePatterns": [
-            "/(^|/)scripts/diff-cover/requirements\\.txt$/"
+            "/(^|/)scripts/diff-cover/requirements\\.txt$/",
+            "/(^|/)scripts/check-jsonschema/requirements\\.txt$/"
         ]
     },
     "customManagers": [
         {
             "customType": "regex",
-            "description": "The uv sb installs (crates/cli-core/src/build_info.rs, as sb-go's buildinfo), and the same uv in the workflows' install-action tool lists, which installs diff-cover",
+            "description": "The uv sb installs (crates/cli-core/src/build_info.rs, as sb-go's buildinfo), the same uv in the workflows' install-action tool lists, which installs diff-cover and check-jsonschema, and the uv source link in scripts/install-check-jsonschema.sh",
             "managerFilePatterns": [
                 "/(^|/)crates/cli-core/src/build_info\\.rs$/",
-                "/(^|/)\\.github/workflows/[^/]+\\.yml$/"
+                "/(^|/)\\.github/workflows/[^/]+\\.yml$/",
+                "/(^|/)scripts/install-check-jsonschema\\.sh$/"
             ],
             "matchStrings": [
                 "pub const UV_VERSION: &str = \"(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)\";",
-                "[,:\\s]uv@(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)\\b"
+                "[,:\\s]uv@(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)\\b",
+                "github\\.com/astral-sh/uv/blob/(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)/"
             ],
             "depNameTemplate": "uv",
             "datasourceTemplate": "pypi",
@@ -338,22 +369,20 @@
         },
         {
             "customType": "regex",
-            "description": "actionlint (CONSTRAINTS.md's Tools table: its version and its install line; the workflows' install lines; the settings' docs link)",
+            "description": "check-jsonschema (CONSTRAINTS.md's Tools table: its version and its install line; the docs links in check.sh and the schemas' tests; its lock is the pip-compile manager's)",
             "managerFilePatterns": [
                 "/(^|/)CONSTRAINTS\\.md$/",
-                "/(^|/)\\.github/workflows/[^/]+\\.yml$/",
-                "/(^|/)\\.github/actionlint\\.yaml$/"
+                "/(^|/)scripts/check\\.sh$/",
+                "/(^|/)scripts/workflow-schemas\\.test\\.sh$/"
             ],
             "matchStrings": [
-                "\\| actionlint \\| (?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+) \\| exact \\|",
-                "github\\.com/rhysd/actionlint/cmd/actionlint@v(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)",
-                "https://github\\.com/rhysd/actionlint/blob/v(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)/"
+                "\\| check-jsonschema \\| (?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+) \\| exact \\|",
+                "installs `check-jsonschema==(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)`",
+                "github\\.com/python-jsonschema/check-jsonschema/blob/(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)/"
             ],
-            "depNameTemplate": "actionlint",
-            "packageNameTemplate": "rhysd/actionlint",
-            "datasourceTemplate": "github-releases",
-            "extractVersionTemplate": "^v(?<version>.*)$",
-            "versioningTemplate": "semver"
+            "depNameTemplate": "check-jsonschema",
+            "datasourceTemplate": "pypi",
+            "versioningTemplate": "pep440"
         },
         {
             "customType": "regex",

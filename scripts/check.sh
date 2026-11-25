@@ -114,7 +114,7 @@ RUNTIME_RELEASES=(22.04 24.04 26.04)
 # - release_changed: the same, for a file under scripts/ or .github/ (the
 #   release workflow's scripts and the Saltbox updater's action).
 # - github_changed: the same, for a file under .github/ (the workflows,
-#   their actions and actionlint's settings).
+#   their actions and zizmor's settings).
 mapfile -d '' -t changed_files < <(
   # --no-renames: a file moved into docs/ is listed under its old path
   # too, so a moved test fixture or script isn't taken for a document.
@@ -169,12 +169,10 @@ need() { command -v "$1" >/dev/null || { echo "check: $1 not installed (see CONS
 #   https://pkg.go.dev/cmd/go#hdr-Print_Go_version
 # - go, from `go version` ("go version go1.27.3 linux/amd64"), whole: a
 #   pre-release (go1.27rc1) is no version number, and fails every rule.
-# - shellcheck, from the `version: 0.8.0` line of its `--version`, whose
-#   first line names the tool only.
 # - The rest, from the first version number `--version` prints on stdout
 #   (a warning on stderr can hold a number too):
 #   "diff-cover 9.7.2", "v24.20.0" (node), "script from util-linux 2.39.3",
-#   "v1.7.12" (actionlint), "zizmor 1.32.0",
+#   "check-jsonschema, version 0.39.0", "zizmor 1.32.0",
 #   "Docker version 29.7.2, build ..." (the client's; no daemon is asked).
 tool_version() {
   local out=''
@@ -196,7 +194,6 @@ tool_version() {
       awk '$1 == "mod" && $2 == "github.com/zricethezav/gitleaks/v8" { sub(/^v/, "", $3); print $3 }') || out=''
     ;;
   go) out=$(go version | sed -nE '1s/^go version go([^ ]+) .*/\1/p') || out='' ;;
-  shellcheck) out=$(shellcheck --version | sed -nE 's/^version: ([0-9]+(\.[0-9]+)*).*/\1/p') || out='' ;;
   *) out=$("$1" --version 2>/dev/null | sed -nE '1s/^[^0-9]*([0-9]+(\.[0-9]+)*).*/\1/p') || out='' ;;
   esac
   printf '%s\n' "$out"
@@ -313,6 +310,24 @@ post_quantum_feature_check() {
   fi
 }
 
+# The workflows (`.yml` or `.yaml` under .github/workflows/) against
+# GitHub's workflow schema, and each action's metadata file
+# (`.github/actions/<name>/action.yml` or `.yaml`) against its action
+# schema; a kind with no file is not run.
+workflow_schemas() {
+  local -a workflows actions
+  shopt -s nullglob
+  workflows=(.github/workflows/*.yml .github/workflows/*.yaml)
+  actions=(.github/actions/*/action.yml .github/actions/*/action.yaml)
+  shopt -u nullglob
+  if ((${#workflows[@]})); then
+    check-jsonschema --builtin-schema vendor.github-workflows "${workflows[@]}"
+  fi
+  if ((${#actions[@]})); then
+    check-jsonschema --builtin-schema vendor.github-actions "${actions[@]}"
+  fi
+}
+
 fast() {
   step "crates: workspace lints and a deny.toml entry each"
   crate_check
@@ -365,17 +380,20 @@ fast() {
     skip "nothing under scripts/ or .github/ changed since $base"
   fi
   # The workflows and their actions (CONSTRAINTS.md, Workflows), which
-  # only GitHub can run: actionlint (its settings in .github/actionlint.yaml),
-  # which runs shellcheck on each `run:` script and silently skips that
-  # when it is missing, so its version is checked too; then zizmor's
-  # offline audits at its auditor persona, which flags everything, likely
-  # false positives too (https://docs.zizmor.sh/usage/#using-personas). Any
-  # finding fails. At fast when .github/ changed, at full always.
-  step "workflows (actionlint, zizmor)"
+  # only GitHub can run: check-jsonschema against the GitHub workflow and
+  # action schemas it ships (no network, no settings file:
+  # https://github.com/python-jsonschema/check-jsonschema/blob/0.39.0/docs/usage.rst#builtin-schema-choices),
+  # after its own tests, that those schemas still refuse a broken key or
+  # value; then zizmor's offline audits at its auditor persona, which flags
+  # everything, likely false positives too
+  # (https://docs.zizmor.sh/usage/#using-personas). Any finding fails. At
+  # fast when .github/ changed, at full always.
+  step "workflows (check-jsonschema, zizmor)"
   if ((github_changed)) || [[ $stage == full ]]; then
     # Checked here, not with the stage's tools: only this step runs them.
-    check_tools actionlint shellcheck zizmor
-    actionlint
+    check_tools check-jsonschema zizmor
+    in_sandbox scripts/workflow-schemas.test.sh
+    workflow_schemas
     zizmor --offline --persona=auditor --no-progress .github/
   else
     skip "nothing under .github/ changed since $base"

@@ -386,29 +386,23 @@ test('nextest.toml: a changed timeout is flagged, a comment is clean', () => {
 });
 
 // The workflow linters' suppressions (the maintainer, 2026-11-24): any
-// edit to actionlint's or zizmor's settings, and an added zizmor ignore
-// comment under .github/.
-const ACTIONLINT = '.github/actionlint.yaml';
+// edit to zizmor's settings, and an added zizmor ignore comment under
+// .github/.
 const ZIZMOR = '.github/zizmor.yml';
 const linterConfigs = {
-  [ACTIONLINT]: '# Why each entry is here.\nself-hosted-runner:\n  labels:\n    - ubuntu-26.04\n',
   [ZIZMOR]: '# Why each policy is here.\nrules:\n  unpinned-uses:\n    config:\n      policies:\n        "saltyorg/*": ref-pin\n        "*": hash-pin\n',
 };
 
-test('actionlint.yaml and zizmor.yml: an added, changed or removed setting is flagged, a comment is clean', () => {
-  flags(linterConfigs, edit(linterConfigs, ACTIONLINT, '    - ubuntu-26.04\n', '    - ubuntu-26.04\n    - my-runner\n'),
-    'linter-config-changed ' + ACTIONLINT);
-  flags(linterConfigs, edit(linterConfigs, ACTIONLINT, '    - ubuntu-26.04\n', ''), 'linter-config-changed ' + ACTIONLINT);
+test('zizmor.yml: an added, changed or removed setting is flagged, a comment is clean', () => {
   flags(linterConfigs, edit(linterConfigs, ZIZMOR, '"*": hash-pin', '"*": ref-pin'),
     ['linter-config-changed ' + ZIZMOR, 'linter-config-changed ' + ZIZMOR]);
   flags(linterConfigs, edit(linterConfigs, ZIZMOR, '        "*": hash-pin\n', ''), 'linter-config-changed ' + ZIZMOR);
   flags(linterConfigs, edit(linterConfigs, ZIZMOR, 'rules:\n', 'rules:\n  template-injection:\n    disable: true\n'),
     ['linter-config-changed ' + ZIZMOR, 'linter-config-changed ' + ZIZMOR], { commit: true });
   clean(linterConfigs, edit(linterConfigs, ZIZMOR, '# Why each policy is here.\n', '# Why each policy is here,\n# with its source.\n'));
-  clean(linterConfigs, edit(linterConfigs, ACTIONLINT, '# Why each entry is here.\n', ''));
 });
 
-for (const config of [ACTIONLINT, '.github/actionlint.yml', ZIZMOR, '.github/zizmor.yaml', 'zizmor.yml', 'zizmor.yaml']) {
+for (const config of [ZIZMOR, '.github/zizmor.yaml', 'zizmor.yml', 'zizmor.yaml']) {
   test('a new or deleted workflow linter config is flagged: ' + config, () => {
     flags({}, { [config]: 'rules: {}\n' }, 'linter-config-changed ' + config);
     flags({}, { [config]: '# comments only\n' }, 'linter-config-changed ' + config, { commit: true });
@@ -417,7 +411,7 @@ for (const config of [ACTIONLINT, '.github/actionlint.yml', ZIZMOR, '.github/ziz
 }
 
 test('a workflow linter config name elsewhere is clean', () => {
-  clean({}, { 'docs/zizmor.yml': 'rules: {}\n', '.github/workflows/actionlint.yaml': 'on: push\n' });
+  clean({}, { 'docs/zizmor.yml': 'rules: {}\n', '.github/workflows/zizmor.yaml': 'on: push\n' });
 });
 
 test('an added zizmor ignore comment under .github/ is flagged, a removed one and one elsewhere are clean', () => {
@@ -439,33 +433,6 @@ test('an added zizmor ignore comment under .github/ is flagged, a removed one an
   clean(files, edit(files, WORKFLOW, ' # zizmor: ignore[artipacked]', ''));
   clean(files, edit(files, WORKFLOW, '        run: make\n', '        run: make test\n'));
   clean({}, { 'docs/notes.md': 'a `# zizmor: ignore[artipacked]` comment\n' });
-});
-
-test('an added shellcheck directive in a workflow under .github/ is flagged, a removed one and one elsewhere are clean', () => {
-  const WORKFLOW = '.github/workflows/ci.yml';
-  const files = {
-    [WORKFLOW]: 'jobs:\n  a:\n    steps:\n      - run: |\n          # shellcheck disable=SC2086\n          make $FLAGS\n',
-    '.github/actions/update/run.sh': '#!/bin/sh\nmake\n',
-  };
-  // actionlint runs shellcheck on each `run:` script, and the directive
-  // silences it there (https://github.com/rhysd/actionlint/blob/v1.7.12/docs/checks.md#check-shellcheck-integ).
-  flags(files, edit(files, WORKFLOW, '          make $FLAGS\n', '          make $FLAGS\n          # shellcheck disable=SC2046\n          rm $(ls)\n'),
-    'shellcheck-disable-added ' + WORKFLOW);
-  flags(files, edit(files, WORKFLOW, 'disable=SC2086', 'disable=SC2086,SC2046'), 'shellcheck-disable-added ' + WORKFLOW);
-  flags(files, edit(files, WORKFLOW, '          make $FLAGS\n', '          make $FLAGS # shellcheck disable=SC2086\n'),
-    'shellcheck-disable-added ' + WORKFLOW, { commit: true });
-  flags({}, { '.github/workflows/new.yaml': 'jobs:\n  a:\n    steps:\n      - run: |\n          #shellcheck disable=all\n          make\n' },
-    'shellcheck-disable-added .github/workflows/new.yaml');
-  // Several directives on one line: shellcheck reads each.
-  flags(files, edit(files, WORKFLOW, '          make $FLAGS\n', '          # shellcheck shell=bash disable=SC2046\n          rm $(ls)\n'),
-    'shellcheck-disable-added ' + WORKFLOW);
-  flags(files, edit(files, WORKFLOW, '          make $FLAGS\n', '          # shellcheck source=x.sh disable=SC1090\n          . "$F"\n'),
-    'shellcheck-disable-added ' + WORKFLOW);
-  clean(files, edit(files, WORKFLOW, '          # shellcheck disable=SC2086\n', ''));
-  clean(files, edit(files, WORKFLOW, '          make $FLAGS\n', '          make $FLAGS\n          # shellcheck shell=bash\n'));
-  // A shell script under .github/ is no workflow: actionlint doesn't read it.
-  clean(files, edit(files, '.github/actions/update/run.sh', 'make\n', '# shellcheck disable=SC2086\nmake $FLAGS\n'));
-  clean({}, { 'crates/foo/tests/run.sh': '# shellcheck disable=SC2086\nmake $FLAGS\n' });
 });
 
 const COMPARE = 'crates/journal/tests/compare.sh';
@@ -1240,24 +1207,26 @@ const TOOLS_MD = `# Constraints
 | Docker | 29 | minimum | system package |
 | jq | 1.6 | minimum | system package |
 | python3 | 3.10 | minimum | system package |
-| actionlint | 1.7.12 | exact | go install |
+| check-jsonschema | 0.39.0 | exact | uv |
 | zizmor | 1.32.0 | exact | uv |
-| shellcheck | 0.8 | minimum | system package |
 
 ## Exceptions
 `;
 // The release scripts' tests check.sh's fast stage runs (when scripts/ or
-// .github/ changed, or nothing did), as empty scripts: their own content
-// is tested by running them, not here.
-const RELEASE_TESTS = Object.fromEntries(['scripts/release.test.sh',
+// .github/ changed, or nothing did), and the workflow schemas' tests (when
+// .github/ changed, or nothing did, or at full), as empty scripts: their
+// own content is tested by running them, not here.
+const RELEASE_TESTS = Object.fromEntries(['scripts/release.test.sh', 'scripts/workflow-schemas.test.sh',
   ...['commit_test.sh', 'download_test.sh', 'publish_test.sh', 'isolation_test.py']
     .map((f) => '.github/actions/update-saltbox-python/' + f)].map((f) => [f, '#!/bin/sh\n']));
+// A workflow and an action, for the workflow linters to be run on.
+const WORKFLOWS = { '.github/workflows/ci.yml': 'on: push\n', '.github/actions/a/action.yml': 'runs:\n  using: composite\n' };
 const VERSIONS = {
   'cargo-llvm-cov': '0.9.1', 'diff-cover': '9.7.2', 'cargo-mutants': '27.1.0', 'cargo-nextest': '0.9.151',
   'cargo-deny': '0.20.2', hyperfine: '2.0.0', gitleaks: '8.30.1', go: '1.27.3', node: '24.20.0', script: '2.39.3', cross: '0.2.5',
   docker: '29.7.2',
   jq: '1.7.1', python3: '3.12.3',
-  actionlint: '1.7.12', zizmor: '1.32.0', shellcheck: '0.8.0',
+  'check-jsonschema': '0.39.0', zizmor: '1.32.0',
 };
 // check.sh's MUTATION_TESTERS names sb-journal, sb-host and sb-tui, so
 // they are here beside sb-foo and the binary.
@@ -1315,13 +1284,10 @@ const stubs = (versions, arch) => {
     python3: version('Python ' + versions.python3),
     // The workflows' linters: a finding fails each, with zizmor's own
     // status for a high one (14), when WORKFLOW_FINDING names it.
-    actionlint: version('v' + versions.actionlint)
-      + 'if [ "${WORKFLOW_FINDING:-}" = actionlint ]; then echo ".github/workflows/ci.yml:1:1: finding [syntax-check]"; exit 1; fi\n',
+    'check-jsonschema': version('check-jsonschema, version ' + versions['check-jsonschema'])
+      + 'if [ "${WORKFLOW_FINDING:-}" = check-jsonschema ]; then echo "Schema validation errors were encountered."; exit 1; fi\n',
     zizmor: version('zizmor ' + versions.zizmor)
       + 'if [ "${WORKFLOW_FINDING:-}" = zizmor ]; then echo "error[unpinned-uses]: unpinned action reference"; exit 14; fi\n',
-    // Its first line names the tool only.
-    shellcheck: 'if [ "$1" = --version ]; then printf \'ShellCheck - shell script analysis tool\\nversion: %s\\nlicense: GPLv3\\n\' "'
-      + versions.shellcheck + '"; exit 0; fi\n',
     go: 'if [ "$1 $2" = "version -m" ]; then printf \'%s: go1.27.3\\n\\tpath\\tgithub.com/zricethezav/gitleaks/v8\\n'
       + '\\tmod\\tgithub.com/zricethezav/gitleaks/v8\\tv' + versions.gitleaks + '\\th1:x=\\n\' "$3"; exit 0; fi\n'
       + 'echo "go version go' + versions.go + ' linux/amd64"\n',
@@ -1606,7 +1572,7 @@ const checkRun = (stage, { files = {}, work = {}, commits = [], base = 'HEAD', v
       'scripts/check.sh': readFileSync(join(SCRIPTS, 'check.sh'), 'utf8'),
       'build/qemu.Dockerfile': readFileSync(join(SCRIPTS, '../build/qemu.Dockerfile'), 'utf8'),
       'scripts/check-commit-messages.sh': readFileSync(join(SCRIPTS, 'check-commit-messages.sh'), 'utf8'),
-      ...RELEASE_TESTS,
+      ...RELEASE_TESTS, ...WORKFLOWS,
       'CONSTRAINTS.md': TOOLS_MD, '.gitignore': '/target/\n', ...CRATES, ...files,
     }, 0o755);
     const commit = (message) => git('-c', 'user.name=test', '-c', 'user.email=test', 'commit', '-q', '--allow-empty', '-m', message);
@@ -2455,17 +2421,24 @@ test('check.sh fast: the gate scripts\' own tests run when scripts/ changed or n
   }
 });
 
-const workflowLints = (r) => r.calls.filter((c) => ['actionlint', 'zizmor'].includes(c.tool) && c.args !== '--version')
+const workflowLints = (r) => r.calls
+  .filter((c) => ['check-jsonschema', 'zizmor'].includes(c.tool) && c.args !== '--version')
   .map((c) => (c.tool + ' ' + c.args).trim());
 
 test('check.sh: the workflows\' linters run at fast when .github/ changed or nothing did, at full always, and are skipped otherwise', () => {
-  const both = ['actionlint', 'zizmor --offline --persona=auditor --no-progress .github/'];
+  const all = ['check-jsonschema --builtin-schema vendor.github-workflows .github/workflows/ci.yml',
+    'check-jsonschema --builtin-schema vendor.github-actions .github/actions/a/action.yml',
+    'zizmor --offline --persona=auditor --no-progress .github/'];
   for (const [stage, work] of [['fast', {}], ['fast', { '.github/workflows/x.yml': 'name: x\n' }],
-    ['task', { '.github/actionlint.yaml': 'paths: {}\n' }], ['full', { 'crates/foo/src/lib.rs': 'pub fn f() {}\n' }],
+    ['task', { '.github/zizmor.yml': 'rules: {}\n' }], ['full', { 'crates/foo/src/lib.rs': 'pub fn f() {}\n' }],
     ['full', { 'docs/x.md': 'x\n' }]]) {
-    const r = checkRun(stage, { work });
+    const r = checkRun(stage, { work, env: { FLOOR_APPROVED: work['.github/zizmor.yml']
+      ? 'Floor-approved: linter-config-changed .github/zizmor.yml — a test (the maintainer, 2026-11-25)' : '' } });
     passes(r, stage);
-    assert.deepEqual(workflowLints(r), both, stage + ' ' + Object.keys(work) + '\n' + r.output);
+    // A new workflow, untracked, is checked too.
+    const want = work['.github/workflows/x.yml']
+      ? [all[0].replace('ci.yml', 'ci.yml .github/workflows/x.yml'), ...all.slice(1)] : all;
+    assert.deepEqual(workflowLints(r), want, stage + ' ' + Object.keys(work) + '\n' + r.output);
   }
   for (const [stage, work] of [['fast', { 'crates/foo/src/lib.rs': 'pub fn f() {}\n' }], ['fast', { 'scripts/new.sh': 'true\n' }],
     ['task', { 'docs/x.md': 'x\n' }]]) {
@@ -2476,23 +2449,40 @@ test('check.sh: the workflows\' linters run at fast when .github/ changed or not
   }
 });
 
-test('check.sh: a finding from actionlint or zizmor fails the gate with its status', () => {
-  refuses(checkRun('fast', { env: { WORKFLOW_FINDING: 'actionlint' } }), 1, /\[syntax-check\]/);
+test('check.sh: the workflow schemas\' own tests run before the linters, and a failure stops the step', () => {
+  // The tests log their run as a stub does.
+  const logged = '#!/bin/sh\nprintf \'workflow-schemas.test.sh||||\\n\' >>"$STUB_LOG"\n';
+  const r = checkRun('fast', { files: { 'scripts/workflow-schemas.test.sh': logged } });
+  passes(r, 'fast');
+  const order = r.calls.filter((c) => c.args !== '--version').map((c) => c.tool)
+    .filter((t) => ['workflow-schemas.test.sh', 'check-jsonschema', 'zizmor'].includes(t));
+  assert.deepEqual(order, ['workflow-schemas.test.sh', 'check-jsonschema', 'check-jsonschema', 'zizmor'], r.output);
+  const failing = checkRun('fast', { files: { 'scripts/workflow-schemas.test.sh': '#!/bin/sh\necho "FAIL a misspelt job key fails" >&2\nexit 1\n' } });
+  refuses(failing, 1, /FAIL a misspelt job key fails/);
+  assert.ok(!failing.calls.some((c) => c.tool === 'check-jsonschema' && c.args !== '--version'), failing.output);
+});
+
+test('check.sh: a workflow or action kind with no file is not given to check-jsonschema', () => {
+  const r = checkRun('fast', { work: { '.github/actions/a/action.yml': null } });
+  passes(r, 'fast');
+  assert.deepEqual(workflowLints(r).filter((c) => c.startsWith('check-jsonschema')),
+    ['check-jsonschema --builtin-schema vendor.github-workflows .github/workflows/ci.yml'], r.output);
+});
+
+test('check.sh: a finding from check-jsonschema or zizmor fails the gate with its status', () => {
+  refuses(checkRun('fast', { env: { WORKFLOW_FINDING: 'check-jsonschema' } }), 1, /Schema validation errors were encountered/);
   const r = checkRun('full', { work: { 'crates/foo/src/lib.rs': 'pub fn f() {}\n' }, env: { WORKFLOW_FINDING: 'zizmor' } });
   refuses(r, 14, /unpinned-uses/);
   // It fails before the stage's tests.
   assert.ok(!cargoSubs(r).includes('llvm-cov'), r.output);
 });
 
-test('check.sh: the workflows\' linters are held to the Tools table when their step runs, shellcheck to a minimum', () => {
-  refuses(checkRun('fast', { versions: { actionlint: '1.7.11' } }), 2, /actionlint is 1\.7\.11/);
+test('check.sh: the workflows\' linters are held to the Tools table when their step runs', () => {
+  refuses(checkRun('fast', { versions: { 'check-jsonschema': '0.38.0' } }), 2, /check-jsonschema is 0\.38\.0/);
+  refuses(checkRun('fast', { versions: { 'check-jsonschema': null } }), 2, /check-jsonschema not installed/);
   refuses(checkRun('fast', { versions: { zizmor: '1.33.1' } }), 2, /zizmor is 1\.33\.1/);
-  refuses(checkRun('fast', { versions: { shellcheck: '0.7.2' } }), 2, /shellcheck is 0\.7\.2/);
-  // actionlint skips its shellcheck rule when shellcheck is missing.
-  refuses(checkRun('fast', { versions: { shellcheck: null } }), 2, /shellcheck not installed/);
-  passes(checkRun('fast', { versions: { shellcheck: '0.11.0' } }), 'fast');
   // Not asked for when the step doesn't run.
-  passes(checkRun('fast', { versions: { zizmor: null, actionlint: null, shellcheck: null },
+  passes(checkRun('fast', { versions: { zizmor: null, 'check-jsonschema': null },
     work: { 'crates/foo/src/lib.rs': 'pub fn f() {}\n' } }), 'fast');
 });
 

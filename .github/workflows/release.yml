@@ -138,12 +138,17 @@ jobs:
       # syncs a toolchain), and install-action writes none.
       - name: cross
         run: cargo install --locked cross --version 0.2.5
-      - name: gitleaks, diff-cover and actionlint
+      # check-jsonschema's Python (ci.yml); setup-python caches nothing
+      # unless its `cache` input is set.
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - name: gitleaks, diff-cover and check-jsonschema
         run: |
           go install github.com/zricethezav/gitleaks/v8@v8.30.1
-          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
           echo "$(go env GOPATH)/bin" >>"$GITHUB_PATH"
           scripts/install-diff-cover.sh "$RUNNER_TEMP/diff-cover" "$RUNNER_TEMP/bin"
+          scripts/install-check-jsonschema.sh "$RUNNER_TEMP/check-jsonschema" "$RUNNER_TEMP/bin"
           echo "$RUNNER_TEMP/bin" >>"$GITHUB_PATH"
           rustup component add llvm-tools
       - name: check.sh full
@@ -181,12 +186,17 @@ jobs:
       # from crates.io at its Cargo.lock.
       - name: cargo-mutants
         run: cargo install --locked cargo-mutants --version 27.1.0
-      - name: gitleaks, diff-cover and actionlint
+      # check-jsonschema's Python (ci.yml); setup-python caches nothing
+      # unless its `cache` input is set.
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - name: gitleaks, diff-cover and check-jsonschema
         run: |
           go install github.com/zricethezav/gitleaks/v8@v8.30.1
-          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
           echo "$(go env GOPATH)/bin" >>"$GITHUB_PATH"
           scripts/install-diff-cover.sh "$RUNNER_TEMP/diff-cover" "$RUNNER_TEMP/bin"
+          scripts/install-check-jsonschema.sh "$RUNNER_TEMP/check-jsonschema" "$RUNNER_TEMP/bin"
           echo "$RUNNER_TEMP/bin" >>"$GITHUB_PATH"
           rustup component add llvm-tools
       - name: check.sh task
