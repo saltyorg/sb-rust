@@ -1,7 +1,7 @@
 //! A generation's `manifest.json` (python-env spec, steps 4 and 11; sb-go's
 //! `python/venv.go`, `Manifest`, `readManifest`, `writeManifest`): schema
-//! 1, sb-go's fields in sb-go's order, so either binary reads the other's
-//! (decision 7).
+//! 1, sb-go's fields in sb-go's order (69b968b's `requirements_unhashed`
+//! last), so either binary reads the other's (decision 7).
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -14,11 +14,11 @@ pub const SCHEMA: u32 = 1;
 /// The file's name in a generation directory.
 pub const FILE: &str = "manifest.json";
 
-/// A generation's record, field for field sb-go's (venv.go:42-53). Serde
+/// A generation's record, field for field sb-go's (venv.go:42-56). Serde
 /// writes the fields in declaration order (sb-go's), and
-/// `python_install` is left out when empty (Go's `omitempty`; serde's
-/// `default` and `skip_serializing_if`,
-/// <https://serde.rs/field-attrs.html>).
+/// `python_install` is left out when empty and `requirements_unhashed`
+/// when false (Go's `omitempty`; serde's `default` and
+/// `skip_serializing_if`, <https://serde.rs/field-attrs.html>).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Manifest {
     pub schema_version: u32,
@@ -32,6 +32,11 @@ pub struct Manifest {
     pub saltbox_commit: String,
     pub created_at: String,
     pub exported_commands: Vec<String>,
+    /// An install from a checkout without a pinned Python, unhashed
+    /// (ADR-031, D7). A manifest without it was hashed: every manifest
+    /// written before the field.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub requirements_unhashed: bool,
 }
 
 /// Why a manifest couldn't be read, in sb-go's words.
@@ -61,10 +66,12 @@ struct Stored {
     saltbox_commit: Option<String>,
     created_at: Option<String>,
     exported_commands: Option<Vec<String>>,
+    requirements_unhashed: Option<bool>,
 }
 
 impl Stored {
-    /// The manifest, when every field but `python_install` is there.
+    /// The manifest, when every field but `python_install` and
+    /// `requirements_unhashed` is there.
     fn complete(self) -> Option<Manifest> {
         Some(Manifest {
             schema_version: self.schema_version?,
@@ -77,6 +84,7 @@ impl Stored {
             saltbox_commit: self.saltbox_commit?,
             created_at: self.created_at?,
             exported_commands: self.exported_commands?,
+            requirements_unhashed: self.requirements_unhashed.unwrap_or_default(),
         })
     }
 }
@@ -186,6 +194,7 @@ mod tests {
             exported_commands: ["ansible", "ansible-playbook", "apprise", "certbot"]
                 .map(String::from)
                 .to_vec(),
+            requirements_unhashed: false,
         }
     }
 
@@ -223,6 +232,27 @@ mod tests {
         assert!(!text.contains("python_install"), "{text}");
         let dir = written(&text);
         assert_eq!(read(dir.path()).expect("read"), Some(manifest));
+    }
+
+    /// sb-go 69b968b's `requirements_unhashed,omitempty`: an unhashed
+    /// install is recorded after the other fields, and a manifest without
+    /// the field (every one written before it, sb-go's and sb's) was a
+    /// hashed install.
+    #[test]
+    fn an_unhashed_install_is_recorded_last_and_its_absence_is_hashed() {
+        let unhashed = Manifest {
+            requirements_unhashed: true,
+            ..sb_go()
+        };
+        let mut text = serde_json::to_string_pretty(&unhashed).expect("json");
+        text.push('\n');
+        let want = SB_GO.replace("  ]\n}\n", "  ],\n  \"requirements_unhashed\": true\n}\n");
+        assert_eq!(text, want);
+        let dir = written(&text);
+        assert_eq!(read(dir.path()).expect("read"), Some(unhashed));
+        let dir = written(SB_GO);
+        let read = read(dir.path()).expect("read").expect("complete");
+        assert!(!read.requirements_unhashed);
     }
 
     /// A missing field makes the generation unhealthy, not an error.

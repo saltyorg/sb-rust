@@ -397,9 +397,13 @@ pub(crate) async fn inspect(
         tracing::info!("the active manifest is incomplete");
         return Ok(Active::default());
     };
+    // The install's kind too (sb-go 69b968b's `manifestMatches`): moving
+    // between a pinned and a pin-less checkout rebuilds the venv even
+    // when the Python and the lock's bytes are the same.
     let matches = manifest.schema_version == manifest::SCHEMA
         && manifest.python_version == toolchain.python
-        && manifest.lock_sha256 == toolchain.lock_sha256;
+        && manifest.lock_sha256 == toolchain.lock_sha256
+        && manifest.requirements_unhashed != toolchain.hashed;
     let healthy = if matches && force != Force::None {
         tracing::info!(
             ?force,
@@ -418,7 +422,9 @@ pub(crate) async fn inspect(
             }
         }
     } else {
-        tracing::info!("the active venv was built for another Python or lock");
+        tracing::info!(
+            "the active venv was built for another Python or lock, or another kind of install"
+        );
         false
     };
     Ok(Active {
@@ -486,8 +492,9 @@ pub(crate) fn status_label(healthy: bool, force: Force) -> &'static str {
 }
 
 /// Bring the active venv in line with the checkout (spec, "The venv
-/// reconcile", sb-go's `Reconcile`): the toolchain; "Ensuring uv <v> is
-/// installed"; "Inspecting the active Ansible virtual environment";
+/// reconcile", sb-go's `Reconcile`): the pins; "Ensuring uv <v> is
+/// installed"; the Python resolved against that uv's list, with a
+/// warning when the checkout pins none; "Inspecting the active Ansible virtual environment";
 /// "Checking Ansible virtual environment for updates" with sb-go's done
 /// label. On a healthy venv and no force, the wrappers
 /// rewritten, old generations cleaned and ownership given to `user`
@@ -512,7 +519,7 @@ pub async fn reconcile_venv(
     force: Force,
 ) -> Result<VenvOutcome, VenvError> {
     let token = step.token();
-    let toolchain = toolchain::read_toolchain(env, &token).await?;
+    let pins = toolchain::read_pins(env, &token).await?;
     let ensuring = format!("Ensuring uv {} is installed", env.uv_version);
     step.step(Labels::new(&ensuring, &ensuring), async |step| {
         uv::ensure_installed(step, env)
@@ -520,6 +527,11 @@ pub async fn reconcile_venv(
             .context("install pinned uv")
     })
     .await?;
+    // After the uv is in place, which the resolution asks (sb-go's order).
+    let toolchain = toolchain::resolve(env, pins, &token).await?;
+    if let Some(notice) = toolchain.notice(env.uv_version) {
+        step.warn(notice);
+    }
     // Its probes take about a second on a Saltbox venv: a step of its
     // own, so the run doesn't sit silent before the next one (spec, step 4).
     let inspecting = Labels::new(
@@ -1196,10 +1208,9 @@ async fn install_python<'a>(
 /// Build a new generation into staging (spec, steps 7-11): uv's cache
 /// cleared when forced ([`clear_cache`]); the Python
 /// (the active one's, or a new release); `releases/<stamp>-<lock[:12]>/`; "Creating Ansible
-/// virtual environment" (`uv venv`); "Syncing hashed Saltbox
-/// requirements" (`uv pip sync --require-hashes`, `--no-cache` when
-/// forced), both streamed into their steps with no timeout (Ctrl-C stops
-/// them); the exported commands; "Validating the new Ansible virtual
+/// virtual environment" (`uv venv`); the requirements ([`requirements`]:
+/// hashed, or unhashed for a pin-less checkout), both streamed into their
+/// steps with no timeout (Ctrl-C stops them); the exported commands; "Validating the new Ansible virtual
 /// environment" ([`validate`]); the manifest. `previous` is the active generation's manifest, if any.
 ///
 /// # Errors
@@ -1286,35 +1297,7 @@ async fn stage<'a>(
         anyhow::Ok(())
     })
     .await?;
-    let syncing = "Syncing hashed Saltbox requirements";
-    nested(step, Labels::new(syncing, syncing), async |step| {
-        let python = venv.join("bin/python3");
-        let sync = env
-            .isolated(Kind::Uv { cache: true }, &env.layout.uv)?
-            .map(|cmd| {
-                let cmd = cmd
-                    .arg("pip")
-                    .arg("sync")
-                    .arg("--no-progress")
-                    .arg("--python")
-                    .shown_value(python.to_string_lossy())
-                    .arg("--require-hashes");
-                let cmd = if force == Force::None {
-                    cmd
-                } else {
-                    cmd.arg("--no-cache")
-                };
-                cmd.shown_value(env.layout.lock.to_string_lossy())
-            });
-        let _streamed = sync
-            .cmd
-            .stream(step)
-            .await?
-            .check()
-            .context("error syncing requirements")?;
-        anyhow::Ok(())
-    })
-    .await?;
+    requirements(step, env, toolchain, &venv, force).await?;
     let commands = discover(&venv)?;
     validate(step, env, &venv, &toolchain.python).await?;
     let manifest = Manifest {
@@ -1328,9 +1311,69 @@ async fn stage<'a>(
         saltbox_commit: toolchain.commit.clone(),
         created_at: created_at(jiff::Timestamp::now()),
         exported_commands: commands,
+        requirements_unhashed: !toolchain.hashed,
     };
     manifest::write(&generation, &manifest)?;
     Ok((generation, venv, manifest))
+}
+
+/// The requirements into the staged venv (spec, step 9): "Syncing hashed
+/// Saltbox requirements" (`uv pip sync --require-hashes`) for a pinned
+/// checkout; without a pin, "Installing unhashed Saltbox requirements"
+/// (`uv pip install --requirement`, which resolves the list's
+/// dependencies, where `pip sync` installs only what is listed: sb-go
+/// 69b968b's `installRequirementsArgs`). Either streamed into its step
+/// with no timeout, `--no-cache` when forced.
+async fn requirements(
+    step: &mut Step,
+    env: &Env<'_>,
+    toolchain: &Toolchain,
+    venv: &Path,
+    force: Force,
+) -> Result<(), BuildError> {
+    let (label, failure) = if toolchain.hashed {
+        (
+            "Syncing hashed Saltbox requirements",
+            "error syncing requirements",
+        )
+    } else {
+        (
+            "Installing unhashed Saltbox requirements",
+            "error installing unhashed requirements",
+        )
+    };
+    nested(step, Labels::new(label, label), async |step| {
+        let python = venv.join("bin/python3");
+        let lock = env.layout.lock.to_string_lossy();
+        let install = env
+            .isolated(Kind::Uv { cache: true }, &env.layout.uv)?
+            .map(|cmd| {
+                let cmd = cmd
+                    .arg("pip")
+                    .arg(if toolchain.hashed { "sync" } else { "install" })
+                    .arg("--no-progress")
+                    .arg("--python")
+                    .shown_value(python.to_string_lossy());
+                let cmd = if toolchain.hashed {
+                    cmd.arg("--require-hashes")
+                } else {
+                    cmd
+                };
+                let cmd = if force == Force::None {
+                    cmd
+                } else {
+                    cmd.arg("--no-cache")
+                };
+                if toolchain.hashed {
+                    cmd.shown_value(lock)
+                } else {
+                    cmd.arg("--requirement").shown_value(lock)
+                }
+            });
+        let _streamed = install.cmd.stream(step).await?.check().context(failure)?;
+        anyhow::Ok(())
+    })
+    .await
 }
 
 /// "Validating the new Ansible virtual environment" (spec, step 11;
@@ -1556,6 +1599,7 @@ mod tests {
                 saltbox_commit: String::new(),
                 created_at: String::new(),
                 exported_commands: vec!["ansible".to_string()],
+                requirements_unhashed: false,
             },
         };
         (old, staged)

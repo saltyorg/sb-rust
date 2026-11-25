@@ -60,7 +60,10 @@ async fn in_step<T>(body: impl AsyncFnOnce(&mut Step, &Shutdown) -> anyhow::Resu
 /// The tree's toolchain, as `reconcile_venv` reads it.
 async fn toolchain(tree: &Tree) -> Toolchain {
     let token = tokio_util::sync::CancellationToken::new();
-    toolchain::read_toolchain(&tree.env(), &token)
+    let pins = toolchain::read_pins(&tree.env(), &token)
+        .await
+        .expect("pins");
+    toolchain::resolve(&tree.env(), pins, &token)
         .await
         .expect("toolchain")
 }

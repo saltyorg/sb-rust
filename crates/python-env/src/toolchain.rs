@@ -1,7 +1,10 @@
 //! The toolchain Saltbox pins (python-env spec, "The toolchain"; sb-go's
-//! `python/toolchain.go` and `venv.go:76-104`): `.python-version`,
-//! `.uv-version` as a minimum against the uv this sb provides, the hashed
-//! lock's sha256 and the checkout's commit.
+//! `python/toolchain.go` and `venv.go:76-104`, 69b968b): `.python-version`,
+//! `.uv-version` as a minimum against the uv this sb provides, the
+//! lock's sha256 and the checkout's commit ([`read_pins`]), then the
+//! Python resolved against the pinned uv's download list ([`resolve`]).
+//! A checkout without `.python-version` falls back to the newest
+//! [`FALLBACK_MINOR`] patch, installed unhashed (ADR-031, D7).
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -11,21 +14,61 @@ use sb_exec::Cmd;
 use tokio_util::sync::CancellationToken;
 
 use crate::Env;
+use crate::isolate::Kind;
 
 /// `git rev-parse HEAD`'s limit (spec, difference 8).
 const COMMIT_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// `uv python list`'s limit: it reads the list built into uv, no network.
+const LIST_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// The Python minor of a checkout without `.python-version`, such as
+/// Saltbox's pre-* branches: the one sb-go used before Saltbox pinned
+/// its Python (sb-go's `FallbackPythonMinor`).
+pub const FALLBACK_MINOR: &str = "3.12";
+
 /// What the checkout pins, read before anything changes.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Toolchain {
-    /// `.python-version`: `major.minor.patch`.
-    pub python: String,
-    /// `.uv-version`: the oldest uv Saltbox accepts.
-    pub minimum_uv: String,
+pub struct Pins {
+    /// `.python-version`: `major.minor.patch`; `None` without the file.
+    pub python: Option<String>,
+    /// `.uv-version`: the oldest uv Saltbox accepts; `None` without the
+    /// file, no minimum.
+    pub minimum_uv: Option<String>,
     /// The lock's sha256, lower-case hex.
     pub lock_sha256: String,
     /// The checkout's `HEAD`.
     pub commit: String,
+}
+
+/// The toolchain the venv is built for: [`Pins`] with the Python
+/// resolved ([`resolve`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Toolchain {
+    /// The exact Python: the pin, or the fallback's patch.
+    pub python: String,
+    /// Whether the requirements are a hashed lock: true when the checkout
+    /// pins its Python, false for the fallback's unhashed list.
+    pub hashed: bool,
+    /// The lock's sha256, lower-case hex.
+    pub lock_sha256: String,
+    /// The checkout's `HEAD`.
+    pub commit: String,
+}
+
+impl Toolchain {
+    /// The line a run shows when the checkout pins no Python (sb-go's
+    /// `Toolchain.Notice`), naming the Python and `uv`, the uv this sb
+    /// provides; `None` for a pinned checkout.
+    #[must_use]
+    pub fn notice(&self, uv: &str) -> Option<String> {
+        (!self.hashed).then(|| {
+            format!(
+                "This Saltbox branch has no pinned Python; using Python {}, the newest {FALLBACK_MINOR} this sb's uv ({uv}) provides",
+                self.python
+            )
+        })
+    }
 }
 
 /// Why the toolchain couldn't be read, in sb-go's words.
@@ -61,6 +104,22 @@ pub enum ToolchainError {
     /// git couldn't tell the checkout's commit.
     #[error("read Saltbox commit: {0}")]
     Commit(String),
+    /// uv's download list couldn't be had: the call's failure, uv's own
+    /// message in it.
+    #[error("list the Pythons uv {uv} can install: {cause}")]
+    List { uv: String, cause: String },
+    /// uv's download list isn't the JSON uv writes.
+    #[error("parse the Pythons uv {uv} can install: {cause}")]
+    ListParse {
+        uv: String,
+        cause: serde_json::Error,
+    },
+    /// A checkout without a pin, and no Python of the fallback's minor in
+    /// uv's list.
+    #[error(
+        "this Saltbox branch has no pinned Python, and this sb's uv ({uv}) offers no Python {minor}; run sb self-update"
+    )]
+    NoFallback { uv: String, minor: &'static str },
 }
 
 /// One `major.minor.patch` of digits (sb-go's `^[0-9]+\.[0-9]+\.[0-9]+$`).
@@ -73,20 +132,23 @@ fn exact(value: &str) -> bool {
 }
 
 /// The exact version in the pin file at `path` (sb-go's
-/// `readExactVersion`), trimmed.
+/// `readOptionalExactVersion`), trimmed; `None` when there is no file.
 ///
 /// # Errors
 ///
 /// [`ToolchainError::Read`] or [`ToolchainError::Malformed`].
-pub fn read_pin(path: &Path, name: &'static str) -> Result<String, ToolchainError> {
-    let text = std::fs::read_to_string(path).map_err(|cause| ToolchainError::Read {
-        name,
-        path: path.to_path_buf(),
-        cause,
-    })?;
+pub fn read_pin(path: &Path, name: &'static str) -> Result<Option<String>, ToolchainError> {
+    let text = match std::fs::read_to_string(path) {
+        Err(cause) if cause.kind() == io::ErrorKind::NotFound => return Ok(None),
+        read => read.map_err(|cause| ToolchainError::Read {
+            name,
+            path: path.to_path_buf(),
+            cause,
+        })?,
+    };
     let value = text.trim();
     if exact(value) {
-        Ok(value.to_string())
+        Ok(Some(value.to_string()))
     } else {
         Err(ToolchainError::Malformed {
             path: path.to_path_buf(),
@@ -128,28 +190,169 @@ pub fn file_sha256(path: &Path) -> io::Result<String> {
 }
 
 /// The checkout's pins (sb-go's `Reconcile`, its first lines): both pin
-/// files, the uv minimum against `env.uv_version`, the lock's digest and
-/// `git rev-parse HEAD` in the checkout (capture, 10 s).
+/// files, the uv minimum against `env.uv_version` when there is one, the
+/// lock's digest and `git rev-parse HEAD` in the checkout (capture, 10 s).
 ///
 /// # Errors
 ///
 /// [`ToolchainError`]: the first pin, minimum, lock or commit failure.
-pub async fn read_toolchain(
-    env: &Env<'_>,
-    token: &CancellationToken,
-) -> Result<Toolchain, ToolchainError> {
+pub async fn read_pins(env: &Env<'_>, token: &CancellationToken) -> Result<Pins, ToolchainError> {
     let layout = env.layout;
     let python = read_pin(&layout.python_pin, "Python")?;
     let minimum_uv = read_pin(&layout.uv_pin, "uv")?;
-    check_uv_minimum(&minimum_uv, env.uv_version)?;
+    if let Some(minimum) = &minimum_uv {
+        check_uv_minimum(minimum, env.uv_version)?;
+    }
     let lock_sha256 = file_sha256(&layout.lock).map_err(ToolchainError::Lock)?;
     let commit = commit(env, token).await?;
-    Ok(Toolchain {
+    Ok(Pins {
         python,
         minimum_uv,
         lock_sha256,
         commit,
     })
+}
+
+/// The Python for `pins` (sb-go's `resolveToolchainWithRuntime`): a
+/// pinned Python as it is, with the hashed lock; without a pin, the
+/// newest [`FALLBACK_MINOR`] patch the installed uv can install
+/// ([`downloads`]), unhashed. Runs after uv is installed.
+///
+/// # Errors
+///
+/// [`ToolchainError::List`], [`ToolchainError::ListParse`] or
+/// [`ToolchainError::NoFallback`].
+pub async fn resolve(
+    env: &Env<'_>,
+    pins: Pins,
+    token: &CancellationToken,
+) -> Result<Toolchain, ToolchainError> {
+    let Pins {
+        python,
+        lock_sha256,
+        commit,
+        ..
+    } = pins;
+    let (python, hashed) = if let Some(python) = python {
+        (python, true)
+    } else {
+        let available = list_downloads(env, token).await?;
+        (newest_fallback(&available, env.uv_version)?, false)
+    };
+    Ok(Toolchain {
+        python,
+        hashed,
+        lock_sha256,
+        commit,
+    })
+}
+
+/// One entry of `uv python list --output-format json`: the fields read.
+#[derive(serde::Deserialize)]
+struct Download {
+    version: String,
+    implementation: String,
+    variant: String,
+}
+
+/// The exact `CPython` releases in uv's download list `json` (sb-go's
+/// `listPythonDownloadsWithRuntime`): `CPython`'s `default` variant only
+/// (no free-threaded or debug build), at an exact `X.Y.Z` (no
+/// pre-release), in the list's order.
+///
+/// # Errors
+///
+/// serde's, when `json` isn't a list of such entries.
+pub fn downloads(json: &str) -> Result<Vec<String>, serde_json::Error> {
+    let entries: Vec<Download> = serde_json::from_str(json)?;
+    Ok(entries
+        .into_iter()
+        .filter(|entry| {
+            entry.implementation == "cpython" && entry.variant == "default" && exact(&entry.version)
+        })
+        .map(|entry| entry.version)
+        .collect())
+}
+
+/// The newest [`FALLBACK_MINOR`] patch in `available`, by number (semver
+/// reads each exact version; one it refuses, a leading zero, is skipped).
+///
+/// # Errors
+///
+/// [`ToolchainError::NoFallback`] when there is none; `uv` names this
+/// sb's uv.
+pub fn newest_fallback(available: &[String], uv: &str) -> Result<String, ToolchainError> {
+    available
+        .iter()
+        .filter_map(|version| semver::Version::parse(version).ok())
+        .filter(|version| format!("{}.{}", version.major, version.minor) == FALLBACK_MINOR)
+        .max()
+        .map(|version| version.to_string())
+        .ok_or_else(|| ToolchainError::NoFallback {
+            uv: uv.to_string(),
+            minor: FALLBACK_MINOR,
+        })
+}
+
+/// `uv python list --only-downloads --all-versions --output-format json`
+/// (<https://docs.astral.sh/uv/reference/cli/#uv-python-list>), isolated
+/// as every uv call, captured (30 s): the exact `CPython` releases the
+/// installed uv can install ([`downloads`]). stdout alone is read, so a
+/// warning on stderr doesn't spoil the JSON; a failure carries stderr's
+/// last lines, uv's own message.
+async fn list_downloads(
+    env: &Env<'_>,
+    token: &CancellationToken,
+) -> Result<Vec<String>, ToolchainError> {
+    let uv = env.uv_version;
+    let failed = |cause: String| ToolchainError::List {
+        uv: uv.to_string(),
+        cause,
+    };
+    let list = env
+        .isolated(Kind::Uv { cache: true }, &env.layout.uv)
+        .map_err(|err| failed(err.to_string()))?
+        .map(|cmd| {
+            cmd.arg("python")
+                .arg("list")
+                .arg("--only-downloads")
+                .arg("--all-versions")
+                .arg("--output-format")
+                .arg("json")
+                .timeout(LIST_TIMEOUT)
+        });
+    let ran = list
+        .cmd
+        .capture(token)
+        .await
+        .map_err(|err| failed(format!("{err}: {}", err.cause())))?;
+    let ran = ran
+        .check()
+        .map_err(|failed_run| failed(stderr_text(&failed_run)))?;
+    downloads(&ran.stdout).map_err(|cause| ToolchainError::ListParse {
+        uv: uv.to_string(),
+        cause,
+    })
+}
+
+/// A failed child's text with every one of stderr's last lines (sb-go
+/// adds uv's whole stderr), on one line: exec's message, then each line
+/// trimmed and escaped by cli-core's rule, joined by `; `. Why not
+/// sb-host's `child_failure`: it keeps stderr's last line only, and uv's
+/// error is often an `error:` line and its causes beneath it.
+fn stderr_text(failed: &sb_exec::Failed) -> String {
+    let lines: Vec<String> = failed
+        .last_lines()
+        .iter()
+        .map(|line| line.trim())
+        .filter(|line| !line.is_empty())
+        .map(sb_cli_core::exit::escaped)
+        .collect();
+    if lines.is_empty() {
+        failed.to_string()
+    } else {
+        format!("{failed}: {}", lines.join("; "))
+    }
 }
 
 /// `git rev-parse HEAD` in the checkout, with `LC_ALL=C` as sb-repo runs
@@ -180,7 +383,10 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join(".python-version");
         std::fs::write(&path, " 3.12.7\n").expect("write");
-        assert_eq!(read_pin(&path, "Python").expect("pin"), "3.12.7");
+        assert_eq!(
+            read_pin(&path, "Python").expect("pin").as_deref(),
+            Some("3.12.7")
+        );
     }
 
     /// sb-go's text for each malformed pin.
@@ -210,16 +416,102 @@ mod tests {
         }
     }
 
+    /// A checkout without the file pins nothing (ADR-031, D7): sb-go
+    /// 69b968b's `readOptionalExactVersion`.
     #[test]
-    fn a_missing_pin_names_its_file() {
+    fn a_missing_pin_is_no_pin() {
         let path = Path::new("/nonexistent/.python-version");
-        let err = read_pin(path, "Python").expect_err("missing");
+        assert_eq!(read_pin(path, "Python").expect("no pin"), None);
+    }
+
+    /// A pin that is there but can't be read still fails, naming its file.
+    #[test]
+    fn an_unreadable_pin_names_its_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(".python-version");
+        std::fs::create_dir(&path).expect("a directory in its place");
+        let err = read_pin(&path, "Python").expect_err("unreadable");
         assert!(
-            err.to_string().starts_with(
-                "load Saltbox Python toolchain: read Python version from /nonexistent/.python-version: "
-            ),
+            err.to_string().starts_with(&format!(
+                "load Saltbox Python toolchain: read Python version from {}: ",
+                path.display()
+            )),
             "{err}"
         );
+    }
+
+    /// Invented `uv python list --output-format json` output (sb-go's
+    /// `pythonListFixture`): the newest 3.12 among `CPython`'s default
+    /// builds is 3.12.41 by number, not by text; a pre-release, a
+    /// free-threaded build and `PyPy` are left out.
+    const DOWNLOADS: &str = r#"[
+      {"key": "cpython-3.13.50-linux-x86_64-gnu", "version": "3.13.50", "implementation": "cpython", "variant": "default"},
+      {"key": "cpython-3.12.80rc1-linux-x86_64-gnu", "version": "3.12.80rc1", "implementation": "cpython", "variant": "default"},
+      {"key": "cpython-3.12.60+freethreaded-linux-x86_64-gnu", "version": "3.12.60", "implementation": "cpython", "variant": "freethreaded"},
+      {"key": "pypy-3.12.70-linux-x86_64-gnu", "version": "3.12.70", "implementation": "pypy", "variant": "default"},
+      {"key": "cpython-3.12.9-linux-x86_64-gnu", "version": "3.12.9", "implementation": "cpython", "variant": "default"},
+      {"key": "cpython-3.12.41-linux-x86_64-gnu", "version": "3.12.41", "implementation": "cpython", "variant": "default"},
+      {"key": "cpython-3.12.7-linux-x86_64-gnu", "version": "3.12.7", "implementation": "cpython", "variant": "default"}
+    ]"#;
+
+    #[test]
+    fn the_download_list_keeps_cpythons_default_exact_releases() {
+        assert_eq!(
+            downloads(DOWNLOADS).expect("parsed"),
+            ["3.13.50", "3.12.9", "3.12.41", "3.12.7"]
+        );
+        assert!(downloads("not json").is_err());
+        assert!(downloads(r#"[{"version": "3.12.7"}]"#).is_err());
+    }
+
+    #[test]
+    fn the_fallback_is_the_newest_312_by_number() {
+        let available = downloads(DOWNLOADS).expect("parsed");
+        assert_eq!(
+            newest_fallback(&available, "0.90.1").expect("found"),
+            "3.12.41"
+        );
+        // A leading zero semver refuses is skipped, not picked.
+        let available = ["3.12.09".to_string(), "3.12.8".to_string()];
+        assert_eq!(
+            newest_fallback(&available, "0.90.1").expect("found"),
+            "3.12.8"
+        );
+    }
+
+    #[test]
+    fn no_312_in_the_list_is_named() {
+        let available = [
+            "3.13.50".to_string(),
+            "3.11.9".to_string(),
+            "4.12.1".to_string(),
+        ];
+        let err = newest_fallback(&available, "0.90.1").expect_err("none");
+        assert_eq!(
+            err.to_string(),
+            "this Saltbox branch has no pinned Python, and this sb's uv (0.90.1) offers no Python 3.12; run sb self-update"
+        );
+    }
+
+    #[test]
+    fn only_an_unhashed_toolchain_has_a_notice() {
+        let fallback = Toolchain {
+            python: "3.12.41".to_string(),
+            hashed: false,
+            lock_sha256: "d".repeat(64),
+            commit: "c".repeat(40),
+        };
+        assert_eq!(
+            fallback.notice("0.90.1").as_deref(),
+            Some(
+                "This Saltbox branch has no pinned Python; using Python 3.12.41, the newest 3.12 this sb's uv (0.90.1) provides"
+            )
+        );
+        let pinned = Toolchain {
+            hashed: true,
+            ..fallback
+        };
+        assert_eq!(pinned.notice("0.90.1"), None);
     }
 
     /// By semver, not by text: 0.13.10 is newer than 0.13.4.

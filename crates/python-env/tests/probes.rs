@@ -20,11 +20,11 @@ fn token() -> CancellationToken {
 async fn the_toolchain_is_read_from_the_checkout() {
     let _spawns = SPAWNS.lock().await;
     let tree = Tree::new();
-    let got = toolchain::read_toolchain(&tree.env(), &token())
+    let got = toolchain::read_pins(&tree.env(), &token())
         .await
         .expect("toolchain");
-    assert_eq!(got.python, PYTHON);
-    assert_eq!(got.minimum_uv, UV);
+    assert_eq!(got.python.as_deref(), Some(PYTHON));
+    assert_eq!(got.minimum_uv.as_deref(), Some(UV));
     assert_eq!(got.commit, COMMIT);
     let digest = toolchain::file_sha256(&tree.layout.lock).expect("digest");
     assert_eq!(got.lock_sha256, digest);
@@ -39,7 +39,7 @@ async fn a_newer_uv_minimum_stops_the_toolchain() {
     let tree = Tree::new();
     std::fs::write(&tree.layout.uv_pin, "0.99.0\n").expect("pin");
     std::fs::remove_file(&tree.layout.lock).expect("rm lock");
-    let err = toolchain::read_toolchain(&tree.env(), &token())
+    let err = toolchain::read_pins(&tree.env(), &token())
         .await
         .expect_err("too old");
     assert_eq!(
@@ -55,7 +55,7 @@ async fn a_missing_lock_is_named() {
     let _spawns = SPAWNS.lock().await;
     let tree = Tree::new();
     std::fs::remove_file(&tree.layout.lock).expect("rm lock");
-    let err = toolchain::read_toolchain(&tree.env(), &token())
+    let err = toolchain::read_pins(&tree.env(), &token())
         .await
         .expect_err("no lock");
     assert!(
@@ -75,7 +75,7 @@ async fn a_failing_git_is_named() {
         "broken-git",
         "echo 'fatal: not a git repository' >&2; exit 128",
     );
-    let err = toolchain::read_toolchain(&env, &token())
+    let err = toolchain::read_pins(&env, &token())
         .await
         .expect_err("no commit");
     let text = err.to_string();
@@ -83,18 +83,155 @@ async fn a_failing_git_is_named() {
     assert!(text.contains("fatal: not a git repository"), "{text}");
 }
 
+/// A checkout without pins (Saltbox's pre-* branches) reads as none,
+/// and without `.uv-version` no minimum is checked, even against an
+/// older uv (ADR-031, D7).
 #[tokio::test]
-async fn a_missing_python_pin_is_named() {
+async fn a_checkout_without_pins_checks_no_minimum() {
     let _spawns = SPAWNS.lock().await;
     let tree = Tree::new();
     std::fs::remove_file(&tree.layout.python_pin).expect("rm pin");
-    let err = toolchain::read_toolchain(&tree.env(), &token())
+    std::fs::remove_file(&tree.layout.uv_pin).expect("rm pin");
+    let mut env = tree.env();
+    env.uv_version = "0.0.1";
+    let got = toolchain::read_pins(&env, &token()).await.expect("no pins");
+    assert_eq!(got.python, None);
+    assert_eq!(got.minimum_uv, None);
+    assert_eq!(got.commit, COMMIT);
+}
+
+/// A Python pin without `.uv-version`: the exact pin, no minimum.
+#[tokio::test]
+async fn a_python_pin_without_a_uv_minimum_is_read_alone() {
+    let _spawns = SPAWNS.lock().await;
+    let tree = Tree::new();
+    std::fs::remove_file(&tree.layout.uv_pin).expect("rm pin");
+    let mut env = tree.env();
+    env.uv_version = "0.0.1";
+    let got = toolchain::read_pins(&env, &token())
         .await
-        .expect_err("no pin");
+        .expect("the Python pin");
+    assert_eq!(got.python.as_deref(), Some(PYTHON));
+    assert_eq!(got.minimum_uv, None);
+}
+
+/// A pin that is there but malformed is still refused, with today's
+/// text, whether or not the other is there.
+#[tokio::test]
+async fn a_malformed_pin_is_still_refused() {
+    let _spawns = SPAWNS.lock().await;
+    let tree = Tree::new();
+    std::fs::remove_file(&tree.layout.uv_pin).expect("rm pin");
+    std::fs::write(&tree.layout.python_pin, "3.12\n").expect("pin");
+    let err = toolchain::read_pins(&tree.env(), &token())
+        .await
+        .expect_err("malformed");
+    assert_eq!(
+        err.to_string(),
+        format!(
+            "load Saltbox Python toolchain: {} must contain one exact major.minor.patch version, got \"3.12\"",
+            tree.layout.python_pin.display()
+        )
+    );
+    std::fs::remove_file(&tree.layout.python_pin).expect("rm pin");
+    std::fs::write(&tree.layout.uv_pin, "latest\n").expect("pin");
+    let err = toolchain::read_pins(&tree.env(), &token())
+        .await
+        .expect_err("malformed");
+    assert!(
+        err.to_string().ends_with(
+            "/.uv-version must contain one exact major.minor.patch version, got \"latest\""
+        ),
+        "{err}"
+    );
+}
+
+/// The uv calls the stand-in recorded, without the uv path and
+/// `--no-config`.
+fn uv_calls(tree: &Tree) -> Vec<String> {
+    let uv = format!("{} --no-config ", tree.layout.uv.display());
+    tree.calls_made()
+        .iter()
+        .filter_map(|call| call.strip_prefix(&uv).map(str::to_string))
+        .collect()
+}
+
+/// Without a pin, the newest 3.12 of `CPython`'s default builds in the
+/// pinned uv's download list, unhashed, after one list call and nothing
+/// else (sb-go's `TestResolveToolchainWithoutPinsUsesNewestFallbackPatch`).
+#[tokio::test]
+async fn without_a_pin_the_newest_312_uv_lists_is_resolved() {
+    let _spawns = SPAWNS.lock().await;
+    let tree = Tree::new();
+    std::fs::remove_file(&tree.layout.python_pin).expect("rm pin");
+    let env = tree.env();
+    let pins = toolchain::read_pins(&env, &token()).await.expect("pins");
+    let got = toolchain::resolve(&env, pins.clone(), &token())
+        .await
+        .expect("resolved");
+    assert_eq!(
+        got,
+        toolchain::Toolchain {
+            python: PYTHON.to_string(),
+            hashed: false,
+            lock_sha256: pins.lock_sha256,
+            commit: pins.commit,
+        }
+    );
+    assert_eq!(
+        uv_calls(&tree),
+        ["python list --only-downloads --all-versions --output-format json"]
+    );
+}
+
+/// uv's list failing names uv's own message and this sb's uv.
+#[tokio::test]
+async fn a_failing_download_list_names_uvs_message() {
+    let _spawns = SPAWNS.lock().await;
+    let tree = Tree::new();
+    std::fs::remove_file(&tree.layout.python_pin).expect("rm pin");
+    tree.fail("python-list");
+    let env = tree.env();
+    let pins = toolchain::read_pins(&env, &token()).await.expect("pins");
+    let err = toolchain::resolve(&env, pins, &token())
+        .await
+        .expect_err("failed list");
+    let text = err.to_string();
+    assert!(
+        text.starts_with(&format!("list the Pythons uv {UV} can install: ")),
+        "{text}"
+    );
+    assert!(text.contains("uv: python-list failed (stand-in)"), "{text}");
+}
+
+/// A list that isn't uv's JSON, and one without a 3.12, are named.
+#[tokio::test]
+async fn an_unusable_download_list_is_named() {
+    let _spawns = SPAWNS.lock().await;
+    let tree = Tree::new();
+    std::fs::remove_file(&tree.layout.python_pin).expect("rm pin");
+    let env = tree.env();
+    let pins = toolchain::read_pins(&env, &token()).await.expect("pins");
+    tree.python_downloads("not json");
+    let err = toolchain::resolve(&env, pins.clone(), &token())
+        .await
+        .expect_err("not json");
     assert!(
         err.to_string()
-            .starts_with("load Saltbox Python toolchain: read Python version from "),
+            .starts_with(&format!("parse the Pythons uv {UV} can install: ")),
         "{err}"
+    );
+    tree.python_downloads(
+        r#"[{"version": "3.13.1", "implementation": "cpython", "variant": "default"}]"#,
+    );
+    let err = toolchain::resolve(&env, pins, &token())
+        .await
+        .expect_err("no 3.12");
+    assert_eq!(
+        err.to_string(),
+        format!(
+            "this Saltbox branch has no pinned Python, and this sb's uv ({UV}) offers no Python 3.12; run sb self-update"
+        )
     );
 }
 

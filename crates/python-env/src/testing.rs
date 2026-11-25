@@ -96,6 +96,22 @@ pub const UV: &str = sb_cli_core::build_info::UV_VERSION;
 /// The lock the tree holds.
 pub const LOCK: &str = "ansible==12.0.0 --hash=sha256:00\n";
 
+/// What the stand-in uv's `python list --only-downloads --all-versions
+/// --output-format json` prints unless [`Tree::python_downloads`] says
+/// otherwise: uv's JSON shape with invented entries. [`PYTHON`] is the
+/// newest 3.12 among `CPython`'s default builds; a newer 3.12 of another
+/// variant, another implementation and a pre-release are there too, and
+/// must not be picked, and 3.13.1 for a test that moves the pin.
+pub const DOWNLOADS: &str = r#"[
+  {"key": "cpython-3.13.1-linux-x86_64-gnu", "version": "3.13.1", "implementation": "cpython", "variant": "default"},
+  {"key": "cpython-3.12.30rc1-linux-x86_64-gnu", "version": "3.12.30rc1", "implementation": "cpython", "variant": "default"},
+  {"key": "cpython-3.12.20+freethreaded-linux-x86_64-gnu", "version": "3.12.20", "implementation": "cpython", "variant": "freethreaded"},
+  {"key": "pypy-3.12.10-linux-x86_64-gnu", "version": "3.12.10", "implementation": "pypy", "variant": "default"},
+  {"key": "cpython-3.12.7-linux-x86_64-gnu", "version": "3.12.7", "implementation": "cpython", "variant": "default"},
+  {"key": "cpython-3.12.6-linux-x86_64-gnu", "version": "3.12.6", "implementation": "cpython", "variant": "default"}
+]
+"#;
+
 /// The tag of the fact release [`Tree::healthy`] serves.
 pub const FACT_TAG: &str = "v1.4.0";
 
@@ -206,6 +222,7 @@ impl Tree {
         tree.python(&templates.join("python3"), PYTHON);
         tree.entry_points(&templates.join("bin"));
         tree.uv(UV, UV);
+        tree.python_downloads(DOWNLOADS);
         tree.dpkg_query();
         let _ = stand_in(&tree.stand_ins(), "apt-get", &tree.apt_get_script());
         let policies = tree.root.path().join("policy");
@@ -313,9 +330,10 @@ exit 0"#;
     /// `python install` (the template Python into the install dir's
     /// `cpython/bin/python3.12`), `python find` (that path, or
     /// [`Tree::find_answer`]'s), `venv` (the template Python as
-    /// `bin/python3`) and `pip sync` (the template entry points into the
-    /// venv's `bin`); [`Tree::fail`], [`Tree::fail_once`] and
-    /// [`Tree::hang`] change one of them.
+    /// `bin/python3`), `pip sync` and `pip install` (the template entry
+    /// points into the venv's `bin`) and `python list` with exactly sb's
+    /// arguments ([`Tree::python_downloads`]' answer); [`Tree::fail`],
+    /// [`Tree::fail_once`] and [`Tree::hang`] change one of them.
     ///
     /// # Panics
     ///
@@ -360,7 +378,9 @@ exit 0"#;
              python-find) if [ -e '{root}/find-answer' ]; then cat '{root}/find-answer'; \
              else echo \"$UV_PYTHON_INSTALL_DIR/cpython/bin/python3.12\"; fi ;;\n\
              venv-*) mkdir -p \"$last/bin\" && cp '{root}/templates/python3' \"$last/bin/python3\" ;;\n\
-             pip-sync) cp '{root}/templates/bin/'* \"$(dirname \"$py\")/\" ;;\n\
+             pip-sync|pip-install) cp '{root}/templates/bin/'* \"$(dirname \"$py\")/\" ;;\n\
+             python-list) [ \"$*\" = '--no-config python list --only-downloads --all-versions --output-format json' ] \
+             || exit 2; cat '{root}/python-downloads.json' ;;\n\
              *) exit 2 ;;\n\
              esac"
         )
@@ -488,6 +508,7 @@ exit 0"#;
             saltbox_commit: COMMIT.to_string(),
             created_at: "2026-11-13T12:00:00Z".to_string(),
             exported_commands: COMMANDS.iter().map(ToString::to_string).collect(),
+            requirements_unhashed: false,
         };
         self.manifest(&dir, &manifest);
         Generation {
@@ -639,6 +660,15 @@ exit 0"#;
     /// When the marker can't be written.
     pub fn hang(&self, op: &str) {
         self.mark("hang", op);
+    }
+
+    /// Make `uv python list` print `json` ([`DOWNLOADS`] by default).
+    ///
+    /// # Panics
+    ///
+    /// When it can't be written.
+    pub fn python_downloads(&self, json: &str) {
+        std::fs::write(self.root.path().join("python-downloads.json"), json).expect("downloads");
     }
 
     /// Make `uv python find` print `answer`.

@@ -346,6 +346,140 @@ async fn a_changed_python_pin_installs_that_python() {
     assert!(!active.python_install.exists(), "the old Python is cleaned");
 }
 
+/// A run on `tree` with no force: its error, screen, and the active
+/// generation's manifest.
+async fn reconcile_once(tree: &Tree) -> (Ran, sb_python_env::manifest::Manifest) {
+    let env = tree.env();
+    let ran = in_step(async |step| {
+        reconcile_venv(step, &env, None, Force::None).await?;
+        Ok(())
+    })
+    .await;
+    assert_eq!(ran.error, None, "{}", ran.screen);
+    let manifest = sb_python_env::manifest::read(&active_generation(tree))
+        .expect("manifest")
+        .expect("complete");
+    (ran, manifest)
+}
+
+/// Moving between a pinned and a pin-less checkout (Saltbox's pre-*
+/// branches; ADR-031, D7) rebuilds the venv each way, though the Python
+/// (the stand-in list's newest 3.12 is the pin) and the lock stay the
+/// same: the manifest records the unhashed install. Without pins the
+/// requirements are installed with `uv pip install --requirement`, no
+/// hashes, and every run says which Python it used; a second pin-less
+/// run keeps the venv.
+#[tokio::test]
+async fn a_pin_less_checkout_installs_unhashed_and_moving_rebuilds() {
+    let _spawns = SPAWNS.lock().await;
+    let tree = Tree::new();
+    let first = tree.healthy();
+    let notice = format!(
+        "This Saltbox branch has no pinned Python; using Python 3.12.7, the newest 3.12 this sb's uv ({UV}) provides"
+    );
+    let python_pin = std::fs::read_to_string(&tree.layout.python_pin).expect("pin");
+    let uv_pin = std::fs::read_to_string(&tree.layout.uv_pin).expect("pin");
+    let unpin = || {
+        std::fs::remove_file(&tree.layout.python_pin).expect("rm pin");
+        std::fs::remove_file(&tree.layout.uv_pin).expect("rm pin");
+    };
+
+    unpin();
+    let (ran, manifest) = reconcile_once(&tree).await;
+    assert!(ran.screen.contains(&notice), "{}", ran.screen);
+    assert!(ran.screen.contains("update required"), "{}", ran.screen);
+    assert!(
+        ran.screen
+            .contains("Installing unhashed Saltbox requirements"),
+        "{}",
+        ran.screen
+    );
+    assert!(!ran.screen.contains("Syncing hashed"), "{}", ran.screen);
+    assert_ne!(active_generation(&tree), first.dir);
+    assert!(manifest.requirements_unhashed);
+    assert_eq!(manifest.python_version, "3.12.7");
+    let calls = uv_calls(&tree);
+    let venv = active_generation(&tree).join("venv/bin/python3");
+    let install = format!(
+        "pip install --no-progress --python {} --requirement {}",
+        venv.display(),
+        tree.layout.lock.display()
+    );
+    assert!(calls.contains(&install), "{calls:?}");
+    assert!(
+        !calls.iter().any(|call| call.starts_with("pip sync")),
+        "{calls:?}"
+    );
+
+    let unhashed = active_generation(&tree);
+    let (ran, _) = reconcile_once(&tree).await;
+    assert!(ran.screen.contains(&notice), "{}", ran.screen);
+    assert!(ran.screen.contains("already up to date"), "{}", ran.screen);
+    assert_eq!(active_generation(&tree), unhashed);
+
+    std::fs::write(&tree.layout.python_pin, &python_pin).expect("pin");
+    std::fs::write(&tree.layout.uv_pin, &uv_pin).expect("pin");
+    let (ran, manifest) = reconcile_once(&tree).await;
+    assert!(!ran.screen.contains("no pinned Python"), "{}", ran.screen);
+    assert!(ran.screen.contains("update required"), "{}", ran.screen);
+    assert!(
+        ran.screen.contains("Syncing hashed Saltbox requirements"),
+        "{}",
+        ran.screen
+    );
+    assert!(!manifest.requirements_unhashed);
+    assert_ne!(active_generation(&tree), unhashed);
+    let text =
+        std::fs::read_to_string(active_generation(&tree).join("manifest.json")).expect("manifest");
+    assert!(!text.contains("requirements_unhashed"), "{text}");
+
+    let hashed = active_generation(&tree);
+    unpin();
+    let (ran, manifest) = reconcile_once(&tree).await;
+    assert!(ran.screen.contains("update required"), "{}", ran.screen);
+    assert!(manifest.requirements_unhashed);
+    assert_ne!(active_generation(&tree), hashed);
+}
+
+/// A forced rebuild of a pin-less checkout installs unhashed without
+/// uv's cache, and a failed unhashed install names itself.
+#[tokio::test]
+async fn a_forced_pin_less_rebuild_installs_without_the_cache() {
+    let _spawns = SPAWNS.lock().await;
+    let tree = Tree::new();
+    let _ = tree.healthy();
+    std::fs::remove_file(&tree.layout.python_pin).expect("rm pin");
+    let env = tree.env();
+    let ran = in_step(async |step| {
+        reconcile_venv(step, &env, None, Force::Venv).await?;
+        Ok(())
+    })
+    .await;
+    assert_eq!(ran.error, None, "{}", ran.screen);
+    let calls = uv_calls(&tree);
+    let install = calls
+        .iter()
+        .find(|call| call.starts_with("pip install"))
+        .expect("install");
+    assert!(install.contains(" --no-cache --requirement "), "{install}");
+    assert!(!install.contains("--require-hashes"), "{install}");
+
+    tree.fail("pip-install");
+    let ran = in_step(async |step| {
+        reconcile_venv(step, &env, None, Force::Venv).await?;
+        Ok(())
+    })
+    .await;
+    assert!(ran.error.is_some(), "{}", ran.screen);
+    // The nested step shows its own failure.
+    assert!(
+        ran.screen
+            .contains("error installing unhashed requirements"),
+        "{}",
+        ran.screen
+    );
+}
+
 /// A forced rebuild of a healthy venv says so and builds: `Venv` on the
 /// active Python, `Python` on a new release with `--reinstall`; both
 /// without uv's cache.
