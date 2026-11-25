@@ -34,6 +34,14 @@ stable_re="^$n\\.$n\\.$n\$"
 # The notes are cut at sb-go's 1800, which leaves the embed short.
 description_max=1800
 
+# A first release lists only its newest commits: its range is the whole
+# history (over 900 commits when the cap was set), and GitHub refuses a
+# release body over 125,000 characters (UNVERIFIED: not in the REST
+# reference; it is the figure of GitHub's own "body is too long" error).
+# At 100 lines the body stays under it while the subjects average under
+# 1,200 characters; the changelog link after them holds the rest.
+first_release_max=100
+
 die() {
   echo "release: $*" >&2
   exit 1
@@ -74,7 +82,7 @@ previous_tag() {
 
 notes() {
   (($# == 2)) || usage
-  local tag=$1 repo=$2 previous range
+  local tag=$1 repo=$2 previous range count limit=()
   check_args "$tag" "$repo"
   previous=$(previous_tag "$tag")
   range="refs/tags/$tag"
@@ -84,10 +92,16 @@ notes() {
     echo "### Commits since $previous:"
     range="refs/tags/$previous..refs/tags/$tag"
   else
-    echo "### Commits in this release:"
+    count=$(git rev-list --count "$range")
+    if ((count > first_release_max)); then
+      echo "### The newest $first_release_max of this release's $count commits:"
+      limit=(--max-count="$first_release_max")
+    else
+      echo "### Commits in this release:"
+    fi
   fi
   echo
-  git -c log.showSignature=false log --no-decorate --pretty=tformat:'- %s (%h)' "$range"
+  git -c log.showSignature=false log --no-decorate --pretty=tformat:'- %s (%h)' "${limit[@]}" "$range"
   echo
   if [[ -n $previous ]]; then
     echo "**Full Changelog**: https://github.com/$repo/compare/$previous...$tag"

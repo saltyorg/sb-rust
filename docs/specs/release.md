@@ -350,7 +350,10 @@ when `scripts/` or `.github/` changed).
     previous tag;
   - a blank line, then one `- <subject> (<short hash>)` line per commit
     in `<previous>..<tag>` (every commit up to the tag for a first
-    release), newest first, as `git log` lists them;
+    release), newest first, as `git log` lists them. A first release
+    with more than 100 commits lists the newest 100 under `### The
+    newest 100 of this release's <n> commits:`, as its whole history
+    could pass GitHub's 125,000-character limit on a release's body;
   - a blank line, then `**Full Changelog**:
     https://github.com/saltyorg/sb-rust/compare/<previous>...<tag>`. A
     first release has no compare view, so it links

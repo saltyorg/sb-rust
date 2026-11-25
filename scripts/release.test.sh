@@ -165,6 +165,29 @@ refused notes 1.0.0 "not a repo"
 refused notes 1.0.0
 refused nonsense
 
+# A first release with more commits than its notes list: the newest 100,
+# a heading that says so, and the changelog link for the rest.
+mkdir "$fixture/long"
+(
+  cd "$fixture/long"
+  git init --quiet --initial-branch=main
+  for i in $(seq 1 102); do commit "feat: change $i"; done
+  git tag 1.0.0
+  got=$(notes 1.0.0) || fail "notes of a long first release failed"
+  want_head=$'## What\'s Changed\n\n### The newest 100 of this release\'s 102 commits:\n\n'"- feat: change 102 ($(short HEAD))"
+  [[ $got == "$want_head"$'\n'* ]] || fail "long first release's head:"$'\n'"$(head -5 <<<"$got")"
+  [[ $(grep -c '^- ' <<<"$got") == 100 ]] || fail "long first release lists $(grep -c '^- ' <<<"$got") commits, not 100"
+  [[ $(grep '^- ' <<<"$got" | tail -1) == "- feat: change 3 ($(short HEAD~99))" ]] ||
+    fail "long first release's last line: $(grep '^- ' <<<"$got" | tail -1)"
+  [[ $got == *$'\n\n'"**Full Changelog**: https://github.com/$repo/commits/1.0.0" ]] ||
+    fail "long first release's link: $(tail -1 <<<"$got")"
+  # At the cap, every commit, under the plain heading.
+  git tag 1.0.0-rc.1 HEAD~2
+  got=$(notes 1.0.0-rc.1) || fail "notes of a 100-commit first release failed"
+  [[ $(grep -c '^- ' <<<"$got") == 100 && $got == *"### Commits in this release:"* ]] ||
+    fail "a 100-commit first release:"$'\n'"$(head -5 <<<"$got")"
+)
+
 # The Discord payload.
 time=2026-11-20T12:00:00.000Z
 notes 1.0.1 >"$fixture/stable.md"
@@ -260,4 +283,4 @@ for uv in 0.13 ""; do
   [[ $out == release:*"no valid uv_version"* ]] || fail "uv_version '$uv': $out"
 done
 
-echo "PASS: release notes (6 tags, 10 refusals), the Discord payload (2 channels, the 1800-character cut) and the Saltbox gate (1 run, 16 skips, 2 failures)"
+echo "PASS: release notes (6 tags, 10 refusals, a first release over the 100-commit cap and one at it), the Discord payload (2 channels, the 1800-character cut) and the Saltbox gate (1 run, 16 skips, 2 failures)"
