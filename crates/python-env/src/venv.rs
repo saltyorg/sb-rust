@@ -1210,8 +1210,9 @@ async fn install_python<'a>(
 /// (the active one's, or a new release); `releases/<stamp>-<lock[:12]>/`; "Creating Ansible
 /// virtual environment" (`uv venv`); the requirements ([`requirements`]:
 /// hashed, or unhashed for a pin-less checkout), both streamed into their
-/// steps with no timeout (Ctrl-C stops them); the exported commands; "Validating the new Ansible virtual
-/// environment" ([`validate`]); the manifest. `previous` is the active generation's manifest, if any.
+/// steps with no timeout (Ctrl-C stops them); the exported commands;
+/// "Validating the new Ansible virtual environment" ([`validate`]); the
+/// manifest. `previous` is the active generation's manifest, if any.
 ///
 /// # Errors
 ///
@@ -1344,32 +1345,37 @@ async fn requirements(
             "error installing unhashed requirements",
         )
     };
+    let no_cache = |cmd: Cmd| {
+        if force == Force::None {
+            cmd
+        } else {
+            cmd.arg("--no-cache")
+        }
+    };
     nested(step, Labels::new(label, label), async |step| {
-        let python = venv.join("bin/python3");
-        let lock = env.layout.lock.to_string_lossy();
+        let python = venv.join("bin/python3").to_string_lossy().into_owned();
+        let lock = env.layout.lock.to_string_lossy().into_owned();
         let install = env
             .isolated(Kind::Uv { cache: true }, &env.layout.uv)?
             .map(|cmd| {
-                let cmd = cmd
-                    .arg("pip")
-                    .arg(if toolchain.hashed { "sync" } else { "install" })
-                    .arg("--no-progress")
-                    .arg("--python")
-                    .shown_value(python.to_string_lossy());
-                let cmd = if toolchain.hashed {
-                    cmd.arg("--require-hashes")
-                } else {
-                    cmd
-                };
-                let cmd = if force == Force::None {
-                    cmd
-                } else {
-                    cmd.arg("--no-cache")
-                };
+                let cmd = cmd.arg("pip");
                 if toolchain.hashed {
-                    cmd.shown_value(lock)
+                    // sb-go's `syncRequirementsArgs`.
+                    let cmd = cmd
+                        .arg("sync")
+                        .arg("--no-progress")
+                        .arg("--python")
+                        .shown_value(python)
+                        .arg("--require-hashes");
+                    no_cache(cmd).shown_value(lock)
                 } else {
-                    cmd.arg("--requirement").shown_value(lock)
+                    // sb-go's `installRequirementsArgs`.
+                    let cmd = cmd
+                        .arg("install")
+                        .arg("--no-progress")
+                        .arg("--python")
+                        .shown_value(python);
+                    no_cache(cmd).arg("--requirement").shown_value(lock)
                 }
             });
         let _streamed = install.cmd.stream(step).await?.check().context(failure)?;

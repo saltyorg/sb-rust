@@ -265,10 +265,14 @@ pub async fn resolve(
 }
 
 /// One entry of `uv python list --output-format json`: the fields read.
+/// A missing `implementation` or `variant` reads as empty, and the entry
+/// is left out, as Go's `json.Unmarshal` leaves it (sb-go).
 #[derive(serde::Deserialize)]
 struct Download {
     version: String,
+    #[serde(default)]
     implementation: String,
+    #[serde(default)]
     variant: String,
 }
 
@@ -280,7 +284,7 @@ struct Download {
 /// # Errors
 ///
 /// serde's, when `json` isn't a list of such entries.
-pub fn downloads(json: &str) -> Result<Vec<String>, serde_json::Error> {
+fn downloads(json: &str) -> Result<Vec<String>, serde_json::Error> {
     let entries: Vec<Download> = serde_json::from_str(json)?;
     Ok(entries
         .into_iter()
@@ -298,7 +302,7 @@ pub fn downloads(json: &str) -> Result<Vec<String>, serde_json::Error> {
 /// # Errors
 ///
 /// [`ToolchainError::Unavailable`].
-pub fn check_listed(available: &[String], pin: &str, uv: &str) -> Result<(), ToolchainError> {
+fn check_listed(available: &[String], pin: &str, uv: &str) -> Result<(), ToolchainError> {
     if available.iter().any(|version| version == pin) {
         Ok(())
     } else {
@@ -316,7 +320,7 @@ pub fn check_listed(available: &[String], pin: &str, uv: &str) -> Result<(), Too
 ///
 /// [`ToolchainError::NoFallback`] when there is none; `uv` names this
 /// sb's uv.
-pub fn newest_fallback(available: &[String], uv: &str) -> Result<String, ToolchainError> {
+fn newest_fallback(available: &[String], uv: &str) -> Result<String, ToolchainError> {
     available
         .iter()
         .filter_map(|version| semver::Version::parse(version).ok())
@@ -335,10 +339,11 @@ pub fn newest_fallback(available: &[String], uv: &str) -> Result<String, Toolcha
 /// installed uv can install ([`downloads`]). stdout alone is read, so a
 /// warning on stderr doesn't spoil the JSON; a failure carries stderr's
 /// last lines, uv's own message. Why not uv's own filter (`uv python list
-/// cpython@3.12`, newest patch only): uv adds pre-releases to a download
-/// request (uv 0.13.10, `uv-python-commands/src/list.rs`,
-/// `with_prereleases(true)`), and a pin is checked against every patch,
-/// not the newest.
+/// cpython@3.12`, newest patch only): one `--all-versions` list serves both
+/// the pin check, against every patch, and the fallback. uv lists
+/// pre-releases with every download request (uv 0.13.10,
+/// `uv-python-commands/src/list.rs`, `with_prereleases(true)`), which sb
+/// drops ([`downloads`]).
 async fn list_downloads(
     env: &Env<'_>,
     token: &CancellationToken,
@@ -500,7 +505,12 @@ mod tests {
             ["3.13.50", "3.12.9", "3.12.41", "3.12.7"]
         );
         assert!(downloads("not json").is_err());
-        assert!(downloads(r#"[{"version": "3.12.7"}]"#).is_err());
+        // An entry without its implementation or variant is left out.
+        assert_eq!(
+            downloads(r#"[{"version": "3.12.7"}]"#).expect("parsed"),
+            Vec::<String>::new()
+        );
+        assert!(downloads(r#"[{"implementation": "cpython"}]"#).is_err());
     }
 
     #[test]

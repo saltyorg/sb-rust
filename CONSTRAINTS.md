@@ -143,7 +143,7 @@ doesn't fail every run.
 | Go | 1.27 | minimum | system package (installs gitleaks, and reports its version) |
 | node | 24 | major | system package (runs the floor guard) |
 | jq | 1.6 | minimum | system package (the release scripts and their tests; checked when their step runs) |
-| python3 | 3.10 | minimum | system package (the Saltbox updater's isolation tests; checked when their step runs) |
+| python3 | 3.10 | minimum | system package (`scripts/install-diff-cover.sh` builds diff-cover's environment on it) |
 | script (util-linux) | 2.37 | minimum | system package (gives the colour tests a terminal; they use only `-e`, `-q` and `-c`, which Ubuntu 22.04's 2.37.2 has) |
 | cross | 0.2.5 | exact | `cargo install --locked cross --version 0.2.5` (the production glibc build, in the image `Cross.toml` names, ADR-020) |
 | Docker | 29 | minimum | system package (builds and runs cross's image from `build/Dockerfile`, and the `ubuntu:<release>` containers the binary runs in; the first run pulls them) |

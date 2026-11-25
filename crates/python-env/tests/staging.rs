@@ -144,8 +144,13 @@ async fn a_first_build_makes_a_python_release_and_a_generation() {
     let venv = generation.join("venv");
     let (dir, py) = (install.display(), venv.join("bin/python3"));
     let calls = uv_calls(&tree);
+    // The toolchain's resolution asked uv's download list first.
     assert_eq!(
-        calls[..4],
+        calls[0],
+        "python list --only-downloads --all-versions --output-format json"
+    );
+    assert_eq!(
+        calls[1..5],
         [
             format!("python install --managed-python --no-bin --install-dir {dir} 3.12.7"),
             "python find --managed-python --no-project --no-python-downloads 3.12.7".to_string(),
