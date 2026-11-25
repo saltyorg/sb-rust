@@ -27,6 +27,16 @@ const LIST_TIMEOUT: Duration = Duration::from_secs(30);
 /// its Python (sb-go's `FallbackPythonMinor`).
 pub const FALLBACK_MINOR: &str = "3.12";
 
+/// [`FALLBACK_MINOR`] as semver's `=3.12`: any 3.12 patch, no pre-release
+/// (<https://docs.rs/semver/1.0.28/semver/enum.Op.html#opexact>).
+const FALLBACK: semver::Comparator = semver::Comparator {
+    op: semver::Op::Exact,
+    major: 3,
+    minor: Some(12),
+    patch: None,
+    pre: semver::Prerelease::EMPTY,
+};
+
 /// What the checkout pins, read before anything changes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pins {
@@ -310,7 +320,7 @@ pub fn newest_fallback(available: &[String], uv: &str) -> Result<String, Toolcha
     available
         .iter()
         .filter_map(|version| semver::Version::parse(version).ok())
-        .filter(|version| format!("{}.{}", version.major, version.minor) == FALLBACK_MINOR)
+        .filter(|version| FALLBACK.matches(version))
         .max()
         .map(|version| version.to_string())
         .ok_or_else(|| ToolchainError::NoFallback {
@@ -324,7 +334,11 @@ pub fn newest_fallback(available: &[String], uv: &str) -> Result<String, Toolcha
 /// as every uv call, captured (30 s): the exact `CPython` releases the
 /// installed uv can install ([`downloads`]). stdout alone is read, so a
 /// warning on stderr doesn't spoil the JSON; a failure carries stderr's
-/// last lines, uv's own message.
+/// last lines, uv's own message. Why not uv's own filter (`uv python list
+/// cpython@3.12`, newest patch only): uv adds pre-releases to a download
+/// request (uv 0.13.10, `uv-python-commands/src/list.rs`,
+/// `with_prereleases(true)`), and a pin is checked against every patch,
+/// not the newest.
 async fn list_downloads(
     env: &Env<'_>,
     token: &CancellationToken,
@@ -520,6 +534,12 @@ mod tests {
                 )
             );
         }
+    }
+
+    /// The comparator and the text the messages name are one minor.
+    #[test]
+    fn the_fallback_comparator_is_the_fallback_minor() {
+        assert_eq!(FALLBACK.to_string(), format!("={FALLBACK_MINOR}"));
     }
 
     #[test]

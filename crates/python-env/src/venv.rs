@@ -1323,7 +1323,9 @@ async fn stage<'a>(
 /// (`uv pip install --requirement`, which resolves the list's
 /// dependencies, where `pip sync` installs only what is listed: sb-go
 /// 69b968b's `installRequirementsArgs`). Either streamed into its step
-/// with no timeout, `--no-cache` when forced.
+/// with no timeout, `--no-cache` when forced
+/// (<https://docs.astral.sh/uv/reference/cli/#uv-pip-sync>,
+/// <https://docs.astral.sh/uv/reference/cli/#uv-pip-install>).
 async fn requirements(
     step: &mut Step,
     env: &Env<'_>,
