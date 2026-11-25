@@ -40,9 +40,11 @@ tooling.
   removed from code that stays, without a reason in the commit message.
 - No silenced checker: no `#[coverage(off)]`, `#[mutants::skip]`,
   `gitleaks:allow` or cargo-deny `ignore` without an Exceptions row. A
-  workflow linter's suppression (an entry in `.github/actionlint.yaml` or
-  `.github/zizmor.yml`, a `# zizmor: ignore[...]` comment) has its reason
-  in place, next to it, instead of a row (the maintainer, 2026-11-24).
+  zizmor suppression (an entry in `.github/zizmor.yml`, a
+  `# zizmor: ignore[...]` comment) has its reason in place, next to it,
+  instead of a row (the maintainer, 2026-11-24). check-jsonschema has no
+  suppression config: the workflows and actions pass its schemas as they
+  are (the maintainer, 2026-11-25).
 - No secrets in source, tests or logs.
 - Library first (CLAUDE.md): every commit changing Rust carries a
   `Library-check:` line.
