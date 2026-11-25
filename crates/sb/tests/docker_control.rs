@@ -513,7 +513,7 @@ fn restart_relaunches_through_sudo_when_not_root() {
         record.display()
     );
     let logs = tempfile::tempdir().expect("temp dir");
-    let (pid, out) = nobody::sb_as_nobody(
+    let (pid, out, _) = nobody::sb_as_nobody(
         &["docker", "restart", "--ignore", "plex"],
         logs.path(),
         sudo_dir.path(),

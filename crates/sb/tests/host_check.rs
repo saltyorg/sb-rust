@@ -160,6 +160,17 @@ fn an_unsupported_host_still_shows_a_relaunching_runs_warnings() {
         std::os::unix::fs::PermissionsExt::from_mode(0o644),
     )
     .expect("chmod");
+    // sb runs as `nobody` from a copy in a directory it can enter: the
+    // build under `target/` is only as reachable as the checkout (as in
+    // `nobody::sb_as_nobody`).
+    let program_dir = tempfile::tempdir().expect("temp dir");
+    std::fs::set_permissions(
+        program_dir.path(),
+        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+    )
+    .expect("chmod");
+    let program = program_dir.path().join("sb");
+    sb_cli_core::testing::copy_program(common::sb().get_program().as_ref(), &program);
     let script = r#"mount --bind "$1" /etc/os-release && shift && exec "$@""#;
     let mut cmd = Command::new("unshare");
     common::apply_sb_env(&mut cmd);
@@ -180,7 +191,7 @@ fn an_unsupported_host_still_shows_a_relaunching_runs_warnings() {
             "--regid=65534",
             "--clear-groups",
         ])
-        .arg(common::sb().get_program())
+        .arg(&program)
         .args(["--color=never", "docker", "ps"])
         .env("SB_COLOR_PROFILE", "16bit")
         .output()

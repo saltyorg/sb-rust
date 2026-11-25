@@ -242,7 +242,7 @@ fn ps_relaunches_through_sudo_when_not_root() {
         record.display()
     );
     let logs = tempfile::tempdir().expect("temp dir");
-    let (pid, out) = nobody::sb_as_nobody(
+    let (pid, out, program) = nobody::sb_as_nobody(
         &["docker", "ps", "--json"],
         logs.path(),
         sudo_dir.path(),
@@ -261,7 +261,8 @@ fn ps_relaunches_through_sudo_when_not_root() {
         lines[1], "--preserve-env=VISUAL,EDITOR,SB_COLOR_PROFILE,NO_COLOR",
         "{recorded}"
     );
-    let sb = std::fs::canonicalize(common::sb().get_program()).expect("sb's path");
+    // The program that ran: the relaunch names sb's own executable.
+    let sb = std::fs::canonicalize(&program).expect("sb's path");
     assert_eq!(lines[2], sb.display().to_string(), "{recorded}");
     assert_eq!(
         lines[3..],
@@ -279,7 +280,7 @@ fn a_relaunching_run_leaves_startup_warnings_to_the_root_run() {
     }
     let sudo_dir = tempfile::tempdir().expect("temp dir");
     let logs = tempfile::tempdir().expect("temp dir");
-    let (_, out) = nobody::sb_as_nobody(
+    let (_, out, _) = nobody::sb_as_nobody(
         &["--color=never", "docker", "ps"],
         logs.path(),
         sudo_dir.path(),
@@ -291,7 +292,7 @@ fn a_relaunching_run_leaves_startup_warnings_to_the_root_run() {
     assert!(!stderr.contains("SB_COLOR_PROFILE"), "{stderr}");
     // The control through the same harness: a command that doesn't
     // relaunch warns, so the variable did reach sb.
-    let (_, version) = nobody::sb_as_nobody(
+    let (_, version, _) = nobody::sb_as_nobody(
         &["--color=never", "version"],
         logs.path(),
         sudo_dir.path(),

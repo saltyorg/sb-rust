@@ -581,7 +581,7 @@ fn a_request_runs_as_the_calling_user() {
         ("SB_COMPLETE", "fish"),
         ("SB_SALTBOX_DIR", saltbox_dir.as_str()),
     ];
-    let (_, output) = nobody::sb_as_nobody(
+    let (_, output, _) = nobody::sb_as_nobody(
         &["--", "sb", "install", "so"],
         &log_dir,
         sudo_dir.path(),
@@ -600,7 +600,7 @@ fn a_request_runs_as_the_calling_user() {
         "{output:?}"
     );
     let sudo_dir = tempfile::tempdir().expect("temp dir");
-    let (_, output) = nobody::sb_as_nobody(
+    let (_, output, _) = nobody::sb_as_nobody(
         &["completion", "generate", "zsh"],
         &log_dir,
         sudo_dir.path(),
@@ -968,7 +968,7 @@ fn fact_completion_runs_as_the_calling_user() {
         (&["--", "sb", "fact", "get", "plex", "p"], ""),
     ] {
         let sudo_dir = tempfile::tempdir().expect("temp dir");
-        let (_, output) = nobody::sb_as_nobody(words, &log_dir, sudo_dir.path(), sudo, &env);
+        let (_, output, _) = nobody::sb_as_nobody(words, &log_dir, sudo_dir.path(), sudo, &env);
         assert!(output.status.success(), "{output:?}");
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert_eq!(

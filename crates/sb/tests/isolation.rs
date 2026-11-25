@@ -8,16 +8,10 @@ use std::path::{Path, PathBuf};
 
 /// Test files that use sb's path without starting it, each with why.
 /// (A later launch by path in one of these goes unchecked: keep them few.)
-const PATH_ONLY: [(&str, &str); 2] = [
-    (
-        "docker.rs",
-        "compares the path a fake sudo recorded; sb isn't started from it",
-    ),
-    (
-        "raw_pty/mod.rs",
-        "copies a Command its caller built, with apply_sb_env already applied, onto a PTY",
-    ),
-];
+const PATH_ONLY: [(&str, &str); 1] = [(
+    "raw_pty/mod.rs",
+    "copies a Command its caller built, with apply_sb_env already applied, onto a PTY",
+)];
 
 /// Ways a test can name sb's binary other than through `common::sb()`.
 const BY_PATH: [&str; 3] = ["get_program()", "cargo_bin(", "CARGO_BIN_EXE_sb"];
