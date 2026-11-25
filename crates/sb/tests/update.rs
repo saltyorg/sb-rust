@@ -402,23 +402,29 @@ fn on_a_terminal_both_questions_come_before_the_first_step() {
     let text = pty.text();
     assert!(status.success(), "{text}");
     let (enter, leave) = ("\u{1b}[?1049h", "\u{1b}[?1049l");
-    in_order(
-        &text,
-        &[
-            enter,
-            "Saltbox: Currently on branch 'develop'",
-            saltbox,
-            leave,
-            enter,
-            "Sandbox: Currently on branch 'develop'",
-            sandbox,
-            leave,
-            "Saltbox: Reset from branch 'develop' to 'master' (your answer)",
-            "Saltbox repository updated (master)",
-            "Sandbox: Kept branch 'develop' (your answer)",
-            "Sandbox repository updated (develop)",
-        ],
-    );
+    // The checkouts' step, as its tree has it: both answers as its
+    // notices, then both repository steps (ops decision 46). Each frame
+    // draws them in that order, so the order holds however the frames
+    // fall: when one frame shows the Saltbox step finished, a later one
+    // can, but need not, show the notices again.
+    let step = [
+        "Saltbox: Reset from branch 'develop' to 'master' (your answer)",
+        "Sandbox: Kept branch 'develop' (your answer)",
+        "Saltbox repository updated (master)",
+        "Sandbox repository updated (develop)",
+    ];
+    let mut lines = vec![
+        enter,
+        "Saltbox: Currently on branch 'develop'",
+        saltbox,
+        leave,
+        enter,
+        "Sandbox: Currently on branch 'develop'",
+        sandbox,
+        leave,
+    ];
+    lines.extend(step);
+    in_order(&text, &lines);
     assert_eq!(text.matches(enter).count(), 2, "{text}");
     // On the screen once it is drawn (vt100, taller than the PTY so
     // nothing scrolls away): one tree, its title and each step once.
@@ -436,6 +442,8 @@ fn on_a_terminal_both_questions_come_before_the_first_step() {
         assert_eq!(count, want, "{once}:\n{shown}");
     }
     assert!(!shown.contains("Do you want to reset"), "{shown}");
+    // And in that order on the finished screen.
+    in_order(&shown, &step);
     // The hint, then one blank line before the prompt (cli-core spec, "The
     // blank line at the end").
     assert!(
