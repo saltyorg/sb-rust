@@ -76,19 +76,14 @@ jobs:
         with:
           tool: cargo-llvm-cov@0.9.1,cargo-nextest@0.9.151,cargo-deny@0.20.2,hyperfine@2.0.0,zizmor@1.32.0,uv@0.13.4
           fallback: none
-      # cargo-mutants publishes no aarch64 Linux build (the action's
-      # manifest for 27.1.0 has x86_64 alone:
-      # https://github.com/taiki-e/install-action/blob/v2.90.8/manifests/cargo-mutants.json),
-      # so arm64 builds it from crates.io, each crate checked against the
-      # index's checksum, its dependencies at its own Cargo.lock.
-      - name: cargo-mutants (x86_64)
-        if: runner.arch == 'X64'
-        uses: taiki-e/install-action@fe3acb53a98b62c772db35de75ce0e4595e7ca8c # v2.90.8
-        with:
-          tool: cargo-mutants@27.1.0
-          fallback: none
-      - name: cargo-mutants (arm64)
-        if: runner.arch == 'ARM64'
+      # cargo-mutants from crates.io on every runner, as its own docs
+      # install it (https://mutants.rs/installation.html), each crate
+      # checked against the index's checksum, its dependencies at its own
+      # Cargo.lock. Its 27.1.0 release has one Linux build, x86_64 glibc
+      # (https://github.com/taiki-e/install-action/blob/v2.90.8/manifests/cargo-mutants.json),
+      # which needs glibc 2.39 and doesn't start on 22.04's 2.35; there is
+      # no aarch64 one at all.
+      - name: cargo-mutants
         run: cargo install --locked cargo-mutants --version 27.1.0
       # Python 3.12, which scripts/install-check-jsonschema.sh makes
       # check-jsonschema's environment on, the same on every Ubuntu release.
