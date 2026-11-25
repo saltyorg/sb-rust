@@ -15,7 +15,7 @@ use serde::Serialize;
 
 /// The uv version sb installs, pinned in source as in sb-go's `buildinfo`,
 /// so raw builds, tests and releases agree.
-pub const UV_VERSION: &str = "0.13.4";
+pub const UV_VERSION: &str = "0.13.10";
 
 /// The release channel a build follows (release spec, "Release
 /// channels"): baked in at build time through `SB_CHANNEL`, as sb-go's

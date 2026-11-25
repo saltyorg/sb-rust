@@ -313,14 +313,17 @@ fn update_venv_installs_the_pinned_uv() {
     tree.uv("0.13.3", "0.13.3");
     tree.serve_uv(Arch::current().expect("arch"), &tree.uv_archive(UV, UV));
     run(&tree, "update-venv").success().stderr(
-        predicate::str::contains("Ensuring uv 0.13.4 is installed").and(predicate::str::contains(
-            "Ansible virtual environment was already up to date",
-        )),
+        predicate::str::contains(format!("Ensuring uv {UV} is installed")).and(
+            predicate::str::contains("Ansible virtual environment was already up to date"),
+        ),
     );
     let uv = std::fs::read_to_string(&tree.layout.uv).expect("uv");
-    assert!(uv.contains("echo 'uv 0.13.4 (stand-in)'"), "{uv}");
+    assert!(uv.contains(&format!("echo 'uv {UV} (stand-in)'")), "{uv}");
     let uvx = std::fs::read_to_string(&tree.layout.uvx).expect("uvx");
-    assert!(uvx.contains("echo 'uvx 0.13.4 (stand-in)'"), "{uvx}");
+    assert!(
+        uvx.contains(&format!("echo 'uvx {UV} (stand-in)'")),
+        "{uvx}"
+    );
 }
 
 /// `sb reinstall-facts` is listed with sb-go's help and takes no

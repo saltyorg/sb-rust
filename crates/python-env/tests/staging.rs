@@ -7,7 +7,7 @@ use std::os::unix::fs::PermissionsExt as _;
 use std::path::Path;
 
 use sb_cli_core::cancel::Shutdown;
-use sb_python_env::testing::{PYTHON, Tree};
+use sb_python_env::testing::{PYTHON, Tree, UV};
 use sb_python_env::toolchain::{self, Toolchain};
 use sb_python_env::venv::{Staged, build};
 use sb_python_env::{Force, manifest};
@@ -124,7 +124,7 @@ async fn a_first_build_makes_a_python_release_and_a_generation() {
     assert_eq!(stamp.len(), "20260807T120000.000000000".len(), "{stamp}");
     assert_eq!(written.generation_id, id);
     assert_eq!(written.python_version, PYTHON);
-    assert_eq!(written.uv_version, "0.13.4");
+    assert_eq!(written.uv_version, UV);
     assert_eq!(written.saltbox_commit, toolchain.commit);
     assert_eq!(written.exported_commands, ["ansible", "apprise", "certbot"]);
     let install = Path::new(&written.python_install);

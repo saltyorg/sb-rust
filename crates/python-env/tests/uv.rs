@@ -114,7 +114,7 @@ async fn a_wrong_uv_is_replaced_by_the_pinned_release() {
     .await;
     assert_eq!(ran.error, None, "{}", ran.screen);
     for line in [
-        "Ensuring uv 0.13.4 is installed",
+        format!("Ensuring uv {UV} is installed").as_str(),
         "Ansible virtual environment was already up to date",
     ] {
         assert!(ran.screen.contains(line), "{line}:\n{}", ran.screen);
@@ -272,7 +272,7 @@ async fn a_staged_binary_of_another_release_is_refused() {
     let ran = ensure(&env).await;
     assert_eq!(
         ran.error.as_deref(),
-        Some("downloaded uvx reports version 0.13.3, expected 0.13.4")
+        Some(format!("downloaded uvx reports version 0.13.3, expected {UV}").as_str())
     );
     assert_eq!(version(&env, &tree.layout.uv, "uv").await, "0.13.2");
     assert_eq!(version(&env, &tree.layout.uvx, "uvx").await, "0.13.2");

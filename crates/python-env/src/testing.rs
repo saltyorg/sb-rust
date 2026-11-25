@@ -89,8 +89,9 @@ pub const COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
 /// The Python the tree pins.
 pub const PYTHON: &str = "3.12.7";
 
-/// The uv minimum the tree pins, and the uv its stand-ins report.
-pub const UV: &str = "0.13.4";
+/// The uv minimum the tree pins, and the uv its stand-ins report: the uv
+/// this sb pins, which sb's end-to-end runs ensure.
+pub const UV: &str = sb_cli_core::build_info::UV_VERSION;
 
 /// The lock the tree holds.
 pub const LOCK: &str = "ansible==12.0.0 --hash=sha256:00\n";

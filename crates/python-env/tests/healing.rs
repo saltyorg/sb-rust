@@ -9,7 +9,7 @@
 use std::path::{Path, PathBuf};
 
 use sb_cli_core::cancel::Shutdown;
-use sb_python_env::testing::{PYTHON, Tree, stand_in};
+use sb_python_env::testing::{PYTHON, Tree, UV, stand_in};
 use sb_python_env::{Force, VenvOutcome, reconcile_runtime, reconcile_venv};
 use sb_term_ui::{Labels, Options, Runner, Step, Target};
 
@@ -363,7 +363,7 @@ async fn a_cancelled_build_is_not_retried() {
 async fn a_uv_failure_is_not_retried() {
     let _spawns = SPAWNS.lock().await;
     let (tree, _) = outdated_tree();
-    tree.uv("0.13.3", "0.13.4");
+    tree.uv("0.13.3", UV);
     let env = tree.env();
     let ran = in_step(async |step, _| {
         reconcile_venv(step, &env, None, Force::None).await?;

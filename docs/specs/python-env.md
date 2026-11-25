@@ -640,7 +640,7 @@ moved), so `ops` callers and the tests can read them.
 
 | Crate | Version | Why | Docs | In Cargo.lock / linked by `sb` |
 |---|---|---|---|---|
-| uv (host CLI) | `cli-core::UV_VERSION` (0.13.4) | Python, venv and hashed install; what Saltbox's lock is compiled and tested with | https://docs.astral.sh/uv/reference/cli/ | n/a |
+| uv (host CLI) | `cli-core::UV_VERSION` (0.13.10) | Python, venv and hashed install; what Saltbox's lock is compiled and tested with | https://docs.astral.sh/uv/reference/cli/ | n/a |
 | `sb-release` | workspace | metadata, verified download, activation, ELF check | release spec | new crate |
 | `sb-exec`, `sb-term-ui`, `sb-host` | workspace | children, steps, apt, ownership, release check | their specs | yes / yes |
 | `tar` | 0.4.46 | reads uv's archive, pure Rust | https://docs.rs/tar/0.4.46/tar/struct.Archive.html | no / no |

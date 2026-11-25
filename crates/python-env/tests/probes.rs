@@ -37,14 +37,16 @@ async fn the_toolchain_is_read_from_the_checkout() {
 async fn a_newer_uv_minimum_stops_the_toolchain() {
     let _spawns = SPAWNS.lock().await;
     let tree = Tree::new();
-    std::fs::write(&tree.layout.uv_pin, "0.13.10\n").expect("pin");
+    std::fs::write(&tree.layout.uv_pin, "0.99.0\n").expect("pin");
     std::fs::remove_file(&tree.layout.lock).expect("rm lock");
     let err = toolchain::read_toolchain(&tree.env(), &token())
         .await
         .expect_err("too old");
     assert_eq!(
         err.to_string(),
-        "saltbox requires uv 0.13.10 or newer, but this sb release provides 0.13.4; run sb self-update"
+        format!(
+            "saltbox requires uv 0.99.0 or newer, but this sb release provides {UV}; run sb self-update"
+        )
     );
 }
 

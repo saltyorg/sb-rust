@@ -7,7 +7,7 @@ use std::os::unix::fs::MetadataExt as _;
 use std::path::Path;
 
 use sb_cli_core::cancel::Shutdown;
-use sb_python_env::testing::{COMMANDS, Tree};
+use sb_python_env::testing::{COMMANDS, Tree, UV};
 use sb_python_env::{Force, VenvOutcome, activate, reconcile_runtime, reconcile_venv};
 use sb_term_ui::{Labels, Options, Runner, Step, Target};
 
@@ -81,7 +81,7 @@ async fn a_healthy_tree_is_kept_with_sb_gos_steps() {
     assert_eq!(ran.error, None, "{}", ran.screen);
     for line in [
         "Checking for old deadsnakes Python packages",
-        "Ensuring uv 0.13.4 is installed",
+        format!("Ensuring uv {UV} is installed").as_str(),
         "Ansible virtual environment was already up to date",
         "Ansible virtual environment ready",
         "saltbox.fact is ready",
@@ -918,7 +918,7 @@ async fn a_failed_uv_install_fails_its_step() {
     let _spawns = SPAWNS.lock().await;
     let tree = Tree::new();
     let _ = tree.healthy();
-    tree.uv("0.13.3", "0.13.4");
+    tree.uv("0.13.3", UV);
     let env = tree.env();
     let ran = in_step(async |step| {
         reconcile_runtime(step, &env, None).await?;
@@ -929,7 +929,7 @@ async fn a_failed_uv_install_fails_its_step() {
     // The nested step shows the cause; the steps above it end quietly.
     assert!(
         ran.screen
-            .contains("error fetching uv 0.13.4 release metadata: "),
+            .contains(&format!("error fetching uv {UV} release metadata: ")),
         "{}",
         ran.screen
     );
