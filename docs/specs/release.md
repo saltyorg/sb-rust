@@ -291,8 +291,10 @@ The maintainer's decisions of 2026-11-18.
   it`. Self-update is how such a host reaches a binary that supports
   its release (cli-core, startup step 1).
 - **CI** in saltyorg/sb-rust.
-  - `.github/workflows/ci.yml` runs `check.sh task` on every push and
-    pull request on 22.04, 24.04 and 26.04.
+  - `.github/workflows/ci.yml` runs `check.sh task` on every push to
+    main and every pull request on 22.04, 24.04 and 26.04. A newer push
+    to a pull request cancels its older run; no push to main cancels
+    another's.
   - `.github/workflows/release.yml`, on a version tag:
     - runs `check.sh full` on 26.04, whose runner image has the Docker
       29 the Tools table asks for, and the by-hand container suites
@@ -854,8 +856,8 @@ No test reaches the network or replaces an installed sb.
     and install.sh fetch from saltyorg/sb-rust (assumption 2); sb-go
     gets a final release that fetches sb-rust's newest release once
     sb-rust is declared production-ready (Known limits). CI in
-    saltyorg/sb-rust runs `check.sh task` on every push and pull request
-    on 22.04, 24.04 and 26.04; a release tag runs `check.sh full` and
+    saltyorg/sb-rust runs `check.sh task` on every push to main and
+    every pull request on 22.04, 24.04 and 26.04; a release tag runs `check.sh full` and
     the by-hand container suites, then builds and publishes ("Release
     channels", CI).
 15. **term-ui's confirm is built here** (term-ui decision 1).

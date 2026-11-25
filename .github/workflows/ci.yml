@@ -1,7 +1,7 @@
-# sb's gate on every push and pull request (release spec, "Release
-# channels", CI): `scripts/check.sh task` on each supported Ubuntu release
-# and on arm64, as CONSTRAINTS.md asks of `task` ("before handing work
-# back"). `full` runs on release tags (release.yml).
+# sb's gate on every push to main and every pull request (release spec,
+# "Release channels", CI): `scripts/check.sh task` on each supported Ubuntu
+# release and on arm64, as CONSTRAINTS.md asks of `task` ("before handing
+# work back"). `full` runs on release tags (release.yml).
 #
 # GitHub's 26.04 and arm runners are generally available; its 22.04
 # images are deprecated from 2026-09-17 and unsupported from 2027-04-17,
@@ -9,8 +9,12 @@
 # https://github.com/actions/runner-images
 name: ci
 
+# Pushes to main only: a pull request from a branch of this repository
+# (Renovate's among them) would otherwise run twice, once for the push and
+# once for the pull request.
 on:
   push:
+    branches: [main]
   pull_request:
 
 permissions:
@@ -20,8 +24,13 @@ defaults:
   run:
     shell: bash
 
+# A newer push to a pull request cancels its older run. Each push to main
+# has a group of its own (its run's id): GitHub keeps one pending run per
+# group and cancels the one before, so a shared group could leave a
+# commit on main with no ci run for release.yml's plan to find.
+# https://docs.github.com/actions/reference/workflows-and-actions/workflow-syntax#concurrency
 concurrency:
-  group: ci-${{ github.event_name }}-${{ github.ref }}
+  group: ci-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -149,8 +158,8 @@ jobs:
           zizmor --persona=auditor --no-progress .github/
 
   # sb-go's build.yml checks, on a build made the way releases are but
-  # untagged (so on tag pushes too): `version --json` has a valid
-  # uv_version, and with no SB_VERSION self-update is disabled.
+  # untagged: `version --json` has a valid uv_version, and with no
+  # SB_VERSION self-update is disabled.
   untagged:
     name: untagged build
     runs-on: ubuntu-22.04
