@@ -51,3 +51,28 @@ The host's `/proc/sys/fs/binfmt_misc` was listed before and after.
   where a user namespace made without CAP_SYS_ADMIN gets no capabilities
   unless an AppArmor profile allows it; there the container's root would
   likely need CAP_SYS_ADMIN for the namespace's mounts (not verified).
+
+## What fails there and not on a native arm64 runner
+
+Seen running ci.yml's task job, and sb's crate tests in check.sh's
+sandbox, on the 22.04 and 26.04 arm64 roots (QEMU 10.2.1); none is a
+fault of the code under test, so the rehearsal's arm64 runners are an
+opt-in for reproducing an arm-specific problem, and GitHub's native arm
+runners are the check:
+
+- `/proc/<pid>/exe` of an emulated process is qemu's binary, and its
+  `/proc/<pid>/cmdline` starts with qemu's path: a search for a process
+  by its executable or its first argument finds none (check.sh's
+  mutation sweeper and its tests in floor-guard.test.mjs; cli-core's
+  run lock looking for a running backup playbook).
+- A program that can't be executed (missing, not executable) is a child
+  that exits 127, not a spawn error: qemu runs the guest's
+  `posix_spawn` (a `CLONE_VM | CLONE_VFORK` child) as a fork, so the exec
+  error never reaches the parent (sb-exec's spawn-error tests and every
+  caller's).
+- A write by the namespace's root clears a file's setuid bit, which
+  root in the initial namespace keeps: Linux keeps it only for
+  `CAP_FSETID` there (`setattr_should_drop_suidgid` asks `capable()`),
+  as a write and `stat` in and out of the namespace showed.
+- Everything runs several times slower: tests near the 60 s per-test
+  limit end there.

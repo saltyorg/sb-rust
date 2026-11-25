@@ -5,10 +5,15 @@
 #
 #   scripts/ci-rehearsal.sh [--rebuild] [--arch amd64|arm64] [RUNNER...]
 #
-# RUNNER: a runner label of the job's matrix (ubuntu-24.04,
-# ubuntu-24.04-arm, ...); all of them by default, or those of one
-# architecture with --arch (check.sh full runs the amd64 ones).
-# --rebuild makes the images again (they are kept as a cache, below).
+# RUNNER: a runner label of the job's matrix (ubuntu-24.04, ...); by
+# default its amd64 runners, which check.sh full runs too. arm64 is an
+# opt-in, off by default, for reproducing an arm-specific problem:
+# `--arch arm64` or an arm runner's label (ubuntu-24.04-arm). Its runs are
+# emulated, hours long, and QEMU's quirks fail tests that pass on GitHub's
+# native arm runners, which prove arm64 after a push
+# (docs/platform-notes/binfmt-misc-user-namespaces.md; the maintainer,
+# 2026-11-25). --rebuild makes the images again (they are kept as a
+# cache, below).
 #
 # What it reproduces:
 # - the runner: Ubuntu's release and architecture, GitHub's image's apt
@@ -297,6 +302,8 @@ main() {
   ((${#matrix[@]})) || die "$workflow's $job job lists no runners"
   declare -A release_of=() arch_of=() image_of=()
   local labels=()
+  # amd64 unless arm64 is asked for.
+  if [[ -z $only ]] && ((${#wanted[@]} == 0)); then only=amd64; fi
   for line in "${matrix[@]}"; do
     read -r label release arch <<<"$line"
     release_of[$label]=$release
