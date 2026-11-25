@@ -1300,6 +1300,8 @@ const stubs = (versions, arch) => {
       + 'echo "go version go' + versions.go + ' linux/amd64"\n',
     gitleaks: 'cat >"$STUB_LOG.gitleaks"\n',
     uname: 'echo ' + arch + '\n',
+    // The host's CPUs: 64, or STUB_NPROC.
+    nproc: 'echo "${STUB_NPROC:-64}"\n',
   };
   // cross's container caps, which a scope around check.sh doesn't reach.
   out.cross += 'printf \'%s\\n\' "${CROSS_CONTAINER_OPTS-unset}" >>"$STUB_LOG.cross-opts"\n';
@@ -1774,6 +1776,10 @@ test('check.sh: cargo runs locked, with the target directory its own', () => {
   // A scope around check.sh doesn't reach cross's container: the caps go
   // to its `docker run`, for each build.
   assert.equal(r.crossOpts, '--memory 16g --cpus 8\n'.repeat(2), r.output);
+  // On a host with fewer CPUs, as many as it has: dockerd refuses more.
+  const small = checkRun('full', { env: { STUB_NPROC: '4' } });
+  passes(small, 'full');
+  assert.equal(small.crossOpts, '--memory 16g --cpus 4\n'.repeat(2), small.output);
 });
 
 // Each mutant's tests run under nextest's `mutants` profile, which ends a

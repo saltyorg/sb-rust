@@ -99,9 +99,14 @@ jobs:
 
   # `check.sh full` with no base: every step, the production build's size,
   # its runs on each release and the aarch64 build under QEMU included.
+  # On 26.04, whose image has the Docker 29 CONSTRAINTS.md's Tools table
+  # asks for; the 22.04 and 24.04 images have Docker 28 (each image's
+  # README: https://github.com/actions/runner-images/tree/main/images/ubuntu).
+  # The binary's runs on 22.04 and 24.04 are the ubuntu:<release>
+  # containers', so the job's own release doesn't matter to them.
   gate:
     name: "gate (check.sh full)"
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 240
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

@@ -1316,12 +1316,15 @@ full() {
     # https://github.com/cross-rs/cross/blob/v0.2.5/src/docker/shared.rs
     # https://github.com/cross-rs/cross/blob/v0.2.5/CHANGELOG.md
     # https://docs.docker.com/engine/containers/resource_constraints/
-    # --cpus can't exceed the host's CPU count: the production build runs
-    # on a host of at least 8.
+    # --cpus can't exceed the CPUs the Docker daemon sees, which refuses
+    # the container otherwise ("range of CPUs is from 0.01 to N.00"): 8, or
+    # all of a smaller host's, such as a 4-vCPU GitHub runner's.
     need cross
     need docker
-    local cross_target="$root/target/cross-gnu"
-    CARGO_TARGET_DIR="$cross_target" CROSS_CONTAINER_OPTS='--memory 16g --cpus 8' \
+    local cross_target="$root/target/cross-gnu" cpus
+    cpus=$(nproc --all)
+    if ((cpus > 8)); then cpus=8; fi
+    CARGO_TARGET_DIR="$cross_target" CROSS_CONTAINER_OPTS="--memory 16g --cpus $cpus" \
       cross build --locked --quiet -p sb --profile production \
         --target x86_64-unknown-linux-gnu
     local sb="$cross_target/x86_64-unknown-linux-gnu/production/sb"
@@ -1359,7 +1362,7 @@ full() {
     # runners only: emulated, it would be several times slower within the
     # CPU cap, and its timing tests would turn flaky.
     step "the aarch64 production build, and its sb version under QEMU on 22.04's arm64 glibc (build/qemu.Dockerfile)"
-    CARGO_TARGET_DIR="$cross_target" CROSS_CONTAINER_OPTS='--memory 16g --cpus 8' \
+    CARGO_TARGET_DIR="$cross_target" CROSS_CONTAINER_OPTS="--memory 16g --cpus $cpus" \
       cross build --locked --quiet -p sb --profile production \
         --target aarch64-unknown-linux-gnu
     local arm="$cross_target/aarch64-unknown-linux-gnu/production/sb"

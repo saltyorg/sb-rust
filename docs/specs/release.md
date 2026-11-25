@@ -296,8 +296,10 @@ The maintainer's decisions of 2026-11-18.
   - `.github/workflows/ci.yml` runs `check.sh task` on every push and
     pull request on 22.04, 24.04 and 26.04.
   - `.github/workflows/release.yml`, on a version tag:
-    - runs `check.sh full` and the by-hand container suites (completion
-      shells, the install-script containers, the journal matrix);
+    - runs `check.sh full` on 26.04, whose runner image has the Docker
+      29 the Tools table asks for, and the by-hand container suites
+      (completion shells, the install-script containers, the journal
+      matrix);
     - runs `check.sh task` on the arm runners;
     - builds each asset with cross's production profile, setting
       `SB_VERSION` (the tag), `SB_GIT_COMMIT` and `SB_CHANNEL` per asset
