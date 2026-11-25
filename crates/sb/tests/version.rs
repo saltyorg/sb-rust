@@ -17,8 +17,7 @@ fn version_prints_the_sb_go_line_then_the_channel() {
 }
 
 /// Compact JSON, keys in sb-go's order and `channel` after them, ending
-/// in a newline; `uv_version` a version, as sb-go's update-saltbox-python
-/// action reads it.
+/// in a newline; `uv_version` a version.
 #[test]
 fn version_json_has_sb_go_keys_in_order() {
     sb().args(["version", "--json"]).assert().success().stdout(
@@ -26,6 +25,26 @@ fn version_json_has_sb_go_keys_in_order() {
             r#"^\{"version":"[^"]+","git_commit":"[^"]*","uv_version":"[0-9]+\.[0-9]+\.[0-9]+","channel":"(release|beta|none)"\}\n$"#,
         )
         .expect("regex"),
+    );
+}
+
+/// `uv_version` keeps its name and its bare `X.Y.Z` form, and is the uv
+/// this sb installs: Saltbox's toolchain workflow reads it from the latest
+/// stable sb to raise master's `.uv-version` (ADR-031, D4).
+#[test]
+fn version_json_names_the_pinned_uv() {
+    let out = sb().args(["version", "--json"]).output().expect("sb");
+    assert!(out.status.success(), "{out:?}");
+    let report: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json");
+    let uv = report["uv_version"].as_str().expect("uv_version, a string");
+    assert_eq!(uv, sb_cli_core::build_info::UV_VERSION);
+    let parts: Vec<&str> = uv.split('.').collect();
+    assert_eq!(parts.len(), 3, "{uv}");
+    assert!(
+        parts
+            .iter()
+            .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit())),
+        "{uv}"
     );
 }
 

@@ -4,8 +4,7 @@
 # commit doesn't contain and tags that aren't releases left out), the
 # notes' exact text, the Discord payload (built by jq, so a subject's
 # quotes and backslashes survive; the notes cut at 1800 characters; each
-# channel's assets), and the gate before Saltbox's toolchain update (stable
-# releases only). check.sh runs it in its release scripts' step.
+# channel's assets). check.sh runs it in its release scripts' step.
 #
 #   scripts/release.test.sh
 #
@@ -231,56 +230,4 @@ refused discord 1.0.1 "$repo" "$fixture/stable.md" "2026-11-20 12:00"
 refused discord 1.0.1 "$repo" "$fixture/missing.md" "$time"
 refused discord 1.0.1 "$repo" "$fixture/stable.md"
 
-# The Saltbox toolchain gate runs only for a published stable release
-# whose binary reports the release channel; everything else skips it.
-release_json() { # TAG PRERELEASE DRAFT ASSET STATE
-  jq -n --arg tag "$1" --argjson pre "$2" --argjson draft "$3" --arg asset "$4" --arg state "$5" \
-    '{tag_name: $tag, prerelease: $pre, draft: $draft,
-      assets: [{name: "sb_linux_amd64_beta", state: "uploaded"}, {name: $asset, state: $state}]}'
-}
-version_json() { # VERSION CHANNEL UV
-  jq -n --arg v "$1" --arg c "$2" --arg uv "$3" '{version: $v, git_commit: "abc1234", uv_version: $uv, channel: $c}'
-}
-gate() { # TAG, then release_json's five, then version_json's three (none: no report)
-  local tag=$1
-  shift
-  release_json "${@:1:5}" >"$fixture/release.json"
-  rm -f "$fixture/version.json"
-  if (($# > 5)); then version_json "${@:6:3}" >"$fixture/version.json"; fi
-  "$script" saltbox-gate "$tag" "$fixture/release.json" "$fixture/version.json"
-}
-out=$(gate 1.0.0 1.0.0 false false sb_linux_amd64 uploaded 1.0.0 release 0.13.4 2>&1) ||
-  fail "the gate failed on a stable release: $out"
-[[ $out == $'run=true\nuv-version=0.13.4' ]] || fail "a stable release didn't pass the gate: $out"
-# skipped WHY ARGS...: the gate says run=false, giving WHY.
-skipped() {
-  local why=$1 out err
-  shift
-  out=$(gate "$@" 2>"$fixture/err") || fail "the gate failed instead of skipping: $* ($(cat "$fixture/err"))"
-  err=$(cat "$fixture/err")
-  [[ $out == run=false ]] || fail "the gate ran for: $*: $out"
-  [[ $err == *"$why"* ]] || fail "the gate skipped $* for: $err (want: $why)"
-}
-for tag in 1.0.0-rc.1 1.0.0-beta.1 1.0.0+build v1.0.0 1.0 01.0.0; do
-  skipped "isn't a stable release tag" "$tag" "$tag" false false sb_linux_amd64 uploaded "$tag" release 0.13.4
-done
-# An rc as it is published: marked prerelease, `_beta` assets only.
-skipped "isn't a stable release tag" 1.0.0-rc.1 1.0.0-rc.1 true false sb_linux_amd64_beta uploaded
-skipped "marked prerelease" 1.0.0 1.0.0 true false sb_linux_amd64 uploaded 1.0.0 release 0.13.4
-skipped "is a draft" 1.0.0 1.0.0 false true sb_linux_amd64 uploaded 1.0.0 release 0.13.4
-skipped "isn't 1.0.0's" 1.0.0 0.9.9 false false sb_linux_amd64 uploaded 1.0.0 release 0.13.4
-skipped "no uploaded sb_linux_amd64" 1.0.0 1.0.0 false false sb_linux_arm64 uploaded 1.0.0 release 0.13.4
-skipped "no uploaded sb_linux_amd64" 1.0.0 1.0.0 false false sb_linux_amd64 starter 1.0.0 release 0.13.4
-skipped "no sb version --json report" 1.0.0 1.0.0 false false sb_linux_amd64 uploaded
-skipped "doesn't report 1.0.0" 1.0.0 1.0.0 false false sb_linux_amd64 uploaded 1.0.1 release 0.13.4
-skipped "isn't on the release channel" 1.0.0 1.0.0 false false sb_linux_amd64 uploaded 1.0.0 beta 0.13.4
-skipped "isn't on the release channel" 1.0.0 1.0.0 false false sb_linux_amd64 uploaded 1.0.0 none 0.13.4
-# A stable release with no valid uv_version fails.
-for uv in 0.13 ""; do
-  if out=$(gate 1.0.0 1.0.0 false false sb_linux_amd64 uploaded 1.0.0 release "$uv" 2>&1); then
-    fail "the gate passed uv_version '$uv': $out"
-  fi
-  [[ $out == release:*"no valid uv_version"* ]] || fail "uv_version '$uv': $out"
-done
-
-echo "PASS: release notes (6 tags, 10 refusals, a first release over the 100-commit cap and one at it), the Discord payload (2 channels, the 1800-character cut) and the Saltbox gate (1 run, 16 skips, 2 failures)"
+echo "PASS: release notes (6 tags, 10 refusals, a first release over the 100-commit cap and one at it) and the Discord payload (2 channels, the 1800-character cut)"

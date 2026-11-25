@@ -1216,9 +1216,8 @@ const TOOLS_MD = `# Constraints
 // .github/ changed, or nothing did), and the workflow schemas' tests (when
 // .github/ changed, or nothing did, or at full), as empty scripts: their
 // own content is tested by running them, not here.
-const RELEASE_TESTS = Object.fromEntries(['scripts/release.test.sh', 'scripts/workflow-schemas.test.sh',
-  ...['commit_test.sh', 'download_test.sh', 'publish_test.sh', 'isolation_test.py']
-    .map((f) => '.github/actions/update-saltbox-python/' + f)].map((f) => [f, '#!/bin/sh\n']));
+const RELEASE_TESTS = Object.fromEntries(['scripts/release.test.sh', 'scripts/workflow-schemas.test.sh']
+  .map((f) => [f, '#!/bin/sh\n']));
 // A workflow and an action, for the workflow linters to be run on.
 const WORKFLOWS = { '.github/workflows/ci.yml': 'on: push\n', '.github/actions/a/action.yml': 'runs:\n  using: composite\n' };
 const VERSIONS = {

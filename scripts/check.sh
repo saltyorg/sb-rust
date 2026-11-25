@@ -112,7 +112,7 @@ RUNTIME_RELEASES=(22.04 24.04 26.04)
 # - scripts_changed: a file under scripts/ changed, or nothing changed at
 #   all (a run over a clean tree checks everything).
 # - release_changed: the same, for a file under scripts/ or .github/ (the
-#   release workflow's scripts and the Saltbox updater's action).
+#   release workflow and its scripts).
 # - github_changed: the same, for a file under .github/ (the workflows,
 #   their actions and zizmor's settings).
 mapfile -d '' -t changed_files < <(
@@ -364,18 +364,13 @@ fast() {
     skip "nothing under scripts/ changed since $base"
   fi
   # The release workflow's shell logic (release spec, "Release notes and
-  # announcement", "Saltbox's toolchain update"): fixture repositories, fake
-  # gh and curl, no network. In the sandbox, as the guard's tests run.
-  step "release scripts' tests (notes, Discord, the Saltbox gate and updater)"
+  # announcement"): a fixture repository, no network. In the sandbox, as
+  # the guard's tests run.
+  step "release scripts' tests (notes, Discord)"
   if ((release_changed)); then
-    # Checked here, not with the stage's tools: only this step runs them.
-    check_tools jq python3
-    local action=.github/actions/update-saltbox-python
+    # Checked here, not with the stage's tools: only this step runs it.
+    check_tools jq
     in_sandbox scripts/release.test.sh
-    in_sandbox bash "$action/commit_test.sh"
-    in_sandbox bash "$action/download_test.sh"
-    in_sandbox bash "$action/publish_test.sh"
-    in_sandbox python3 -I "$action/isolation_test.py"
   else
     skip "nothing under scripts/ or .github/ changed since $base"
   fi

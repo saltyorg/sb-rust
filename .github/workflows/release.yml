@@ -1,9 +1,9 @@
 # A release from a version tag (release spec, "Release channels"): the
 # whole gate, the by-hand container suites, then each asset built with its
 # version, commit and channel baked in, checked, and published with notes
-# made from the commits; then the Discord announcement and, for a stable
-# release only, Saltbox's Python toolchain update (release spec, "Release
-# notes and announcement" and "Saltbox's toolchain update").
+# made from the commits; then the Discord announcement (release spec,
+# "Release notes and announcement"). It writes nothing to Saltbox
+# (ADR-031).
 #
 # Tags are bare semantic versions: `1.0.0` (stable) or `1.0.0-rc.N` (a
 # prerelease). A stable tag publishes the plain `release` assets and the
@@ -435,114 +435,3 @@ jobs:
             curl --fail-with-body --silent --show-error --proto =https --max-time 30 \
               -H 'Content-Type: application/json' --data-binary "@$RUNNER_TEMP/discord.json" "$DISCORD_WEBHOOK"
           fi
-
-  # Saltbox's Python toolchain from a published stable release (release
-  # spec, "Saltbox's toolchain update"), sb-go's update-saltbox-python
-  # job, ported. It never writes to Saltbox for a prerelease: the gate
-  # below decides (scripts/release.sh saltbox-gate, tested), and the two
-  # jobs after it are skipped unless it says run=true.
-  saltbox-gate:
-    name: saltbox gate
-    needs: [plan, publish]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    permissions:
-      contents: read
-    outputs:
-      run: ${{ steps.gate.outputs.run }}
-      uv-version: ${{ steps.gate.outputs.uv-version }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      # GitHub's record of the published release, and the published
-      # sb_linux_amd64's own report (a prerelease has no such asset).
-      - id: gate
-        name: The release is a published stable one
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ needs.plan.outputs.version }}
-        run: |
-          dir=$RUNNER_TEMP/saltbox-gate
-          mkdir -p "$dir"
-          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" >"$dir/release.json"
-          if jq -e 'any(.assets[]?; .name == "sb_linux_amd64")' "$dir/release.json" >/dev/null; then
-            gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern sb_linux_amd64 --dir "$dir/bin"
-            chmod 0755 "$dir/bin/sb_linux_amd64"
-            env -u GH_TOKEN SB_LOG_DIR="$dir/sb-log" "$dir/bin/sb_linux_amd64" version --json >"$dir/version.json"
-          fi
-          scripts/release.sh saltbox-gate "$TAG" "$dir/release.json" "$dir/version.json" | tee -a "$GITHUB_OUTPUT"
-
-  # The preflight runs Saltbox's requirements' own code (their builds and
-  # entry points), so it has no write token; the commit below has the
-  # token and runs no package code.
-  saltbox-prepare:
-    name: saltbox prepare
-    needs: [plan, saltbox-gate]
-    if: needs.saltbox-gate.outputs.run == 'true'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    permissions:
-      contents: read
-    outputs:
-      changed: ${{ steps.prepare.outputs.changed }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - id: prepare
-        uses: $/.github/actions/update-saltbox-python
-        with:
-          mode: prepare
-          sb-release: ${{ needs.plan.outputs.version }}
-          uv-version: ${{ needs.saltbox-gate.outputs.uv-version }}
-          directory: ${{ runner.temp }}/saltbox-update
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: saltbox-update
-          path: ${{ runner.temp }}/saltbox-update
-          if-no-files-found: error
-          include-hidden-files: true
-          # A re-run of this job (after master moved) replaces it.
-          overwrite: true
-
-  # The App's token: contents write on saltyorg/Saltbox alone, as sb-go's
-  # job asks for it. The App's variable and key reach this repository
-  # through the `saltbox` environment, which the maintainer limits to the
-  # release tags (or through the organisation's selected repositories), a
-  # setting approved before the first stable release. publish.sh checks
-  # the prepared files against master before it commits them.
-  saltbox-commit:
-    name: saltbox commit
-    needs: [plan, saltbox-gate, saltbox-prepare]
-    if: needs.saltbox-gate.outputs.run == 'true' && needs.saltbox-prepare.outputs.changed == 'true'
-    runs-on: ubuntu-24.04
-    environment: saltbox
-    timeout-minutes: 10
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: saltbox-update
-          path: ${{ runner.temp }}/saltbox-update
-      - name: Create Saltbox toolchain update token
-        id: saltbox-token
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
-        with:
-          client-id: ${{ vars.SALTBOX_AUTOMATION_APP_ID }}
-          private-key: ${{ secrets.SALTBOX_AUTOMATION_PRIVATE_KEY }}
-          owner: saltyorg
-          repositories: Saltbox
-          permission-contents: write
-      - name: Update supported Python toolchain for Saltbox
-        uses: $/.github/actions/update-saltbox-python
-        with:
-          mode: commit
-          token: ${{ steps.saltbox-token.outputs.token }}
-          sb-release: ${{ needs.plan.outputs.version }}
-          uv-version: ${{ needs.saltbox-gate.outputs.uv-version }}
-          directory: ${{ runner.temp }}/saltbox-update

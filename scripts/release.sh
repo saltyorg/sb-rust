@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 # The release workflow's shell logic (release spec, "Release notes and
-# announcement" and "Saltbox's toolchain update"): a release's notes and
-# its Discord announcement, in the form sb-go's build.yml gives them (its
-# "Generate Release Notes" and "Notify Discord" steps), and the check that
-# a published release may update Saltbox's toolchain.
+# announcement"): a release's notes and its Discord announcement, in the
+# form sb-go's build.yml gives them (its "Generate Release Notes" and
+# "Notify Discord" steps).
 # scripts/release.test.sh tests it.
 #
 #   scripts/release.sh notes TAG REPOSITORY
@@ -11,13 +10,6 @@
 #       current directory, which must have TAG and the earlier tags.
 #   scripts/release.sh discord TAG REPOSITORY NOTES_FILE TIMESTAMP
 #       The Discord webhook's JSON payload, on stdout.
-#   scripts/release.sh saltbox-gate TAG RELEASE_JSON VERSION_JSON
-#       Whether the release may update Saltbox's toolchain, as GITHUB_OUTPUT
-#       lines on stdout: `run=true` and `uv-version=<x>`, or `run=false`.
-#       RELEASE_JSON is GitHub's release
-#       (`GET /repos/{owner}/{repo}/releases/tags/{tag}`); VERSION_JSON,
-#       which may be missing, the `sb version --json` of its
-#       `sb_linux_amd64`.
 #
 # TAG is a release tag (`1.0.0`, `1.0.0-rc.1`), REPOSITORY `owner/name`
 # (GITHUB_REPOSITORY), TIMESTAMP UTC (`2026-11-20T12:00:00.000Z`).
@@ -48,7 +40,7 @@ die() {
 }
 
 usage() {
-  die "usage: release.sh notes TAG REPOSITORY | discord TAG REPOSITORY NOTES_FILE TIMESTAMP | saltbox-gate TAG RELEASE_JSON VERSION_JSON"
+  die "usage: release.sh notes TAG REPOSITORY | discord TAG REPOSITORY NOTES_FILE TIMESTAMP"
 }
 
 check_args() {
@@ -158,47 +150,11 @@ discord() {
       }'
 }
 
-# Saltbox's toolchain follows stable releases only, and never a prerelease
-# (release spec, "Saltbox's toolchain update"; sb-go had no prereleases and
-# no such check). The jobs that update Saltbox run only on `run=true`. It
-# is `run=false` (with the reason on stderr) unless all of these hold:
-# - TAG is a stable release tag, MAJOR.MINOR.PATCH and nothing else (no
-#   `-` part, no build metadata, no `v`);
-# - GitHub's release is TAG's, published (not a draft), not marked
-#   prerelease, with an uploaded `sb_linux_amd64`;
-# - that asset's `sb version --json` reports TAG and the release channel.
-# A release that passes but reports no valid uv_version fails instead: the
-# build's own check should have stopped it.
-saltbox_gate() {
-  (($# == 3)) || usage
-  local tag=$1 release=$2 version=$3 uv
-  skip() {
-    echo "release: no Saltbox update: $*" >&2
-    echo "run=false"
-    exit 0
-  }
-  [[ $tag =~ $stable_re ]] || skip "$tag isn't a stable release tag (MAJOR.MINOR.PATCH)"
-  [[ -f $release ]] || die "no release file: $release"
-  jq -e --arg tag "$tag" '.tag_name == $tag' "$release" >/dev/null || skip "the release isn't $tag's"
-  jq -e '.draft == false' "$release" >/dev/null || skip "$tag is a draft"
-  jq -e '.prerelease == false' "$release" >/dev/null || skip "$tag is marked prerelease"
-  jq -e 'any(.assets[]?; .name == "sb_linux_amd64" and .state == "uploaded")' "$release" >/dev/null ||
-    skip "$tag has no uploaded sb_linux_amd64"
-  [[ -f $version ]] || skip "no sb version --json report from sb_linux_amd64"
-  jq -e --arg tag "$tag" '.version == $tag' "$version" >/dev/null || skip "sb_linux_amd64 doesn't report $tag"
-  jq -e '.channel == "release"' "$version" >/dev/null || skip "sb_linux_amd64 isn't on the release channel"
-  uv=$(jq -r '.uv_version | strings' "$version")
-  [[ $uv =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "sb_linux_amd64 reports no valid uv_version: $uv"
-  echo "run=true"
-  echo "uv-version=$uv"
-}
-
 (($# >= 1)) || usage
 command=$1
 shift
 case $command in
 notes) notes "$@" ;;
 discord) discord "$@" ;;
-saltbox-gate) saltbox_gate "$@" ;;
 *) usage ;;
 esac
