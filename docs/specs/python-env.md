@@ -25,11 +25,18 @@ is spec-research/C-python-env.md.
 1. **sb-go keeps shipping** (map assumption 1). Either binary may run after
    the other on the same host, so each must read the other's venv,
    manifest, wrappers and fact as its own (decision 7).
-2. **Saltbox owns the toolchain files.** `.python-version`, `.uv-version`
-   and `requirements/requirements-saltbox.txt` are written by sb-go's
-   release action (`update-saltbox-python`). sb only reads them. Moving
-   that action into this repository is release preparation's job, not
-   this spec's.
+2. **Each Saltbox branch owns its toolchain files.** `.python-version`,
+   `.uv-version` and `requirements/requirements-saltbox.txt` are the
+   branch's own: Saltbox's workflow keeps master's current, and other
+   branches change them by hand. sb only reads them and writes nothing
+   to Saltbox. sb owns only the uv it installs (`cli-core::UV_VERSION`),
+   which `.uv-version` must not be newer than. A branch that predates the
+   pins (Saltbox's pre-* branches) has no `.python-version` or
+   `.uv-version` and an unhashed requirements list. *Amended 2026-11-25
+   by the maintainer's decision
+   ([ADR-031](../decisions/ADR-031-toolchain-ownership.md)): sb-go's
+   update-saltbox-python release action wrote them, and moving it here
+   was release preparation's job.*
 3. **`/usr/local/bin/uv` and a Saltbox-user-owned `/srv/python` are a
    Saltbox contract.** Saltbox's `python`, `cloudplow` and `glances` roles
    run `uv python install` with `UV_PYTHON_INSTALL_DIR=/srv/python` as
@@ -47,7 +54,8 @@ is spec-research/C-python-env.md.
 
 A Saltbox user's Ansible runs on a venv that is correct for the checked-out
 Saltbox: the Python that `.python-version` pins, and exactly the hashed
-lock. The fact Ansible runs is the published release. `sb update` brings
+lock (on a branch without pins, the newest 3.12 sb's uv offers and the
+unhashed list: decision 27). The fact Ansible runs is the published release. `sb update` brings
 all of it in line by itself and repairs damage it can detect, so the
 reinstall commands are a rarely needed "rebuild from scratch on request".
 A failed or interrupted run never leaves the active venv pointing at
@@ -81,10 +89,32 @@ build it on a temporary root (sb-go's `releaseLayout` injection).
 - `.python-version` and `.uv-version` each hold one `^\d+\.\d+\.\d+$` after
   trimming. Otherwise: `<path> must contain one exact major.minor.patch
   version, got "<v>"`. A read failure: `read <Python|uv> version from
-  <path>: <cause>`.
+  <path>: <cause>`. A file that doesn't exist is no failure (below).
 - `.uv-version` is a minimum, compared with `semver`. If sb's pinned uv
   (`cli-core::UV_VERSION`, passed in by `sb`) is older: `saltbox requires
   uv <min> or newer, but this sb release provides <v>; run sb self-update`.
+  Without `.uv-version` there is no minimum, and no check (ADR-031, D7).
+- **The Python is resolved against the uv's download list** (ADR-031,
+  D7 and D8; sb-go 69b968b), after "Ensuring uv <v> is installed" and
+  before anything is inspected or installed: `uv python list
+  --only-downloads --all-versions --output-format json`, run isolated as
+  every uv call (capture, 30 s), keeping each entry whose
+  `implementation` is `cpython`, `variant` `default` and `version` an
+  exact `X.Y.Z` (no pre-release, no free-threaded or other variant, no
+  PyPy). A failed call: `list the Pythons uv <v> can install: <cause>`,
+  uv's stderr after the cause; output that isn't that JSON: `parse the
+  Pythons uv <v> can install: <cause>`.
+  - **A pinned Python** (`.python-version` there) must be in the list,
+    else, before anything is installed: `this Saltbox branch needs Python
+    <X.Y.Z>, which this sb's uv (<v>) can't install; run sb self-update`
+    (D8). A listed pin is installed with the hashed lock, as before.
+  - **No `.python-version`** (D7): the newest patch of 3.12 in the list,
+    by number, and the requirements installed unhashed (step 9). Every
+    such run warns, under the venv's step: `This Saltbox branch has no
+    pinned Python; using Python <3.12.N>, the newest 3.12 this sb's uv
+    (<v>) provides`. A list with no 3.12: `this Saltbox branch has no
+    pinned Python, and this sb's uv (<v>) offers no Python 3.12; run sb
+    self-update`.
 - The lock's sha256 (sb-release's `sha256_file`: sha2, or aws-lc on an
   `x86_64` CPU without SHA instructions) and `git rev-parse HEAD` in the checkout
   (capture, 10 s; sb-go has none) go into the manifest.
@@ -132,7 +162,10 @@ build it on a temporary root (sb-go's `releaseLayout` injection).
      17; sb-go fails); another read error still fails, `inspect active
      Ansible environment: read generation manifest <path>: <cause>`;
    - a symlink: read its generation's `manifest.json`. Healthy only when
-     the schema is 1, the Python version and lock digest match, and the
+     the schema is 1, the Python version and lock digest match, the
+     manifest's `requirements_unhashed` matches the checkout (true
+     without `.python-version`; a manifest without the field was
+     hashed), and the
      **environment check** passes:
      - `python3 -I --version` is `Python <v>`;
      - the **Python check**: `python3 -I -c "import encodings, ssl,
@@ -235,6 +268,12 @@ build it on a temporary root (sb-go's `releaseLayout` injection).
    --no-progress --python <gen>/venv/bin/python3 --require-hashes
    [--no-cache] <lock>`, streamed into the step. `--no-cache` whenever
    `force` isn't `None` (sb-go 7d1ee0e) and on the retry (decision 3).
+   Without `.python-version` (ADR-031, D7), the step is **"Installing
+   unhashed Saltbox requirements"**: `uv pip install --no-progress
+   --python <gen>/venv/bin/python3 [--no-cache] --requirement <lock>`,
+   which resolves the list's dependencies, as sb-go did before Saltbox
+   pinned its Python (`pip sync` installs only what is listed); its
+   failure reads `error installing unhashed requirements`.
 10. **Command discovery:** regular executables in `venv/bin` named
     `ansible*`, `certbot` or `apprise`. ansible, certbot and apprise are
     required. A name with `/`, `\n` or `\r` fails: `unsafe venv command name
@@ -249,7 +288,10 @@ build it on a temporary root (sb-go's `releaseLayout` injection).
     `generation_id`, `python_version`, `python_path`, `python_install`
     (omitted when empty), `uv_version`, `lock_sha256`, `saltbox_commit`,
     `created_at` (RFC 3339 with Go's trimmed nanoseconds),
-    `exported_commands`.
+    `exported_commands`, then `requirements_unhashed`, `true` for an
+    unhashed install and omitted otherwise (sb-go 69b968b's
+    `omitempty`), so moving between a pinned and a pin-less checkout
+    rebuilds the venv even when the Python and lock are the same.
 12. **Wrappers,** written before activation, each through `tempfile` in
     `/usr/local/bin` (prefix `.sb-wrapper-`), mode 0755, byte for byte
     sb-go's (wrappers.go:75-86):
@@ -629,8 +671,9 @@ moved), so `ops` callers and the tests can read them.
 
 **Later, elsewhere:**
 - `update`, `branch`, `setup`, `gha` wiring: `ops` and `repo`.
-- Moving sb-go's `update-saltbox-python` release action: release
-  preparation.
+- Updating Saltbox's toolchain files: Saltbox's own workflow (ADR-031;
+  this was sb-go's `update-saltbox-python` action, once to be moved
+  here).
 - A shared run lock between sb runs: sb-go has none; not part of parity.
   *Amended 2026-11-18: the maintainer chose a host-wide run lock that
   waits; `update-venv`, `reinstall-venv`, `reinstall-python` and
@@ -983,6 +1026,14 @@ developer's host. Every path is a `Layout` field on a `tempfile` root.
     pins a source-only psycopg2 or psycopg-c again, the sync fails with a
     `pg_config` error and this is to be revisited. `sb setup` drops it
     too (ops difference 71).
+27. **A checkout without pins, and a Python the uv lacks** (the
+    maintainer, 2026-11-25; [ADR-031](../decisions/ADR-031-toolchain-ownership.md),
+    D7 and D8; "The toolchain", steps 4, 9 and 11): no `.python-version`
+    falls back to the newest 3.12 the pinned uv lists, installed unhashed
+    with a warning on every run; no `.uv-version` sets no minimum; a pin
+    the uv doesn't list stops before any install with sb's own message.
+    Ported from sb-go 69b968b, texts and manifest field included, so
+    either binary reuses the other's venv.
 
 ## Known limits
 

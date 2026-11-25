@@ -91,6 +91,14 @@ you could trip over.
 
 ### Changed
 
+- **A Saltbox branch without a pinned Python works again,** such as the
+  pre-* branches: with no `.python-version`, sb uses the newest Python
+  3.12 its uv offers, installs `requirements-saltbox.txt` without hashes
+  and says so on every run. Without `.uv-version` there is no uv minimum.
+  Moving back to a pinned branch rebuilds the venv.
+- **A Saltbox branch that pins a Python sb's uv can't install** stops
+  before anything is installed, with `this Saltbox branch needs Python
+  X.Y.Z, which this sb's uv (U.V.W) can't install; run sb self-update`.
 - **Prompts read the terminal, not stdin.** With no terminal and no
   answering flag, sb stops and names the flag.
 - **validate-config is stricter.** It checks every schema rule

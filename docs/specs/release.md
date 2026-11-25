@@ -8,6 +8,10 @@ the repository, versions, channels and CI ("Release channels").*
 release and Discord as sb-go makes them ("Release notes and
 announcement"), and sb-go's Saltbox toolchain update, taken over at 1.0.0
 ("Saltbox's toolchain update").*
+*Amended 2026-11-25 by the maintainer's decision: sb writes nothing to
+Saltbox, and the toolchain update is Saltbox's own
+([ADR-031](../decisions/ADR-031-toolchain-ownership.md); "Saltbox's
+toolchain update").*
 
 Module of the approved capability map (`release`), build order step 2
 (`host` → `repo`, `release`). It looks up GitHub releases (through the
@@ -252,8 +256,9 @@ The maintainer's decisions of 2026-11-18.
   - `sb version` prints sb-go's line, then `Release channel: <channel>`
     (with ` (self-update disabled)` for `none`).
   - `--json` adds a `channel` field after sb-go's three. `version`,
-    `git_commit` and `uv_version` are kept for sb-go's
-    update-saltbox-python action.
+    `git_commit` and `uv_version` keep their names and format: Saltbox's
+    toolchain workflow reads `uv_version` from the latest stable release
+    (ADR-031, D4).
 - **arm64 binaries are published** (maintainer, 2026-11-18):
   `sb_linux_arm64` and `sb_linux_arm64_beta` beside the amd64 assets, so
   they are there if Saltbox ever supports arm64. No script uses them
@@ -313,8 +318,7 @@ The maintainer's decisions of 2026-11-18.
       maintainer, 2026-11-25), so pushing the tag, which the
       repository's `version tags` ruleset restricts, is the decision to
       publish;
-    - then announces it on Discord and, for a stable release only,
-      updates Saltbox's Python toolchain ("Saltbox's toolchain update").
+    - then announces it on Discord.
   - The release runs only for a commit on `main` whose ci.yml run
     passed, and for a tag that is semver without leading zeros. A release
     reaches every host on its channel as root, since `sb update`
@@ -401,96 +405,15 @@ when `scripts/` or `.github/` changed).
 
 ### Saltbox's toolchain update
 
-The maintainer's decision of 2026-11-20: sb-rust replaces sb-go at
-1.0.0, so its release workflow takes over sb-go's update-saltbox-python
-job. sb-go's job stops when sb-go is retired (sb-go's change, not this
-repository's).
-
-- **What it updates,** in `saltyorg/Saltbox`'s `master`, in one signed
-  commit `chore(deps): update python toolchain` (GitHub's
-  `createCommitOnBranch`, with `expectedHeadOid` the commit it was
-  prepared against, then checked: one parent, the expected tree, the
-  message, verified):
-  - `.python-version`: the newest CPython of the tracked minor (`3.12`,
-    the action's `python-minor`) for Linux x86_64 glibc that the
-    released uv lists (`uv python list --managed-python`), installed and
-    run to check its version;
-  - `.uv-version`: the released sb's `uv_version`, from the published
-    `sb_linux_amd64`'s own `sb version --json` (sb-go read its build's;
-    the field is the same);
-  - `.github/renovate.json`: its `constraints.uv`, set to that uv;
-  - `requirements/requirements-saltbox.txt`: compiled with hashes by
-    that uv for that Python from Saltbox's `requirements-saltbox.in`.
-  - Neither version may go down. Before the commit the lock is synced
-    into a scratch venv, `uv pip check`ed, and `ansible`, `certbot` and
-    `apprise` run `--version`. Each child runs isolated as sb's own
-    Python steps are (`managed-python.sh`, aligned with
-    `crates/python-env/src/isolate.rs`).
-- **When it runs:** after the release is published with its assets, and
-  only when `scripts/release.sh saltbox-gate` says `run=true`, which needs
-  all of:
-  - the tag is a stable release tag, `MAJOR.MINOR.PATCH` and nothing
-    else (no `-` part, no build metadata);
-  - GitHub's release is the tag's, not a draft, not marked prerelease,
-    with an uploaded `sb_linux_amd64`;
-  - that asset's `sb version --json` reports the tag and the `release`
-    channel.
-  - Anything else skips both of the jobs that touch Saltbox, with the
-    reason in the gate's log: an rc, any other prerelease form, a stable
-    tag on a release marked prerelease, a beta-channel build. A release
-    that passes but reports no valid `uv_version` fails. The tests cover
-    `1.0.0` (runs) and `1.0.0-rc.1`, `1.0.0-beta.1`, `1.0.0+build`,
-    `v1.0.0`, and a stable tag on a prerelease (skipped).
-- **Three jobs** (`saltbox-gate`, `saltbox-prepare`, `saltbox-commit`):
-  - the gate reads the release with the workflow's read-only token;
-  - prepare runs the action's `prepare` mode with no write token: the
-    preflight runs Saltbox's packages' own code (their builds and entry
-    points). It leaves the four files and the base commit as the
-    `saltbox-update` artifact, and says whether anything changed;
-  - commit runs only when something changed. It mints the App's token
-    (`actions/create-github-app-token@v3.3.0`: `client-id` from the
-    `SALTBOX_AUTOMATION_APP_ID` organisation variable, `private-key` from
-    the `SALTBOX_AUTOMATION_PRIVATE_KEY` organisation secret, `owner:
-    saltyorg`, `repositories: Saltbox`, `permission-contents: write`,
-    as sb-go's) and runs the `commit` mode, which runs only git, jq and
-    gh, in the `saltbox` environment. It refuses a master that moved
-    since the preparation, and a handover the preparation's package code
-    could have rewritten: any other file, a `.uv-version` other than the
-    release's uv, a lower Python or uv than master's, a `renovate.json`
-    that is more than master's with `constraints.uv` set, or a lock with
-    any line uv doesn't write (only comments, `name==version` and
-    `--hash=sha256:` lines: no index option or URL, so pip fetches from
-    PyPI only, where a hash that isn't the file's fails the install). It
-    prints what it commits.
-  - The commit still takes the lock's pins from the preparation: a
-    package that runs code there could pin another package published on
-    PyPI. Saltbox's CI, which recompiles the lock, sees it only after the
-    commit. Required reviewers on the `saltbox` environment, reading the
-    commit job's own diff, would close it (the maintainer's setting).
-- **The preflight by hand:** `.github/workflows/saltbox-toolchain.yml`
-  (`workflow_dispatch`), as sb-go's test-gha.yml `verify-toolchain-update`
-  job: the newest stable release through the same gate, then the
-  `prepare` mode, which writes nothing to Saltbox (sb-go's `dry-run:
-  'true'`). A separate job mints a read-only App token
-  (`permission-metadata: read`; sb-go's minted contents write) to show
-  the credentials reach sb-rust.
-- **Before the first stable release** (settings the maintainer approves
-  later): sb-rust is added to the selected repositories of the
-  organisation's `SALTBOX_AUTOMATION_APP_ID` variable and
-  `SALTBOX_AUTOMATION_PRIVATE_KEY` secret. Narrower, as the security
-  review advised: the key as a secret of sb-rust's `saltbox` environment
-  (which `saltbox-commit` and the preflight's `credentials` job name),
-  deployable only from the release tags and `main`, since a selected
-  repository's workflows on any branch can read an organisation secret,
-  and whoever has the key can mint any token the App's installation
-  allows. The maintainer's rules let an
-  authorised sb-go release update Saltbox's master through this action;
-  that permission names sb-go, and moves to sb-rust only when the
-  maintainer says so.
-- The action is `.github/actions/update-saltbox-python/`, ported from
-  sb-go's (4006309) with its tests: `commit_test.sh`, `download_test.sh`,
-  `isolation_test.py`, and `publish_test.sh` for the commit mode (check.sh,
-  fast, in the sandbox, no network).
+*Amended 2026-11-25 (the maintainer):* this section's decision of
+2026-11-20, that sb-rust's release workflow takes over sb-go's
+update-saltbox-python job, is replaced by
+[ADR-031](../decisions/ADR-031-toolchain-ownership.md). sb writes nothing
+to Saltbox: Saltbox's own workflow updates master's Python patch,
+`.uv-version` and lock through a pull request its CI checks, reading the
+latest stable sb's `version --json` `uv_version`. The release workflow
+has no Saltbox jobs, no `saltbox` environment and no use of the Saltbox
+App's variable or secret, and there is no preflight workflow.
 
 ### Differences from sb-go (the complete list)
 
@@ -534,19 +457,8 @@ repository's).
     announcement").
 17. The Discord payload is built with jq and posted from its own job;
     sb-go escaped with sed in the release job.
-18. Saltbox's toolchain is updated only for a stable release, by the
-    gate's three conditions; sb-go had no prereleases and no such check.
-    Its preparation and its commit are separate jobs, so the write token
-    never meets the preflight's package code; sb-go did both in one
-    ("Saltbox's toolchain update").
-19. The updater checks the uv archive against the SHA-256 uv's release
-    publishes beside it (`<asset>.sha256`) before it reads it, and what
-    its lock compiles resolve themselves sits behind a 7-day age floor
-    (uv's `--exclude-newer`, a timestamp 7 days back). The versions
-    master's lock pins, Saltbox's own, are kept and exempt from it, and
-    a lock Saltbox's CI would not reproduce with the header's command
-    (no floor) is refused. sb-go did neither (the maintainer,
-    2026-11-24).
+18. The release doesn't update Saltbox's toolchain; sb-go's release
+    does, until sb-go makes the same change (ADR-031, D6 and D9).
 
 ### Scope
 
@@ -556,8 +468,8 @@ repository's).
 - **Here since 2026-11-18:** the channels, the repository, the local
   CI and release workflows, sb-M4 and sb-L8 ("Release channels").
 - **Here since 2026-11-20:** the release notes, the GitHub release's
-  body, the Discord announcement and Saltbox's toolchain update ("Release
-  notes and announcement", "Saltbox's toolchain update").
+  body and the Discord announcement ("Release notes and announcement").
+  Saltbox's toolchain update was here too, until 2026-11-25 (ADR-031).
 - **Later:** signed checksums (minisign or sigstore; decided.md D-Q2)
   and sb-M1 (triage DEFER); creating saltyorg/sb-rust, pushing and
   publishing, each authorised separately. The `update` integration is
@@ -867,15 +779,14 @@ No test reaches the network or replaces an installed sb.
 - **The cutover from sb-go (D-Q3):** sb-rust publishes to its own
   repository, so sb-go hosts reach it only through sb-go's final
   release, which fetches sb-rust's newest release (sb-go's change).
-  sb-rust keeps `version --json`'s `uv_version` and bare tags, as the
-  update-saltbox-python action reads sb's version that way.
+  sb-rust keeps `version --json`'s `uv_version` and bare tags, as
+  Saltbox's toolchain workflow reads the latest stable sb's uv that way
+  (ADR-031).
 - **The repository's settings:** publish and announce use no
   environment, and `DISCORD_WEBHOOK` is a repository secret (the
   maintainer, 2026-11-25). The `version tags` ruleset limits creating,
-  moving and deleting version tags to the role it lets bypass it. The
-  Saltbox jobs' settings (sb-rust among the selected repositories of
-  the Saltbox App's organisation variable and secret) wait for the
-  maintainer. GitHub's 22.04 runners are deprecated from 2026-09-17 and
+  moving and deleting version tags to the role it lets bypass it.
+  GitHub's 22.04 runners are deprecated from 2026-09-17 and
   unsupported from 2027-04-17; the 22.04 jobs need a plan by then.
 - The proxy and GitHub are trusted for the digest; a compromised GitHub
   release isn't caught until signed checksums.
