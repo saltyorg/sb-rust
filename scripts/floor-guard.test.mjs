@@ -1251,16 +1251,33 @@ const SYSTEM_TOOLS = ['awk', 'basename', 'bash', 'cat', 'chmod', 'dirname', 'env
 const stubs = (versions, arch) => {
   const log = 'printf \'%s|%s|%s|%s|%s\\n\' "$(basename "$0")" "${CARGO_TARGET_DIR-unset}"'
     + ' "${CARGO_BUILD_TARGET_DIR-unset}" "${CARGO_LLVM_COV_TARGET_DIR-unset}" "$*" >>"$STUB_LOG"\n';
-  const installed = ['cargo-deny', 'cargo-llvm-cov', 'cargo-mutants', 'cargo-nextest', 'cross', 'hyperfine']
-    .filter((t) => versions[t] && versions[t] !== 'not-from-cargo').map((t) => t + ' v' + versions[t] + ':\n    ' + t + '\n').join('');
+  // A cargo tool's version: `own X` is a binary cargo has no record of
+  // (as install-action installs one) whose own --version prints X;
+  // `not-from-cargo` is one with no record that prints no version.
+  const cargoTools = ['cargo-deny', 'cargo-llvm-cov', 'cargo-mutants', 'cargo-nextest', 'cross', 'hyperfine'];
+  const own = (t) => typeof versions[t] === 'string' && versions[t].startsWith('own ');
+  const installed = cargoTools
+    .filter((t) => versions[t] && versions[t] !== 'not-from-cargo' && !own(t))
+    .map((t) => t + ' v' + versions[t] + ':\n    ' + t + '\n').join('');
+  // What the binary's own --version prints: its name and version, the
+  // version without a record's source; nothing for `not-from-cargo`.
+  const ownVersion = (t) => versions[t] && versions[t] !== 'not-from-cargo'
+    ? t + ' ' + versions[t].replace(/^own /, '').replace(/ \(.*\)$/, '') : '';
+  // A cargo subcommand is run as cargo runs it, `cargo-NAME NAME ...`.
+  const cargoVersion = (t) => 'if [ "$2" = --version ]; then echo "' + ownVersion(t) + '"; exit 0; fi\n';
   // A warning with a number in it goes to stderr first: the version is
   // read from stdout only.
   const version = (text) => 'if [ "$1" = --version ]; then echo "warning: 3 settings ignored" >&2; echo "' + text + '"; exit 0; fi\n';
   const out = {
-    cargo: 'if [ "$1 $2" = "install --list" ]; then printf \'%s\' "' + installed + '"; exit 0; fi\n',
-    'cargo-llvm-cov': '', 'cargo-mutants': '', 'cargo-nextest': '', 'cargo-deny': '', hyperfine: '',
-    // The binary of the --target asked for.
-    cross: 't=x86_64-unknown-linux-gnu; p=; for a in "$@"; do [ "$p" = --target ] && t="$a"; p="$a"; done\n'
+    cargo: 'if [ "$1 $2" = "install --list" ]; then printf \'%s\' "' + installed + '"; exit 0; fi\n'
+      + 'case "$1 $2" in "llvm-cov --version" | "mutants --version" | "nextest --version" | "deny --version") exec "cargo-$1" "$@" ;; esac\n',
+    'cargo-llvm-cov': cargoVersion('cargo-llvm-cov'), 'cargo-mutants': cargoVersion('cargo-mutants'),
+    'cargo-nextest': cargoVersion('cargo-nextest'), 'cargo-deny': cargoVersion('cargo-deny'),
+    hyperfine: 'if [ "$1" = --version ]; then echo "' + ownVersion('hyperfine') + '"; exit 0; fi\n',
+    // The binary of the --target asked for. Its --version prints one too,
+    // which check.sh must never run (it syncs a toolchain).
+    cross: 'if [ "$1" = --version ]; then echo "' + ownVersion('cross') + '"; exit 0; fi\n'
+      + 't=x86_64-unknown-linux-gnu; p=; for a in "$@"; do [ "$p" = --target ] && t="$a"; p="$a"; done\n'
       + 'mkdir -p "$CARGO_TARGET_DIR/$t/production"\n'
       + 'printf sb >"$CARGO_TARGET_DIR/$t/production/sb"\n',
     'diff-cover': version('diff-cover ' + versions['diff-cover']),
@@ -1646,12 +1663,42 @@ test('check.sh: a tool cargo did not install, or one missing, exits 2 naming it'
   refuses(checkRun('fast', { versions: { go: null } }), 2, /go not installed/);
   refuses(checkRun('fast', { versions: { node: null } }), 2, /node not installed/);
   refuses(checkRun('full', { versions: { docker: null } }), 2, /docker not installed/);
-  // On PATH, but not in `cargo install --list` (a copy, or a distro package).
+  // On PATH, not in `cargo install --list`, and printing no version of its own.
   refuses(checkRun('task', { versions: { hyperfine: 'not-from-cargo' } }), 2, /could not read the version of hyperfine/);
   // A git or path build is no registry release: only `NAME vX.Y.Z:` counts.
   refuses(checkRun('full', { versions: { cross: '0.2.5 (https://github.com/cross-rs/cross#4090beca)' } }), 2,
     /could not read the version of cross/);
   refuses(checkRun('task', { versions: { hyperfine: '2.0.0 (/src/hyperfine)' } }), 2, /could not read the version of hyperfine/);
+});
+
+test('check.sh: a cargo tool cargo has no record of is read from its own --version', () => {
+  // As install-action installs them: the binaries alone, no cargo record.
+  const own = { 'cargo-llvm-cov': 'own 0.9.1', 'cargo-mutants': 'own 27.1.0', 'cargo-nextest': 'own 0.9.151',
+    'cargo-deny': 'own 0.20.2', hyperfine: 'own 2.0.0' };
+  const r = checkRun('full', { versions: own });
+  passes(r, 'full');
+  const asked = (tool, args) => r.calls.some((c) => c.tool === tool && c.args === args);
+  for (const sub of ['llvm-cov', 'mutants', 'nextest', 'deny']) assert.ok(asked('cargo-' + sub, sub + ' --version'), sub + '\n' + r.output);
+  assert.ok(asked('hyperfine', '--version'), r.output);
+  // Its own version is held to the row like cargo's record.
+  refuses(checkRun('task', { versions: { 'cargo-nextest': 'own 0.9.150' } }), 2, /cargo-nextest is 0\.9\.150; .*0\.9\.151/);
+  refuses(checkRun('task', { versions: { hyperfine: 'own 2.0.0-dev' } }), 2, /hyperfine is 2\.0\.0-dev/);
+  // cross is never run for it (`cross --version` syncs a toolchain): without
+  // cargo's record it can't be read.
+  const cross = checkRun('full', { versions: { cross: 'own 0.2.5' } });
+  refuses(cross, 2, /could not read the version of cross/);
+  assert.ok(!cross.calls.some((c) => c.tool === 'cross'), cross.output);
+});
+
+test('check.sh: a cargo tool cargo has a record of is read from the record, not run', () => {
+  const r = checkRun('full');
+  passes(r, 'full');
+  assert.ok(!r.calls.some((c) => / ?--version$/.test(c.args) && c.tool !== 'cargo'
+    && ['cargo-llvm-cov', 'cargo-mutants', 'cargo-nextest', 'cargo-deny', 'hyperfine', 'cross'].includes(c.tool)), r.output);
+  // A record of a git or path build wins over the binary's own --version,
+  // which prints the row's version: still no release.
+  refuses(checkRun('task', { versions: { 'cargo-nextest': '0.9.151 (/src/nextest)' } }), 2,
+    /could not read the version of cargo-nextest/);
 });
 
 test('check.sh: node is held to its major version, script, Docker and Go to a minimum', () => {

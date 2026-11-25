@@ -119,8 +119,11 @@ commit message; they don't fail the run.
 Installed locally; `scripts/check.sh` exits 2 naming any tool that's missing
 or not at the version its row asks for, before a stage runs. Rule: exact is
 the same version; major, the same major version; minimum, that version or a
-later one. A tool cargo installed is read from `cargo install --list`,
-gitleaks from `go version -m`, the others from their `--version`. The
+later one. A cargo tool is read from `cargo install --list` when cargo
+installed it, else from its own `--version` (CI installs release binaries
+cargo has no record of), cross only from cargo's record (`cross --version`
+syncs a toolchain); gitleaks from `go version -m`; the others from their
+`--version`. The
 system packages have a major or minimum rule, so a host package update
 doesn't fail every run.
 

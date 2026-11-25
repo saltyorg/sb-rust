@@ -148,13 +148,21 @@ need() { command -v "$1" >/dev/null || { echo "check: $1 not installed (see CONS
 
 # tool_version NAME: the installed version of a Tools table tool, read
 # without side effects.
-# - The tools cargo installed, from `cargo install --list`, which prints
-#   `NAME vX.Y.Z:` for a crates.io release and `NAME vX.Y.Z (source):` for
-#   a git or path build. Only a release counts, so a build from elsewhere
-#   fails the exact rule. They aren't run: running one could act
-#   (`cross --version` syncs a toolchain). The limit: cargo's record is
-#   trusted, so another binary of the same name earlier on PATH isn't
-#   seen.
+# - The cargo tools, from `cargo install --list` when cargo installed
+#   them: it prints `NAME vX.Y.Z:` for a crates.io release and
+#   `NAME vX.Y.Z (source):` for a git or path build. Only a release
+#   counts, so a build from elsewhere fails the exact rule, and the tool
+#   isn't run. The limit: cargo's record is trusted, so another binary of
+#   the same name earlier on PATH isn't seen.
+# - The same tools when cargo has no record of them (CI's install-action
+#   unpacks the release binaries and writes none), from the second word of
+#   their own `--version`'s first line, run as check.sh runs them:
+#   "cargo-llvm-cov 0.9.1" (`cargo llvm-cov --version`), likewise
+#   cargo-mutants, cargo-nextest and cargo-deny, and "hyperfine 2.0.0".
+#   Each prints and exits, writing no file and starting nothing (checked
+#   with strace at the Tools table's versions). cross is never
+#   run for it (`cross --version` syncs a toolchain), so without cargo's
+#   record it can't be read.
 # - gitleaks, from Go's build information: a `go install` build prints no
 #   version of its own ("version is set by build process"), and
 #   `go version -m` prints its module line `mod <path> vX.Y.Z <sum>`:
@@ -172,7 +180,16 @@ tool_version() {
   local out=''
   case $1 in
   cargo-llvm-cov | cargo-mutants | cargo-nextest | cargo-deny | hyperfine | cross)
-    out=$(cargo install --list | sed -n "s/^$1 v\([^ :]*\):\$/\1/p") || out=''
+    # The package's own line, `NAME v...:`; its binaries are indented.
+    local record
+    record=$(cargo install --list | awk -v t="$1" '$1 == t && /:$/') || record=''
+    if [[ -n $record ]]; then
+      out=$(sed -n "s/^$1 v\([^ :]*\):\$/\1/p" <<<"$record")
+    elif [[ $1 == hyperfine ]]; then
+      out=$(hyperfine --version 2>/dev/null | awk 'NR == 1 { print $2 }') || out=''
+    elif [[ $1 != cross ]]; then
+      out=$(cargo "${1#cargo-}" --version 2>/dev/null | awk 'NR == 1 { print $2 }') || out=''
+    fi
     ;;
   gitleaks)
     out=$(go version -m "$(command -v gitleaks)" |

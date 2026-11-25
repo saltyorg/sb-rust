@@ -122,8 +122,14 @@ jobs:
       # unchecked (ci.yml; https://github.com/taiki-e/install-action/blob/v2.90.8/README.md, "Inputs").
       - uses: taiki-e/install-action@fe3acb53a98b62c772db35de75ce0e4595e7ca8c # v2.90.8
         with:
-          tool: cargo-llvm-cov@0.9.1,cargo-mutants@27.1.0,cargo-nextest@0.9.151,cargo-deny@0.20.2,hyperfine@2.0.0,cross@0.2.5,zizmor@1.32.0,uv@0.13.4
+          tool: cargo-llvm-cov@0.9.1,cargo-mutants@27.1.0,cargo-nextest@0.9.151,cargo-deny@0.20.2,hyperfine@2.0.0,zizmor@1.32.0,uv@0.13.4
           fallback: none
+      # cross from crates.io, each crate checked against the index's
+      # checksum, its dependencies at its own Cargo.lock: check.sh reads
+      # cross's version from cargo's record only (running `cross --version`
+      # syncs a toolchain), and install-action writes none.
+      - name: cross
+        run: cargo install --locked cross --version 0.2.5
       - name: gitleaks, diff-cover and actionlint
         run: |
           go install github.com/zricethezav/gitleaks/v8@v8.30.1

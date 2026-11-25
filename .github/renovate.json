@@ -300,9 +300,8 @@
             "matchStrings": [
                 "\\| (?<depName>cargo-llvm-cov|cargo-mutants|cargo-nextest|cargo-deny|hyperfine) \\| (?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+) \\| exact \\|",
                 "\\| (?<depName>cross) \\| (?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+) \\| exact \\|",
-                "`cargo install --locked (?<depName>cross) --version (?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)`",
                 "\\b(?<depName>cargo-llvm-cov|cargo-mutants|cargo-nextest|cargo-deny|hyperfine|cross)@(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)\\b",
-                "cargo install --locked (?<depName>cargo-mutants) --version (?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)"
+                "cargo install --locked (?<depName>cargo-mutants|cross) --version (?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)"
             ],
             "datasourceTemplate": "crate",
             "versioningTemplate": "semver"
