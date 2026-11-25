@@ -69,20 +69,22 @@ pub fn writing<T>(write: impl FnOnce() -> T) -> T {
     write()
 }
 
+/// The unit tests that take [`LOCK`]'s exclusive side or look at its
+/// state run one at a time under this: std's `RwLock` lets no new reader
+/// in while a writer waits, so one test's writer would hold back another's
+/// child start, or fail its look at the lock.
+#[cfg(test)]
+pub(crate) fn one_at_a_time() -> std::sync::MutexGuard<'static, ()> {
+    static ONE_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    ONE_AT_A_TIME.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::{TryLockError, mpsc};
 
     use super::*;
     use crate::testing::fork_held;
-
-    /// These tests take the one process-wide lock, one at a time: a
-    /// writer one leaves waiting holds back another's child start.
-    static ONE_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    fn one_at_a_time() -> std::sync::MutexGuard<'static, ()> {
-        ONE_AT_A_TIME.lock().unwrap_or_else(PoisonError::into_inner)
-    }
 
     /// Whether `taken` is the lock refusing for now (a poisoned lock,
     /// which the panic test leaves, is taken all the same).

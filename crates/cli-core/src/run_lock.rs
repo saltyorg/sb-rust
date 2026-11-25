@@ -394,7 +394,11 @@ pub fn take(
 /// `dir` a directory, not a link, owned by the user running sb and not
 /// group- or world-writable; the file opened without following a link,
 /// made 0600, a regular file of that user's. std opens it `O_CLOEXEC`, so
-/// no child inherits it.
+/// a child sb starts holds it only until its exec: a child forked while
+/// the lock is held shares the lock's open file until then, and the lock
+/// stays taken that long after sb lets it go (the inheritance
+/// [`crate::fork_lock`] describes). sb holds it for the whole run, so
+/// that moment's delay to a waiting sb is all it costs.
 fn open(dir: &Path) -> Result<File, LockError> {
     let dir_error = |source| LockError::Dir {
         path: dir.to_owned(),
@@ -501,31 +505,49 @@ mod tests {
         file
     }
 
+    /// Under the fork lock's exclusive side, from the first open to the
+    /// second take: a child another test forked meanwhile would share the
+    /// lock's open file until its exec ([`open`]), and still hold the lock
+    /// when it is taken again. Every child this crate's unit tests start
+    /// takes the shared side, as sb-exec's children do; the fork lock's own
+    /// tests wait their turn (`one_at_a_time`).
     #[test]
     fn a_free_lock_is_taken_at_once_and_records_its_holder() {
         let dir = tempfile::tempdir().expect("dir");
         let lock = dir.path().join("sb");
         let mut told = 0;
-        let taken = take(&lock, "sb install", &token(), |_| told += 1).expect("taken");
-        assert!(matches!(
-            taken,
-            Taken::Held {
-                waited_for: None,
-                ..
-            }
-        ));
-        assert_eq!(told, 0);
-        let record = std::fs::read_to_string(lock.join(FILE)).expect("record");
-        assert_eq!(record, format!("{}\nsb install\n", std::process::id()));
-        let mode =
-            |path: &Path| std::fs::metadata(path).expect("meta").permissions().mode() & 0o777;
-        assert_eq!(mode(&lock), 0o700);
-        assert_eq!(mode(&lock.join(FILE)), 0o600);
-        // Dropped, it is free again.
-        drop(taken);
-        let again = take(&lock, "sb update", &token(), |_| told += 1).expect("again");
-        assert!(matches!(again, Taken::Held { .. }));
-        assert_eq!(told, 0);
+        let _one = crate::fork_lock::one_at_a_time();
+        crate::fork_lock::writing(|| {
+            let taken = take(&lock, "sb install", &token(), |_| told += 1).expect("taken");
+            assert!(matches!(
+                taken,
+                Taken::Held {
+                    waited_for: None,
+                    ..
+                }
+            ));
+            assert_eq!(told, 0);
+            let record = std::fs::read_to_string(lock.join(FILE)).expect("record");
+            assert_eq!(record, format!("{}\nsb install\n", std::process::id()));
+            let mode =
+                |path: &Path| std::fs::metadata(path).expect("meta").permissions().mode() & 0o777;
+            assert_eq!(mode(&lock), 0o700);
+            assert_eq!(mode(&lock.join(FILE)), 0o600);
+            // Dropped, it is free again.
+            drop(taken);
+            let again = take(&lock, "sb update", &token(), |_| told += 1).expect("again");
+            assert!(matches!(again, Taken::Held { .. }));
+            assert_eq!(told, 0);
+        });
+    }
+
+    /// std opens the lock close-on-exec: no program sb starts keeps it.
+    #[test]
+    fn the_lock_file_is_closed_on_exec() {
+        let dir = tempfile::tempdir().expect("dir");
+        let file = open(dir.path()).expect("open");
+        let flags = rustix::io::fcntl_getfd(&file).expect("flags");
+        assert!(flags.contains(rustix::io::FdFlags::CLOEXEC), "{flags:?}");
     }
 
     #[test]
@@ -849,13 +871,16 @@ mod tests {
         let dir = tempfile::tempdir().expect("dir");
         let playbook = dir.path().join(BACKUP_PLAYBOOK);
         // Blocked in `read` on a pipe held here: no child of its own.
-        let mut child = std::process::Command::new("sh")
-            .arg0("ansible-playbook")
-            .args(["-c", "read -r line", "sh"])
-            .arg(&playbook)
-            .stdin(std::process::Stdio::piped())
-            .spawn()
-            .expect("stand-in");
+        // Started under the fork lock, as every child of these tests is.
+        let mut child = crate::fork_lock::forking(|| {
+            std::process::Command::new("sh")
+                .arg0("ansible-playbook")
+                .args(["-c", "read -r line", "sh"])
+                .arg(&playbook)
+                .stdin(std::process::Stdio::piped())
+                .spawn()
+        })
+        .expect("stand-in");
         let pid = i32::try_from(child.id()).expect("pid");
         let root = crate::root::effective_uid() == 0;
         let mut held = BackupPlaybook {

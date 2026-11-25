@@ -150,6 +150,13 @@ mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt as _;
 
+    /// The program at `path` run to its end, started under the fork lock
+    /// as every child of cli-core's unit tests is: the run lock's tests
+    /// keep its descriptor out of them that way.
+    fn run(path: &Path) -> std::process::Output {
+        crate::fork_lock::forking(|| Command::new(path).output()).expect("run")
+    }
+
     #[test]
     fn a_program_is_written_whole_and_executable() {
         let dir = tempfile::tempdir().expect("dir");
@@ -161,14 +168,11 @@ mod tests {
             std::fs::read_to_string(&path).expect("read"),
             "#!/bin/sh\necho 'ran'\n"
         );
-        let ran = Command::new(&path).output().expect("run");
+        let ran = run(&path);
         assert_eq!(ran.stdout, b"ran\n");
         // Written again in place: the new text, still executable.
         write_program(&path, b"#!/bin/sh\necho 'again'\n");
-        assert_eq!(
-            Command::new(&path).output().expect("run").stdout,
-            b"again\n"
-        );
+        assert_eq!(run(&path).stdout, b"again\n");
     }
 
     #[test]
@@ -179,7 +183,7 @@ mod tests {
         copy_program(&from, &to);
         let mode = std::fs::metadata(&to).expect("stat").permissions().mode();
         assert_eq!(mode & 0o777, 0o755);
-        assert_eq!(Command::new(&to).output().expect("run").stdout, b"copied\n");
+        assert_eq!(run(&to).stdout, b"copied\n");
     }
 
     #[test]
