@@ -3,11 +3,9 @@
 # and on arm64, as CONSTRAINTS.md asks of `task` ("before handing work
 # back"). `full` runs on release tags (release.yml).
 #
-# Written locally (2026-11-18) and not yet run: creating saltyorg/sb-rust,
-# pushing and running workflows are remote actions the maintainer
-# authorises separately. GitHub's 26.04 and arm runners are generally
-# available; its 22.04 images are deprecated from 2026-09-17 and
-# unsupported from 2027-04-17, when those two jobs need a plan.
+# GitHub's 26.04 and arm runners are generally available; its 22.04
+# images are deprecated from 2026-09-17 and unsupported from 2027-04-17,
+# when those two jobs need a plan.
 # https://github.com/actions/runner-images
 name: ci
 

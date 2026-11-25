@@ -10,11 +10,8 @@
 # `_beta` ones, from the same code, so a beta host stays beta across
 # stable releases; a prerelease publishes `_beta` assets only.
 #
-# Written locally (2026-11-18, the notes, Discord and Saltbox jobs
-# 2026-11-20) and not yet run: pushing tags, publishing and updating
-# Saltbox are remote actions the maintainer authorises separately (and the
-# user rules ask for green CI on the exact commit before any tag is
-# pushed).
+# A release tag is pushed by the maintainer, only for a commit whose CI
+# passed; plan checks that again before anything is built.
 name: release
 
 on:

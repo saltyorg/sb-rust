@@ -403,9 +403,8 @@ To discuss with the maintainer once every module is done, not before:
     arm64: until then the install script and Saltbox are x86_64 only.
   - `version` and `self-update` run on an unsupported Ubuntu release,
     with a warning.
-  - The CI and release workflows are written locally. Creating the
-    repository, pushing and publishing wait for the maintainer's
-    authorisation.
+  - The CI and release workflows are in `.github/workflows/`; a
+    release tag is pushed by the maintainer.
 - **musl or glibc** (maintainer, 2026-11-13). glibc and musl builds of
   the feature-complete CLI are measured side by side on one host
   (startup, peak memory, the commands' own run times), and the

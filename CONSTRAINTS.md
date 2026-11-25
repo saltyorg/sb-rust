@@ -77,8 +77,8 @@ tooling.
 All of the above but the two journal rows run through
 `scripts/check.sh fast|task|full [base]`.
 `fast` runs after edits, `task` before handing work back (a few minutes),
-and `full` before committing and in CI once CI exists. Every failing check
-blocks.
+and `full` before committing. In CI, ci.yml runs `task` and release.yml
+runs `full` on each release tag. Every failing check blocks.
 
 What a run covers follows the files that differ from the base
 ([ADR-016](docs/decisions/ADR-016-lighter-process.md)). A change under
@@ -91,11 +91,11 @@ since the base, every step runs.
 The journal matrix and the fuzz harness run by hand, capped, at each
 checkpoint and after any task that touches journal reading: a change
 under `crates/journal/`, or a version change of one of sb-journal's
-dependencies. They run so until CI is authorised: the matrix workflow
-(`.github/workflows/journal-matrix.yml`) is local and unpushed, and
-pushing and running it, and afl.rs fuzzing after it, wait for the
-maintainer's go-ahead (journal spec, decisions 3 and 7). A failing run
-blocks as a failing check does.
+dependencies. On GitHub the matrix also runs from
+`.github/workflows/journal-matrix.yml`: daily, by hand, and for a pull
+request or a push to main that changes the files it lists. afl.rs
+fuzzing waits for the maintainer's go-ahead (journal spec, decision 7).
+A failing run blocks as a failing check does.
 
 A blocking floor finding (a threshold, a lint level, deny.toml, the
 toolchain pin, a tool configuration, a gate step switched off, a new

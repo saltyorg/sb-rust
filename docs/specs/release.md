@@ -290,9 +290,7 @@ The maintainer's decisions of 2026-11-18.
   versions: <list>); sb self-update may bring a version that supports
   it`. Self-update is how such a host reaches a binary that supports
   its release (cli-core, startup step 1).
-- **CI** in saltyorg/sb-rust, written locally only. Creating the
-  repository, pushing and running workflows are remote actions the
-  maintainer authorises separately.
+- **CI** in saltyorg/sb-rust.
   - `.github/workflows/ci.yml` runs `check.sh task` on every push and
     pull request on 22.04, 24.04 and 26.04.
   - `.github/workflows/release.yml`, on a version tag:
@@ -866,15 +864,14 @@ No test reaches the network or replaces an installed sb.
   release, which fetches sb-rust's newest release (sb-go's change).
   sb-rust keeps `version --json`'s `uv_version` and bare tags, as the
   update-saltbox-python action reads sb's version that way.
-- **The workflows are unrun:** written locally, never pushed. Publish
-  and announce use no environment, and `DISCORD_WEBHOOK` is a
-  repository secret (the maintainer, 2026-11-25). The `version tags`
-  ruleset limits creating, moving and deleting version tags to the role
-  it lets bypass it. The Saltbox jobs' settings (sb-rust among the
-  selected repositories of the Saltbox App's organisation variable and
-  secret) wait for the maintainer. GitHub's 22.04 runners are
-  deprecated from 2026-09-17 and unsupported from 2027-04-17; the 22.04
-  jobs need a plan by then.
+- **The repository's settings:** publish and announce use no
+  environment, and `DISCORD_WEBHOOK` is a repository secret (the
+  maintainer, 2026-11-25). The `version tags` ruleset limits creating,
+  moving and deleting version tags to the role it lets bypass it. The
+  Saltbox jobs' settings (sb-rust among the selected repositories of
+  the Saltbox App's organisation variable and secret) wait for the
+  maintainer. GitHub's 22.04 runners are deprecated from 2026-09-17 and
+  unsupported from 2027-04-17; the 22.04 jobs need a plan by then.
 - The proxy and GitHub are trusted for the digest; a compromised GitHub
   release isn't caught until signed checksums.
 - If sb's file was replaced while it ran, `/proc/self/exe` ends in
