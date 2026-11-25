@@ -20,7 +20,9 @@
 #   packages, git, python3 and rustup
 #   (scripts/ci-rehearsal/provision.sh), a non-root `runner` user with
 #   passwordless sudo, its home /home/runner at 0750, the checkout at
-#   /home/runner/work/sb-rust/sb-rust, the runner's variables;
+#   /home/runner/work/sb-rust/sb-rust, the runner's variables,
+#   /etc/resolv.conf as systemd-resolved's link into /run
+#   (RESOLVER_LAYOUT, below);
 # - the job: scripts/ci-rehearsal/job.py reads ci.yml and runs the job's
 #   steps as the runner does, each `run` step as written and each action
 #   from its repository at the pinned commit (install-action's binaries,
@@ -162,14 +164,37 @@ ensure_runner() {
   commit_image "$image" "$name"
 }
 
+# The runners' /etc/resolv.conf, made first in each runner's container:
+# on a runner it is systemd-resolved's symlink to
+# /run/systemd/resolve/stub-resolv.conf, the mode systemd recommends
+# (https://www.freedesktop.org/software/systemd/man/latest/systemd-resolved.service.html,
+# "/etc/resolv.conf"; https://github.com/actions/runner-images/issues/4863
+# shows the runners on resolved's stub, 127.0.0.53, and
+# https://github.com/actions/runner-images/issues/798 replaces the link
+# with `ln -sf`), and in check.sh's sandbox, whose /run is empty, the link
+# leads nowhere. Docker's file, a copy of the host's bound onto
+# /etc/resolv.conf (https://docs.docker.com/engine/network/#dns-services),
+# becomes the link's target, so the container's name servers stay. Only
+# ever inside the container: a string here, never a script a host could
+# run. /etc/nsswitch.conf is a plain file on the runners, as it is here.
+# A layout that fails is a rehearsal that could not run (2), not a
+# failed job.
+RESOLVER_LAYOUT='set -e
+mkdir -p /run/systemd/resolve
+cat /etc/resolv.conf >/run/systemd/resolve/stub-resolv.conf
+if mountpoint -q /etc/resolv.conf; then umount /etc/resolv.conf; fi
+ln -sfn ../run/systemd/resolve/stub-resolv.conf /etc/resolv.conf'
+
 # run_one LABEL: the job on LABEL in a container of its image. First the
-# job runner's own tests, on that image's Python.
+# runners' resolver layout, then the job runner's own tests, on that
+# image's Python.
 run_one() {
   local label=$1 name="sb-rehearsal-$$-$1" inner
+  local layout_cmd=(bash -c "$RESOLVER_LAYOUT")
   local test_cmd=(python3 -B -m unittest discover --start-directory "/src/$here" --pattern 'test_*.py')
   local job_cmd=(python3 -B "/src/$here/job.py" run "/src/$workflow" "$job" "$label" --src /src --rev "$rev"
     --patch "/src/$tree/worktree.patch" --untracked "/src/$tree/untracked.tar")
-  inner="$(printf '%q ' "${test_cmd[@]}") && $(printf '%q ' "${job_cmd[@]}")"
+  inner="$(printf '%q ' "${layout_cmd[@]}") || exit 2; $(printf '%q ' "${test_cmd[@]}") && $(printf '%q ' "${job_cmd[@]}")"
   if [[ ${arch_of[$label]} == amd64 ]]; then
     docker run --rm --init --name "$name" --hostname rehearsal "${caps[@]}" "${amd64_privileges[@]}" \
       -v "$root:/src:ro" "${git_mount[@]}" "${image_of[$label]}" bash -c "$inner"

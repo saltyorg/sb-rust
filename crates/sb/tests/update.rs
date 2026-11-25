@@ -290,7 +290,7 @@ fn sigint_during_the_saltbox_fetch_ends_sb_by_the_signal() {
     let sandbox_before = sb_ops::testing::git(&world.sandbox(), &["rev-parse", "HEAD"]);
     let sb = test_build();
     // sb is the process started: unshare and sh exec into it.
-    let child = world
+    let mut child = world
         .namespaced(
             Path::new(&sb),
             &[
@@ -309,6 +309,12 @@ fn sigint_during_the_saltbox_fetch_ends_sb_by_the_signal() {
         .expect("start sb update");
     let deadline = Instant::now() + Duration::from_secs(60);
     while !marker.exists() {
+        // Ended first (a mount of the namespace refused, sb's own
+        // failure): say why, not "never started".
+        if child.try_wait().expect("check sb").is_some() {
+            let out = child.wait_with_output().expect("wait");
+            panic!("ended before the fetch: {out:?}");
+        }
         assert!(Instant::now() < deadline, "the fetch never started");
         std::thread::sleep(Duration::from_millis(50));
     }

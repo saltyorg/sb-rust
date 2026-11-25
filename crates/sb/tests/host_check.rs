@@ -64,7 +64,7 @@ fn an_unsupported_release_refuses_every_other_command() {
     }
     for args in [&["--help"][..], &["update"][..], &["motd"][..]] {
         let out = sb_with_os_release("ID=ubuntu\nVERSION_ID=\"20.04\"\n", args);
-        assert_eq!(out.status.code(), Some(1), "{args:?}");
+        assert_eq!(out.status.code(), Some(1), "{args:?}: {out:?}");
         assert_eq!(
             String::from_utf8(out.stderr).expect("utf-8"),
             "✗ unsupported Ubuntu version (detected version: 20.04, supported versions: 22.04, 24.04, 26.04)\n",
@@ -123,7 +123,7 @@ fn another_distribution_is_refused() {
         return;
     }
     let out = sb_with_os_release("ID=debian\nVERSION_ID=\"12\"\n", &["version"]);
-    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
     assert_eq!(
         String::from_utf8(out.stderr).expect("utf-8"),
         "✗ not an Ubuntu distribution (detected ID: debian)\n"
@@ -136,7 +136,7 @@ fn a_supported_release_runs() {
         return;
     }
     let out = sb_with_os_release("ID=ubuntu\nVERSION_ID=\"26.04\"\n", &["version"]);
-    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
 }
 
 /// A command that needs root, run as `nobody` on an unsupported host: it

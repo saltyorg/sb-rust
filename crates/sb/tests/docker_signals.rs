@@ -127,31 +127,40 @@ fn ctrl_c_ends_promptly_while_dns_hangs() {
     let mut cmd = dns.sb(&["docker", "ps"]);
     cmd.env("SB_LOG_DIR", logs.path())
         .env("DOCKER_HOST", "tcp://docker.sb-test.invalid:2375")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stdin(Stdio::null());
     let mut child = KillOnDrop(cmd.spawn().expect("run unshare"));
     let pid = child.0.id();
     let deadline = Instant::now() + Duration::from_secs(10);
     while dead_dns::lookups(pid) == 0 && Instant::now() < deadline {
-        // Ended early (no `ip`, a bind mount refused): say so.
+        // Ended early (no `ip`, a mount refused): say so.
         if let Some(status) = child.0.try_wait().expect("check sb") {
-            panic!("ended before the lookup: {status:?}");
+            panic!("ended before the lookup: {status:?}\n{}", dns.output());
         }
         std::thread::sleep(Duration::from_millis(10));
     }
-    assert!(dead_dns::lookups(pid) > 0, "the lookup open");
+    assert!(
+        dead_dns::lookups(pid) > 0,
+        "the lookup open\n{}",
+        dns.output()
+    );
     let raw = Pid::from_raw(pid.try_into().expect("pid")).expect("pid");
     kill_process(raw, Signal::INT).expect("kill");
     let sent = Instant::now();
     let status = child.0.wait().expect("wait for sb");
     let took = sent.elapsed();
     let log = std::fs::read_to_string(logs.path().join("sb.log")).unwrap_or_default();
-    assert!(took < ENDS_WITHIN, "ended {took:?} after the signal\n{log}");
+    let output = dns.output();
+    assert!(
+        took < ENDS_WITHIN,
+        "ended {took:?} after the signal\n{log}\n{output}"
+    );
     assert_eq!(
         status.signal(),
         Some(Signal::INT.as_raw()),
-        "{status:?}\n{log}"
+        "{status:?}\n{log}\n{output}"
     );
-    assert!(log.contains(r#"outcome="interrupted (exit 130)""#), "{log}");
+    assert!(
+        log.contains(r#"outcome="interrupted (exit 130)""#),
+        "{log}\n{output}"
+    );
 }

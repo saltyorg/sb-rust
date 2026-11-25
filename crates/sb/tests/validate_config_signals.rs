@@ -221,34 +221,44 @@ fn ctrl_c_ends_promptly_while_dns_hangs() {
             "SB_DOCKERHUB_URL",
             "http://dockerhub.sb-test.invalid/v2/users/login/",
         )
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stdin(Stdio::null());
     let mut child = KillOnDrop(cmd.spawn().expect("run unshare"), None);
     let pid = child.0.id();
     // Both checks are looking their host up.
     let deadline = Instant::now() + Duration::from_secs(10);
     while dead_dns::lookups(pid) < 2 && Instant::now() < deadline {
-        // Ended early (no `ip`, a bind mount refused): say so, not
+        // Ended early (no `ip`, a mount refused): say so, not
         // "both lookups open".
         if let Some(status) = child.0.try_wait().expect("check sb") {
-            panic!("ended before both lookups: {status:?}");
+            panic!("ended before both lookups: {status:?}\n{}", dns.output());
         }
         std::thread::sleep(Duration::from_millis(10));
     }
-    assert_eq!(dead_dns::lookups(pid), 2, "both lookups open");
+    assert_eq!(
+        dead_dns::lookups(pid),
+        2,
+        "both lookups open\n{}",
+        dns.output()
+    );
     let pid = i32::try_from(pid).expect("pid");
     kill_process(Pid::from_raw(pid).expect("pid"), Signal::INT).expect("kill");
     let sent = Instant::now();
     let status = child.0.wait().expect("wait for sb");
     let took = sent.elapsed();
     let log = std::fs::read_to_string(logs.path().join("sb.log")).unwrap_or_default();
-    assert!(took < ENDS_WITHIN, "ended {took:?} after the signal\n{log}");
+    let output = dns.output();
+    assert!(
+        took < ENDS_WITHIN,
+        "ended {took:?} after the signal\n{log}\n{output}"
+    );
     // sb ends by the signal itself, which a shell shows as `$?` 130.
     assert_eq!(
         std::os::unix::process::ExitStatusExt::signal(&status),
         Some(Signal::INT.as_raw()),
-        "{status:?}\n{log}"
+        "{status:?}\n{log}\n{output}"
     );
-    assert!(log.contains(r#"outcome="interrupted (exit 130)""#), "{log}");
+    assert!(
+        log.contains(r#"outcome="interrupted (exit 130)""#),
+        "{log}\n{output}"
+    );
 }

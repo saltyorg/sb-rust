@@ -108,7 +108,12 @@ fn piped_the_tables_wrap_at_80_columns() {
     }
     let out = bench_on_small_tmpfs(&[]);
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert_eq!(out.status.code(), Some(0), "{stdout}");
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{stdout}\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     for line in stdout.lines() {
         assert!(console::measure_text_width(line) <= 80, "{line}\n{stdout}");
     }
@@ -257,7 +262,12 @@ fn without_ca_certificates_bench_says_so() {
         ("SSL_CERT_FILE", empty.into_os_string()),
     ]);
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert_eq!(out.status.code(), Some(0), "{stdout}");
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{stdout}\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     // The row wraps in its column, piped at 80: its words, in order.
     let words = stdout.split_whitespace().collect::<Vec<_>>().join(" ");
     // The last System row, then Disk write's heading.
