@@ -184,6 +184,59 @@ async fn without_a_pin_the_newest_312_uv_lists_is_resolved() {
     );
 }
 
+/// A pin the uv lists is the toolchain, hashed, after one list call
+/// (sb-go's `TestResolveToolchainWithListedPinInstallsThatPin`).
+#[tokio::test]
+async fn a_listed_pin_is_resolved_as_it_is() {
+    let _spawns = SPAWNS.lock().await;
+    let tree = Tree::new();
+    let env = tree.env();
+    let pins = toolchain::read_pins(&env, &token()).await.expect("pins");
+    let got = toolchain::resolve(&env, pins, &token())
+        .await
+        .expect("resolved");
+    assert_eq!(got.python, PYTHON);
+    assert!(got.hashed);
+    assert_eq!(
+        uv_calls(&tree),
+        ["python list --only-downloads --all-versions --output-format json"]
+    );
+}
+
+/// A pin the uv doesn't list is D8's message (ADR-031), after the list
+/// call and nothing else; a failed list on a pinned checkout names uv's
+/// message too.
+#[tokio::test]
+async fn a_pin_the_uv_lacks_is_refused_in_sbs_words() {
+    let _spawns = SPAWNS.lock().await;
+    let tree = Tree::new();
+    std::fs::write(&tree.layout.python_pin, "3.12.20\n").expect("pin");
+    let env = tree.env();
+    let pins = toolchain::read_pins(&env, &token()).await.expect("pins");
+    let err = toolchain::resolve(&env, pins.clone(), &token())
+        .await
+        .expect_err("not listed");
+    assert_eq!(
+        err.to_string(),
+        format!(
+            "this Saltbox branch needs Python 3.12.20, which this sb's uv ({UV}) can't install; run sb self-update"
+        )
+    );
+    assert_eq!(
+        uv_calls(&tree),
+        ["python list --only-downloads --all-versions --output-format json"]
+    );
+    tree.fail("python-list");
+    let err = toolchain::resolve(&env, pins, &token())
+        .await
+        .expect_err("failed list");
+    assert!(
+        err.to_string()
+            .contains("uv: python-list failed (stand-in)"),
+        "{err}"
+    );
+}
+
 /// uv's list failing names uv's own message and this sb's uv.
 #[tokio::test]
 async fn a_failing_download_list_names_uvs_message() {

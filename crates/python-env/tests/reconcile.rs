@@ -441,6 +441,39 @@ async fn a_pin_less_checkout_installs_unhashed_and_moving_rebuilds() {
     assert_ne!(active_generation(&tree), hashed);
 }
 
+/// A pinned Python the uv can't install stops the reconcile with D8's
+/// message (ADR-031) before anything is inspected or installed: the
+/// active venv stays, and uv ran only its version probes and the list.
+#[tokio::test]
+async fn a_pin_the_uv_lacks_installs_nothing() {
+    let _spawns = SPAWNS.lock().await;
+    let tree = Tree::new();
+    let active = tree.healthy();
+    std::fs::write(&tree.layout.python_pin, "3.14.2\n").expect("pin");
+    let env = tree.env();
+    let ran = in_step(async |step| {
+        reconcile_venv(step, &env, None, Force::None).await?;
+        Ok(())
+    })
+    .await;
+    let error = ran.error.expect("refused");
+    assert!(
+        error.contains(&format!(
+            "this Saltbox branch needs Python 3.14.2, which this sb's uv ({UV}) can't install; run sb self-update"
+        )),
+        "{error}"
+    );
+    assert_eq!(active_generation(&tree), active.dir);
+    let calls = uv_calls(&tree);
+    assert!(
+        calls
+            .iter()
+            .all(|call| call == "--version" || call.starts_with("python list ")),
+        "{calls:?}"
+    );
+    assert!(!ran.screen.contains("Inspecting"), "{}", ran.screen);
+}
+
 /// A forced rebuild of a pin-less checkout installs unhashed without
 /// uv's cache, and a failed unhashed install names itself.
 #[tokio::test]

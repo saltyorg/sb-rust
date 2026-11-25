@@ -114,6 +114,11 @@ pub enum ToolchainError {
         uv: String,
         cause: serde_json::Error,
     },
+    /// The pinned Python isn't in uv's list (ADR-031, D8).
+    #[error(
+        "this Saltbox branch needs Python {python}, which this sb's uv ({uv}) can't install; run sb self-update"
+    )]
+    Unavailable { python: String, uv: String },
     /// A checkout without a pin, and no Python of the fallback's minor in
     /// uv's list.
     #[error(
@@ -213,15 +218,16 @@ pub async fn read_pins(env: &Env<'_>, token: &CancellationToken) -> Result<Pins,
     })
 }
 
-/// The Python for `pins` (sb-go's `resolveToolchainWithRuntime`): a
-/// pinned Python as it is, with the hashed lock; without a pin, the
-/// newest [`FALLBACK_MINOR`] patch the installed uv can install
-/// ([`downloads`]), unhashed. Runs after uv is installed.
+/// The Python for `pins` against the Pythons the installed uv can
+/// install ([`downloads`]; sb-go's `resolveToolchainWithRuntime`), before
+/// anything is installed: a pinned Python when uv lists it, with the
+/// hashed lock; without a pin, the newest [`FALLBACK_MINOR`] patch,
+/// unhashed. Runs after uv is installed.
 ///
 /// # Errors
 ///
-/// [`ToolchainError::List`], [`ToolchainError::ListParse`] or
-/// [`ToolchainError::NoFallback`].
+/// [`ToolchainError::List`], [`ToolchainError::ListParse`],
+/// [`ToolchainError::Unavailable`] or [`ToolchainError::NoFallback`].
 pub async fn resolve(
     env: &Env<'_>,
     pins: Pins,
@@ -233,10 +239,11 @@ pub async fn resolve(
         commit,
         ..
     } = pins;
+    let available = list_downloads(env, token).await?;
     let (python, hashed) = if let Some(python) = python {
+        check_listed(&available, &python, env.uv_version)?;
         (python, true)
     } else {
-        let available = list_downloads(env, token).await?;
         (newest_fallback(&available, env.uv_version)?, false)
     };
     Ok(Toolchain {
@@ -272,6 +279,24 @@ pub fn downloads(json: &str) -> Result<Vec<String>, serde_json::Error> {
         })
         .map(|entry| entry.version)
         .collect())
+}
+
+/// Refuse a `pin` that isn't in `available` (ADR-031, D8): sb's own
+/// words, naming `uv`, this sb's uv, and `sb self-update`, rather than
+/// uv's error at the install.
+///
+/// # Errors
+///
+/// [`ToolchainError::Unavailable`].
+pub fn check_listed(available: &[String], pin: &str, uv: &str) -> Result<(), ToolchainError> {
+    if available.iter().any(|version| version == pin) {
+        Ok(())
+    } else {
+        Err(ToolchainError::Unavailable {
+            python: pin.to_string(),
+            uv: uv.to_string(),
+        })
+    }
 }
 
 /// The newest [`FALLBACK_MINOR`] patch in `available`, by number (semver
@@ -477,6 +502,24 @@ mod tests {
             newest_fallback(&available, "0.90.1").expect("found"),
             "3.12.8"
         );
+    }
+
+    /// A pin uv's list has is installed; one it lacks, and the same
+    /// version as another variant or implementation only, is D8's message
+    /// (sb-go's `TestResolveToolchainRefusesPinTheUVCannotInstall`).
+    #[test]
+    fn a_pin_must_be_in_the_list() {
+        let available = downloads(DOWNLOADS).expect("parsed");
+        assert!(check_listed(&available, "3.12.9", "0.90.1").is_ok());
+        for pin in ["3.12.42", "3.12.60", "3.12.70"] {
+            let err = check_listed(&available, pin, "0.90.1").expect_err(pin);
+            assert_eq!(
+                err.to_string(),
+                format!(
+                    "this Saltbox branch needs Python {pin}, which this sb's uv (0.90.1) can't install; run sb self-update"
+                )
+            );
+        }
     }
 
     #[test]
