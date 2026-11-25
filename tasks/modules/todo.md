@@ -2273,7 +2273,7 @@ calling it from `update` and `setup`, and the completion refresh.*
       With wrap off far to the right, a line the viewer has never drawn
       there (paging to new lines, a jump from far away) is still parsed
       from its start once: 5.5 to 23.5 ms for a screen at column 4,000,
-      after ed95149 brought rebuilds to 2.5 to 4 ms. Bring the first
+      after an earlier change brought rebuilds to 2.5 to 4 ms. Bring the first
       frame under 5 ms too, for example by parsing places ahead in the
       background.
       Done: 37aceeb (a page up, Home or End far right 1.8 to 4.8 ms).
@@ -2470,12 +2470,12 @@ calling it from `update` and `setup`, and the completion refresh.*
       bound that holds under load, as c06f497 did for exec's PTY tests.
 
 - [x] **A byte order mark after the stream's start** (lane 3; cli-core's
-      `config/yaml.rs`). Found by 985b5e7's security audit, and older than
-      it: sb's pre-pass and saphyr read a U+FEFF past the first character
-      differently, so sb accepts files Ansible refuses (a second BOM before
-      a top-level scalar or a mapping). Decision 38: refuse U+FEFF anywhere
-      but the stream's start, with corpus cases whose libyaml verdicts
-      come from scripts/yaml-corpus.py. No Saltbox file has one.
+      `config/yaml.rs`). sb's pre-pass and saphyr read a U+FEFF past the
+      first character differently, so sb accepts files Ansible refuses (a
+      second BOM before a top-level scalar or a mapping). Decision 38:
+      refuse U+FEFF anywhere but the stream's start, with corpus cases
+      whose libyaml verdicts come from scripts/yaml-corpus.py. No Saltbox
+      file has one.
 
 - [x] **sb-config's hung-lookup test times out under load** (lane 3, with
       its next sb-config change). `cloudflare::tests::a_hung_lookup_times_out_after_its_retries`

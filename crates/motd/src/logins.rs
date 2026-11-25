@@ -508,8 +508,8 @@ mod tests {
         stand_in(
             &tools.loginctl,
             "case \"$1\" in\n\
-             list-sessions) echo '[{\"session\":\"24911\"}]' ;;\n\
-             show-session) printf 'Id=24911\\nState=closing\\n' ;;\n\
+             list-sessions) echo '[{\"session\":\"101\"}]' ;;\n\
+             show-session) printf 'Id=101\\nState=closing\\n' ;;\n\
              esac",
         );
         assert_eq!(sessions(&tools, Some("22.04"), &paint).await, NO_SESSIONS);
@@ -518,8 +518,8 @@ mod tests {
         stand_in(
             &tools.loginctl,
             "case \"$1\" in\n\
-             list-sessions) echo '[{\"session\":\"24911\"},{\"session\":\"24912\"}]' ;;\n\
-             show-session) printf 'Id=24911\\nState=closing\\n'; exit 1 ;;\n\
+             list-sessions) echo '[{\"session\":\"201\"},{\"session\":\"202\"}]' ;;\n\
+             show-session) printf 'Id=201\\nState=closing\\n'; exit 1 ;;\n\
              esac",
         );
         assert_eq!(

@@ -276,7 +276,7 @@ entries), `crates/journal/tests/{compare.sh,compat.sh,checks.sh}`,
 ## Checkpoint A: the reader against journalctl
 - [x] Tasks 1-5 pass `scripts/check.sh full`; the matrix is green on
       three releases. (Recorded late, at Task 12: check.sh full over
-      3c75519..0fac785 passed with mutants 1231 caught of 1298 viable;
+      the range ending at 0fac785 passed with mutants 1231 caught of 1298 viable;
       the matrix was green on 22.04, 24.04 and 26.04 at 0fac785, Task 5.)
 - [x] Ratchet re-measured: size, startup, project coverage. `crates/`
       coverage 98.47% of lines and 98.02% of functions, startup 1.17 /

@@ -199,7 +199,7 @@ ADR for the maintainer if either moves past its tolerance.
       change a separate commit after acceptance.
 
 **Verification:**
-- [x] `scripts/check.sh full` (eb6a910); no ADR needed (every value
+- [x] `scripts/check.sh full`; no ADR needed (every value
       within tolerance), so code-reviewer reviewed the recording commit
       instead.
 
@@ -232,13 +232,13 @@ wait.
 **Scope:** S
 
 ## Checkpoint B: complete
-- [x] Tasks 1-7 done; `scripts/check.sh full` passes (b60e76a).
+- [x] Tasks 1-7 done; `scripts/check.sh full` passes.
 - [x] Spec success criteria 1-9 met with evidence; exec's criterion 9
       (carried here by name from the exec plan's Checkpoint C) met.
 - [x] The maintainer runs the commands by hand on a Saltbox host (never
       from a test): stop with `--ignore`, start, restart and a Ctrl-C
       during a wait all behaved as specified (maintainer, 2026-11-06, the
-      production musl build of b60e76a).
+      production musl build of the checkpoint's commit).
 
 ## Review backlog (taken up when each crate is next touched)
 

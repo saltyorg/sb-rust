@@ -85,13 +85,17 @@ for rel in "$@"; do
   mkdir -p "$rel"
   docker exec "$c" systemctl list-units --type=service,timer --all --output=json > "$rel/list-units.json"
   docker exec "$c" systemctl list-unit-files --type=service --output=json > "$rel/list-unit-files.json"
+  # A jq error (a value with no invented one) removes the file it cut
+  # short, as the check on show.txt below does.
   docker exec "$c" systemctl list-timers --all --output=json | jq -c --argjson next "$next" '
     map(if keys != ["activates", "last", "left", "next", "passed", "unit"] then
         error("capture.sh: \(.unit) has fields with no invented value")
       elif .last != 0 or .passed != 0 then error("capture.sh: \(.unit) has run; capture again")
       elif .next == null then .
       else .next = ($next[.unit] // error("capture.sh: no invented next elapse for \(.unit)")) | .left = .next end)
-    | sort_by(.next == null, .next, .unit)' > "$rel/list-timers.json"
+    | sort_by(.next == null, .next, .unit)' > "$rel/list-timers.json" || {
+    rm -f "$rel/list-timers.json"; echo "capture.sh: $rel: list-timers.json not written" >&2; exit 1
+  }
   docker exec "$c" systemctl show --timestamp=utc --property=Id,ActiveEnterTimestamp,StateChangeTimestamp \
     docker.service saltbox_managed_crash.service saltbox_managed_gone.service saltbox_managed_job.service \
     saltbox_managed_left.service saltbox_managed_once.service saltbox_managed_restart.service \

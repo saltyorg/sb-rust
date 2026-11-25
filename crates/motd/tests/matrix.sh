@@ -211,13 +211,16 @@ if [ -n "${SBM_FIXTURES_IN:-}" ]; then
   esac | invent >"$SBM_FIXTURES_IN/loginctl.json"
   loginctl show-session -p Id -p State "${real[@]}" | invent >"$SBM_FIXTURES_IN/show-session"
   # Only invented values may be left; anything else, or grep failing,
-  # removes the fixtures.
+  # removes the fixtures. The reboot lines' kernel release is read as a
+  # field, so one that last truncated otherwise than the scrub expects is
+  # still seen.
   id_re=$(IFS='|'; echo "${ids[*]}") leader_re=$(IFS='|'; echo "${leaders[*]}")
   {
     grep -oE '"(session|leader|since)":("[^"]*"|[^,}]*)' "$SBM_FIXTURES_IN/loginctl.json"
     grep -E '^Id=' "$SBM_FIXTURES_IN/show-session"
     grep -oE '[A-Z][a-z]{2} [A-Z][a-z]{2} [ 0-9][0-9] [0-9]{2}:[0-9]{2}' "$SBM_FIXTURES_IN/last"
-  } | grep -vxE "\"session\":\"($id_re)\"|Id=($id_re)|\"leader\":($leader_re)|\"since\":null|Sun Nov 15 $at|Sat Nov 14 23:00" \
+    awk '$1 == "reboot" { print "kernel " $4 }' "$SBM_FIXTURES_IN/last"
+  } | grep -vxE "\"session\":\"($id_re)\"|Id=($id_re)|\"leader\":($leader_re)|\"since\":null|Sun Nov 15 $at|Sat Nov 14 23:00|kernel 6\\.8\\.0-1-generic" \
     >/dev/null && st=0 || st=$?
   if [ "$st" -ne 1 ]; then
     rm -f "$SBM_FIXTURES_IN"/*; echo "  FAIL  fixtures: a value of the run's own is left"; exit 1

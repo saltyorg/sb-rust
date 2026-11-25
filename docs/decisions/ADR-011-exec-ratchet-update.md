@@ -47,9 +47,9 @@ tolerance. The project grew from 5431 lines at ADR-005 to
 **Production binary size**: 11645408 bytes, against the recorded
 11641312 (+4096 bytes, +0.04%, within the 5% tolerance): exec isn't in
 sb's binary yet (its first user, docker start, stop and restart, is the
-next plan). The growth is term-ui's Task 5 change (835ca3f: a failed
-child's ending and `runner_live`); cli-core's hold (8e54fa8) added 4096
-bytes more, which Task 9's config change (6ee7947) took back off.
+next plan). The growth is term-ui's Task 5 change (a failed child's
+ending and `runner_live`); cli-core's hold added 4096 bytes more, which
+Task 9's config change took back off.
 
 **`sb --help` median**: 1.09 ms in the last full checks (1.06 to 1.21 ms
 over this module's checks, the higher figures on a loaded machine),

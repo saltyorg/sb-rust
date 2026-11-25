@@ -73,10 +73,11 @@ and each crate's own documentation
   one meets the constraint.
 - **Enforcement:**
   - After an edit to a source file of a crate with terminal, UI, input,
-    process or I/O code (`cli-core`, `docker`, `exec`, `host`, `motd`,
-    `release`, `sb`, `term-ui`, `tui`), a hook
-    (`.claude/hooks/library-check.sh`) asks for this check. Answer it then, not at commit time. A new crate
-    of that kind is added to the hook's list.
+    process or I/O code (`ansible`, `cli-core`, `completion`, `docker`,
+    `exec`, `host`, `motd`, `ops`, `python-env`, `release`, `repo`, `sb`,
+    `term-ui`, `tui`), a hook (`.claude/hooks/library-check.sh`) asks
+    for this check. Answer it then, not at commit time. A new crate of
+    that kind is added to the hook's list.
   - Before committing changes to terminal, UI, input, event-loop,
     clipboard, process or I/O code, run the `library-reviewer` agent
     (`.claude/agents/library-reviewer.md`) on the diff. Give it the range,

@@ -22,7 +22,7 @@ per change; production musl build, as `scripts/check.sh` measures it):
 |---|---|---|
 | ADR-003 (Task 6) | 1107040 | — |
 | Tasks 7 and 8 (`--color`, colour profiles), measured on Task 8's tree | 1185120 | +7.1% |
-| Task 9 (theme config), commit 3c1f72f | 2278816 | +92.3% |
+| Task 9 (theme config), measured on its commit's tree | 2278816 | +92.3% |
 | Task 10 (inventory read with saphyr) | 1537408 | −32.5% |
 
 Neither the Task 8 nor the Task 9 commit recorded its step; this ADR

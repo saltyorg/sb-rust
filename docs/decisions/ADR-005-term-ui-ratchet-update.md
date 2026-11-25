@@ -25,11 +25,11 @@ per change; production musl build, as `scripts/check.sh` measures it):
 | Step | Bytes | Change |
 |---|---|---|
 | ADR-004 | 1537408 | — |
-| Help in sb-go's format (78bd03a: the renderer and unicode-width) | 1602944 | +4.26% |
-| Parse errors in sb's error style (0b55841; its commit body says +0.5%) | 1615232 | +0.77% |
-| Parse errors as the chosen hint layout (ebc3378) | 1619328 | +0.25% |
-| term-ui's colour hook-up and theme adapters (2ac0051) | 1627520 | +0.51% |
-| Restore hooks before the second-signal exit (d0b641a: the restore thread and its channel) | 1652096 | +1.51% |
+| Help in sb-go's format (the renderer and unicode-width) | 1602944 | +4.26% |
+| Parse errors in sb's error style (its commit body says +0.5%) | 1615232 | +0.77% |
+| Parse errors as the chosen hint layout | 1619328 | +0.25% |
+| term-ui's colour hook-up and theme adapters | 1627520 | +0.51% |
+| Restore hooks before the second-signal exit (the restore thread and its channel) | 1652096 | +1.51% |
 
 Every step stayed within the per-change tolerance; together they are
 7.46% over the recorded limit. term-ui's runner and tables add nothing

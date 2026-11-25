@@ -2196,7 +2196,7 @@ another. No screen hides a value, so no key reveals one. At 50 columns
 (a phone over SSH) every screen still shows how to get help and how to
 leave, and `?` lists the rest.
 
-### Today's keys (main at 75953b9, plus whole-log search)
+### Today's keys (main as of 2026-11-18, plus whole-log search)
 
 Read from the code (`crates/tui/src/picker.rs`, `viewer.rs`,
 `edit_picker.rs`, `fact/{mod,keys,mouse,dialog}.rs`, `announcements.rs`,

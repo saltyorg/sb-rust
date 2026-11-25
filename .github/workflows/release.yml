@@ -49,6 +49,12 @@ jobs:
   plan:
     name: plan
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    # Listing ci.yml's runs needs actions: read in a private repository:
+    # https://docs.github.com/en/rest/actions/workflow-runs#list-workflow-runs-for-a-workflow
+    permissions:
+      contents: read
+      actions: read # to list ci.yml's runs on the tagged commit
     outputs:
       version: ${{ steps.plan.outputs.version }}
       prerelease: ${{ steps.plan.outputs.prerelease }}
@@ -307,6 +313,7 @@ jobs:
     name: publish
     needs: [plan, build]
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     permissions:
       contents: write # to create the release and upload its assets
     steps:

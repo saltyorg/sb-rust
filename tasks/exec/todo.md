@@ -324,7 +324,7 @@ note amended.
 **Scope:** S
 
 ## Checkpoint A: Capture is done
-- [x] `scripts/check.sh full` passes (on 835ca3f's tree: changed-line
+- [x] `scripts/check.sh full` passes (on the checkpoint's tree: changed-line
       coverage 100%, 23 of 23 viable mutants caught).
 - [x] The maintainer reviews the builder's API and `Failed`'s shape
       before the other ways build on them, and decides a point the spec
@@ -414,8 +414,8 @@ pid as in Task 4.
 
 ## Checkpoint B: Before the shared signal change
 - [x] `scripts/check.sh full` passes; size and startup re-measured
-      against CONSTRAINTS.md's values (2026-11-05, on e7dcecc's tree and
-      again on the Checkpoint B commit's: full check green; sb 11645408
+      against CONSTRAINTS.md's values (2026-11-05, on the task's last
+      commit's tree and again on the Checkpoint B commit's: full check green; sb 11645408
       bytes; `--help` median 1.06 ms).
 - [x] Project coverage re-measured against CONSTRAINTS.md's values: done
       at Checkpoint C (ADR-011).
@@ -469,7 +469,7 @@ reason.
       - the forced exit: SIGKILL to the attached child's pid as well as to
         exec's groups (exec's side: `attached` registers the pid with
         `sb_exec::on_forced_exit`'s kill, Task 8b; cli-core runs the hooks).
-      Done in 8e54fa8 (in-process and through real signals); the same
+      Done (in-process and through real signals); the same
       table through exec-demo is Task 8b's. Size 11649536 bytes (+4096),
       startup 1.1/1.6 ms; cargo-deny passes.
 
@@ -534,7 +534,7 @@ before any spawn (no start record written).
       the exit, the forced exit SIGKILLing the attached child's pid, a
       terminal SIGINT or SIGQUIT during the grace not counted).
 
-As built (33859d2 and the next commit): exec-demo runs in a group of
+As built (in two commits): exec-demo runs in a group of
 its own with its attached child in it, and the tests send Ctrl-C and
 Ctrl-\ as the terminal does, to that group (not through a PTY: the
 kernel's delivery is the same; tests/demo_attached.rs). The child is
@@ -547,7 +547,7 @@ tests/attached_log.rs.
 - [x] `cargo test -p sb-exec`; library-reviewer; `scripts/check.sh full`.
 
 **Carried from Task 8a (done):** the forced exit's SIGKILL of the
-attached child (33859d2, through a pidfd); a root attached child's core
+attached child (through a pidfd); a root attached child's core
 follows the host's setting, and a child started during Ctrl-\'s restore
 hooks isn't killed with sb, both recorded as known limits (exec spec);
 `Hold`'s brief blocking accepted and documented on `attached`.
@@ -562,8 +562,7 @@ hooks isn't killed with sb, both recorded as known limits (exec spec);
 **Description:** The rust-skills and Microsoft-guidelines review of every
 crate (2026-11-05; the findings are in the body of the commit that added
 this task: `git log -S'Review backlog' -- tasks/todo.md`) found these to
-fix now. Each is its own commit, test first, after Task 8a (done,
-8e54fa8).
+fix now. Each is its own commit, test first, after Task 8a (done).
 
 **Acceptance criteria:**
 - [x] config: `Credentials::Ready` carries the parsed login (Cloudflare,
@@ -601,8 +600,8 @@ fix now. Each is its own commit, test first, after Task 8a (done,
 `crates/term-ui/src/runner.rs`
 **Scope:** M (four small commits)
 
-Done: 6ee7947 (after 849db08), 77e2943, 3b83693 (after d9cd865), and
-the Retry-After cap (`git log -S MAX_NAMED_DELAY`).
+Done in four commits, the last the Retry-After cap
+(`git log -S MAX_NAMED_DELAY`).
 
 **Declined (maintainer, 2026-11-05):** keeping `DOCKER_HOST` userinfo
 (`tcp://user:secret@host`) out of the log and errors: theoretical, as

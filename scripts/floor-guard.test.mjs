@@ -441,6 +441,33 @@ test('an added zizmor ignore comment under .github/ is flagged, a removed one an
   clean({}, { 'docs/notes.md': 'a `# zizmor: ignore[artipacked]` comment\n' });
 });
 
+test('an added shellcheck directive in a workflow under .github/ is flagged, a removed one and one elsewhere are clean', () => {
+  const WORKFLOW = '.github/workflows/ci.yml';
+  const files = {
+    [WORKFLOW]: 'jobs:\n  a:\n    steps:\n      - run: |\n          # shellcheck disable=SC2086\n          make $FLAGS\n',
+    '.github/actions/update/run.sh': '#!/bin/sh\nmake\n',
+  };
+  // actionlint runs shellcheck on each `run:` script, and the directive
+  // silences it there (https://github.com/rhysd/actionlint/blob/v1.7.12/docs/checks.md#check-shellcheck-integ).
+  flags(files, edit(files, WORKFLOW, '          make $FLAGS\n', '          make $FLAGS\n          # shellcheck disable=SC2046\n          rm $(ls)\n'),
+    'shellcheck-disable-added ' + WORKFLOW);
+  flags(files, edit(files, WORKFLOW, 'disable=SC2086', 'disable=SC2086,SC2046'), 'shellcheck-disable-added ' + WORKFLOW);
+  flags(files, edit(files, WORKFLOW, '          make $FLAGS\n', '          make $FLAGS # shellcheck disable=SC2086\n'),
+    'shellcheck-disable-added ' + WORKFLOW, { commit: true });
+  flags({}, { '.github/workflows/new.yaml': 'jobs:\n  a:\n    steps:\n      - run: |\n          #shellcheck disable=all\n          make\n' },
+    'shellcheck-disable-added .github/workflows/new.yaml');
+  // Several directives on one line: shellcheck reads each.
+  flags(files, edit(files, WORKFLOW, '          make $FLAGS\n', '          # shellcheck shell=bash disable=SC2046\n          rm $(ls)\n'),
+    'shellcheck-disable-added ' + WORKFLOW);
+  flags(files, edit(files, WORKFLOW, '          make $FLAGS\n', '          # shellcheck source=x.sh disable=SC1090\n          . "$F"\n'),
+    'shellcheck-disable-added ' + WORKFLOW);
+  clean(files, edit(files, WORKFLOW, '          # shellcheck disable=SC2086\n', ''));
+  clean(files, edit(files, WORKFLOW, '          make $FLAGS\n', '          make $FLAGS\n          # shellcheck shell=bash\n'));
+  // A shell script under .github/ is no workflow: actionlint doesn't read it.
+  clean(files, edit(files, '.github/actions/update/run.sh', 'make\n', '# shellcheck disable=SC2086\nmake $FLAGS\n'));
+  clean({}, { 'crates/foo/tests/run.sh': '# shellcheck disable=SC2086\nmake $FLAGS\n' });
+});
+
 const COMPARE = 'crates/journal/tests/compare.sh';
 const testScripts = {
   [COMPARE]: `#!/usr/bin/env bash

@@ -615,10 +615,18 @@ for (const f of changed) {
 // added or deleted. And a `# zizmor: ignore[...]` comment added anywhere
 // under .github/, a moved one included, since it then silences another
 // line (https://docs.zizmor.sh/usage/#ignoring-results). A removed
-// ignore comment tightens, and is clean.
+// ignore comment tightens, and is clean. Likewise a `# shellcheck
+// disable=` directive added in a workflow or action file (`.yml`, `.yaml`)
+// under .github/: actionlint runs shellcheck on each `run:` script, and
+// the directive silences it there
+// (https://github.com/rhysd/actionlint/blob/v1.7.12/docs/checks.md#check-shellcheck-integ).
+// A shell script under .github/ is not read by actionlint, so not here.
 const LINTER_CONFIGS = ['.github/actionlint.yaml', '.github/actionlint.yml', '.github/zizmor.yml', '.github/zizmor.yaml',
   'zizmor.yml', 'zizmor.yaml'];
 const ZIZMOR_IGNORE = /\bzizmor\s*:\s*ignore\b/;
+// After other directives too (`# shellcheck shell=bash disable=SC2086`):
+// https://github.com/koalaman/shellcheck/wiki/Directive
+const SHELLCHECK_DISABLE = /#\s*shellcheck\s+(?:[\w-]+=\S*\s+)*disable\s*=/;
 for (const f of changed.filter((x) => LINTER_CONFIGS.includes(x))) {
   if (oldText(f) === null) flag('linter-config-changed', f, 'file added');
   else if (deleted.includes(f)) flag('linter-config-changed', f, 'file deleted');
@@ -626,6 +634,7 @@ for (const f of changed.filter((x) => LINTER_CONFIGS.includes(x))) {
 }
 for (const { file, text } of added) {
   if (file.startsWith('.github/') && ZIZMOR_IGNORE.test(text)) flag('zizmor-ignore-added', file, text);
+  if (file.startsWith('.github/') && /\.ya?ml$/.test(file) && SHELLCHECK_DISABLE.test(text)) flag('shellcheck-disable-added', file, text);
 }
 
 // 6. The reported findings (ADR-029): printed for the code reviewer, who
