@@ -162,12 +162,20 @@ fn a_real_hangup_logs_the_ending_and_leaves_no_child() {
     let world = World::new();
     let fake = FakeController::start().expect("fake");
     let program = common::sb().get_program().to_string_lossy().into_owned();
+    // A redirection makes its file, empty, before the command writes to
+    // it (POSIX, "Redirecting Output",
+    // https://pubs.opengroup.org/onlinepubs/9799919799/utilities/V3_chap02.html#tag_19_07_02),
+    // so the record of sb's exit status is written beside its name and
+    // renamed into place (mv performs a rename(),
+    // https://pubs.opengroup.org/onlinepubs/9799919799/utilities/mv.html;
+    // rename(2), https://man7.org/linux/man-pages/man2/rename.2.html): the
+    // file this test waits for appears whole.
     let wrapper = world.file("run.sh");
     sb_cli_core::testing::write_program(
         &wrapper,
         "#!/bin/sh\ntrap : HUP\n\
          sh -c 'echo $$ > \"$1\"; exec \"$0\" docker start' \"$SB\" \"$DIR/sb.pid\"\n\
-         echo \"EXIT=$?\" > \"$DIR/exit\"\n",
+         echo \"EXIT=$?\" > \"$DIR/exit.part\" && /bin/mv \"$DIR/exit.part\" \"$DIR/exit\"\n",
     );
     // The session leader is `script`'s non-interactive `sh`: the kernel
     // hangs it up, and as it dies of it the kernel sends SIGHUP once to

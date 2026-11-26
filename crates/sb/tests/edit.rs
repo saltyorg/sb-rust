@@ -1142,13 +1142,21 @@ fn a_hangup_at_the_question_ends_sb() {
         };
     }
     // `; :` keeps the shell from exec'ing the wrapper (as hangup.rs's
-    // test); the wrapper records sb's exit status as a shell sees it.
+    // test); the wrapper records sb's exit status as a shell sees it. A
+    // redirection makes its file, empty, before the command writes to it
+    // (POSIX, "Redirecting Output",
+    // https://pubs.opengroup.org/onlinepubs/9799919799/utilities/V3_chap02.html#tag_19_07_02),
+    // and this test reads the record once the file is there: so it is
+    // written beside it and renamed into place (mv performs a rename(),
+    // https://pubs.opengroup.org/onlinepubs/9799919799/utilities/mv.html,
+    // which gives the name to the finished file in one step,
+    // https://man7.org/linux/man-pages/man2/rename.2.html).
     let wrapper = world.dir.path().join("run.sh");
     sb_cli_core::testing::write_program(
         &wrapper,
         "#!/bin/sh\ntrap : HUP\n\
          /bin/sh -c 'echo $$ > \"$1\"; exec \"$0\" edit settings' \"$SB\" \"$PID_FILE\"\n\
-         echo \"EXIT=$?\" > \"$EXIT_FILE\"\n",
+         echo \"EXIT=$?\" > \"$EXIT_FILE.part\" && /bin/mv \"$EXIT_FILE.part\" \"$EXIT_FILE\"\n",
     );
     cmd.args(["-qec", &format!("{}; :", wrapper.display()), "/dev/null"])
         .env("SHELL", "/bin/sh")
