@@ -1411,7 +1411,18 @@ const stubs = (versions, arch) => {
       + 'case "$1 $2" in "llvm-cov --version" | "mutants --version" | "nextest --version" | "deny --version") exec "cargo-$1" "$@" ;; esac\n',
     'cargo-llvm-cov': cargoVersion('cargo-llvm-cov'), 'cargo-mutants': cargoVersion('cargo-mutants'),
     'cargo-nextest': cargoVersion('cargo-nextest'), 'cargo-deny': cargoVersion('cargo-deny'),
-    hyperfine: 'if [ "$1" = --version ]; then echo "' + ownVersion('hyperfine') + '"; exit 0; fi\n',
+    // The timed runs' export (--export-json): each command's wall-clock
+    // median, HYPERFINE_MEDIAN seconds (3 ms by default; `sb --help`'s
+    // HYPERFINE_MEDIAN_HELP when set), or none with HYPERFINE_NO_MEDIAN
+    // set, as hyperfine 2.0 writes it under summary.
+    hyperfine: 'if [ "$1" = --version ]; then echo "' + ownVersion('hyperfine') + '"; exit 0; fi\n'
+      + 'o=; p=; for a in "$@"; do [ "$p" = --export-json ] && o="$a"; p="$a"; done\n'
+      + 'if [ -n "$o" ]; then\n'
+      + '  m=${HYPERFINE_MEDIAN:-0.003}; h=${HYPERFINE_MEDIAN_HELP:-$m}\n'
+      + '  s="{\\"time_wall_clock\\":{\\"median\\":$m}}"; t="{\\"time_wall_clock\\":{\\"median\\":$h}}"\n'
+      + '  [ -n "${HYPERFINE_NO_MEDIAN:-}" ] && s=\'{}\' && t=\'{}\'\n'
+      + '  printf \'{"results":[{"command":"target/release/sb --help","summary":%s},{"command":"target/release/sb version","summary":%s}]}\\n\' "$t" "$s" >"$o"\n'
+      + 'fi\n',
     // The binary of the --target asked for. Its --version prints one too,
     // which check.sh must never run (it syncs a toolchain).
     cross: 'if [ "$1" = --version ]; then echo "' + ownVersion('cross') + '"; exit 0; fi\n'
@@ -1419,7 +1430,12 @@ const stubs = (versions, arch) => {
       + 'mkdir -p "$CARGO_TARGET_DIR/$t/production"\n'
       + 'printf sb >"$CARGO_TARGET_DIR/$t/production/sb"\n',
     'diff-cover': version('diff-cover ' + versions['diff-cover']),
-    node: version('v' + versions.node),
+    // The real node runs the gate's verdicts (the mutation score, the
+    // startup medians): this stub answers --version alone, and leaves the
+    // floor guard and its own tests out, which the gate runs too.
+    node: version('v' + versions.node)
+      + 'case "$*" in *floor-guard.mjs* | *floor-guard.test.mjs*) exit 0 ;; esac\n'
+      + 'exec \'' + process.execPath + '\' "$@"\n',
     script: version('script from util-linux ' + versions.script),
     docker: version('Docker version ' + versions.docker + ', build a7dcaa6'),
     jq: version('jq-' + versions.jq),
@@ -1648,13 +1664,17 @@ const stubs = (versions, arch) => {
     + '  esac ;;\n'
     + 'esac; fi\n';
   // With MUTANTS_LISTED set, cargo-mutants lists one mutant in the wide
-  // pass (sb-foo's), and its run writes MUTANTS_LISTED as its outcomes.
-  out.cargo += 'if [ "$1" = mutants ] && [ -n "${MUTANTS_LISTED:-}" ]; then\n'
-    + '  case " $* " in *" --list "*) case " $* " in *" -p sb-foo "*) echo "crates/foo/src/lib.rs:1:1: replace f with ()" ;; esac; exit 0 ;; esac\n'
+  // pass (sb-foo's), and its run writes MUTANTS_LISTED as its outcomes;
+  // MUTANTS_LISTED_JOURNAL does the same for sb-journal's pass. The run
+  // exits MUTANTS_EXIT (0 by default), and writes no outcomes with
+  // MUTANTS_NO_OUTCOMES set.
+  out.cargo += 'if [ "$1" = mutants ] && { [ -n "${MUTANTS_LISTED:-}" ] || [ -n "${MUTANTS_LISTED_JOURNAL:-}" ]; }; then\n'
+    + '  case " $* " in *" -p sb-foo "*) o="${MUTANTS_LISTED:-}" ;; *" -p sb-journal "*) o="${MUTANTS_LISTED_JOURNAL:-}" ;; *) o= ;; esac\n'
+    + '  case " $* " in *" --list "*) [ -n "$o" ] && echo "crates/foo/src/lib.rs:1:1: replace f with ()"; exit 0 ;; esac\n'
     + '  while [ $# -gt 0 ]; do [ "$1" = -o ] && out="$2"; shift; done\n'
     + '  mkdir -p "$out/mutants.out"\n'
-    + '  echo "$MUTANTS_LISTED" >"$out/mutants.out/outcomes.json"\n'
-    + '  exit 0\n'
+    + '  [ -n "${MUTANTS_NO_OUTCOMES:-}" ] || echo "$o" >"$out/mutants.out/outcomes.json"\n'
+    + '  exit "${MUTANTS_EXIT:-0}"\n'
     + 'fi\n';
   // The SB_TEST_ROOT each test run (the coverage run, the doc tests, the
   // release-build run) is given, `unset` when there is none.
@@ -2761,6 +2781,63 @@ test('check.sh task: each test run lists the tests it skipped, each once, with t
   const failed = checkRun('task', { work, env: { STUB_SKIPS: 'a', RUN_FAILS_AT: 'llvm-cov' } });
   assert.equal(failed.status, 101, failed.output);
   assert.ok(stepOutput(failed.output, TEST_RUNS[0][0]).includes('\nskipped: 1\nskipped: llvm-cov::a (crates/foo/tests/t.rs): needs root\n'), failed.output);
+});
+
+// The verdicts the gate computes with node, run with the real one: the
+// mutation score, summed over the passes and held to MUTATION_MIN; an
+// outcomes file without counts, a pass that gives no verdict; the startup
+// medians, each held to STARTUP_MAX_MS. The boundaries are check.sh's own
+// constants (set to 80 and 10 there today).
+const outcomesOf = (caught, missed, timeout = 0) => JSON.stringify({ caught, missed, timeout });
+test('check.sh task: the mutation score is the passes\' sum, held to MUTATION_MIN', () => {
+  const work = { 'crates/foo/src/lib.rs': 'pub fn f() {}\n' };
+  const two = (wide, journal) => checkRun('task', { work, env: { MUTANTS_LISTED: wide, MUTANTS_LISTED_JOURNAL: journal } });
+  // Over two passes of 500 each: MUTATION_MIN% of 1000 caught passes, one
+  // fewer fails.
+  const min = checkConst('MUTATION_MIN');
+  const at10 = min * 10;
+  const half = Math.floor(at10 / 2);
+  const fewer = two(outcomesOf(half, 500 - half), outcomesOf(at10 - half - 1, 500 - (at10 - half - 1)));
+  refuses(fewer, 1, new RegExp('caught ' + (at10 - 1) + ' of 1000 viable mutants: ' + ((at10 - 1) / 10).toFixed(1) + '%'));
+  const at = two(outcomesOf(half, 500 - half), outcomesOf(at10 - half, 500 - (at10 - half)));
+  passes(at, 'task');
+  assert.match(at.output, new RegExp('caught ' + at10 + ' of 1000 viable mutants: ' + min.toFixed(1) + '%'), at.output);
+  // Summed, not overwritten: the wide pass alone would pass, the last
+  // alone gives 0 of 1.
+  refuses(two(outcomesOf(2, 0), outcomesOf(0, 1)), 1, /caught 2 of 3 viable mutants: 66\.7%/);
+  // No viable mutant at all: nothing missed, 100%.
+  const none = two(outcomesOf(0, 0), outcomesOf(0, 0));
+  passes(none, 'task');
+  assert.match(none.output, /caught 0 of 0 viable mutants: 100\.0%/, none.output);
+  // A timed-out mutant counts as tested and not caught.
+  refuses(two(outcomesOf(8, 1), outcomesOf(0, 0, 2)), 1, /caught 8 of 11 viable mutants: 72\.7%/);
+});
+
+test('check.sh task: an outcomes file without counts, or a pass with no verdict, means the check could not run', () => {
+  const work = { 'crates/foo/src/lib.rs': 'pub fn f() {}\n' };
+  const one = (env) => checkRun('task', { work, env: { MUTANTS_LISTED: outcomesOf(1, 0), ...env } });
+  refuses(one({ MUTANTS_LISTED: '{"caught":1}' }), 2, /has no caught, missed and timeout counts/);
+  // Some missed (2) or timed out (3): the score decides, not the status.
+  passes(one({ MUTANTS_EXIT: '2' }), 'task');
+  passes(one({ MUTANTS_EXIT: '3' }), 'task');
+  refuses(one({ MUTANTS_EXIT: '4' }), 2, /cargo-mutants exited 4/);
+  refuses(one({ MUTANTS_EXIT: '125' }), 2, /the mutation sandbox could not be set up/);
+  refuses(one({ MUTANTS_NO_OUTCOMES: '1' }), 2, /cargo-mutants wrote no outcomes/);
+});
+
+test('check.sh task: a startup median above STARTUP_MAX_MS fails, one at it passes, none means no verdict', () => {
+  const work = { 'crates/foo/src/lib.rs': 'pub fn f() {}\n' };
+  const max = checkConst('STARTUP_MAX_MS');
+  const ms = (n) => String(n / 1000);
+  const at = checkRun('task', { work, env: { HYPERFINE_MEDIAN: ms(max) } });
+  passes(at, 'task');
+  assert.match(at.output, new RegExp('target/release/sb version: median ' + max.toFixed(2) + ' ms'), at.output);
+  refuses(checkRun('task', { work, env: { HYPERFINE_MEDIAN: ms(max + 0.01) } }), 1,
+    new RegExp('sb version: median ' + (max + 0.01).toFixed(2) + ' ms'));
+  // Each command is judged: `sb --help` alone over it fails too.
+  refuses(checkRun('task', { work, env: { HYPERFINE_MEDIAN_HELP: ms(max + 0.01) } }), 1,
+    new RegExp('sb --help: median ' + (max + 0.01).toFixed(2) + ' ms'));
+  refuses(checkRun('task', { work, env: { HYPERFINE_NO_MEDIAN: '1' } }), 2, /no wall-clock median in the hyperfine output/);
 });
 
 // With nothing changed since the base, changed-line coverage and mutation
