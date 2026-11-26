@@ -37,7 +37,8 @@ its own, not provisioned from GitHub's toolsets
 
     job.py runners WORKFLOW JOB       each runner label of JOB's matrix,
                                       with its Ubuntu release and arch
-    job.py run WORKFLOW JOB LABEL --src DIR --rev SHA [--patch FILE] [--untracked TAR]
+    job.py run WORKFLOW JOB LABEL --src DIR --rev SHA [--before SHA] [--patch FILE]
+                                      [--untracked TAR]
 """
 
 from __future__ import annotations
@@ -463,6 +464,7 @@ class Job:
         rev: str,
         patch: Path | None = None,
         untracked: Path | None = None,
+        before: str | None = None,
     ) -> None:
         self.data = data
         self.name = name
@@ -475,6 +477,10 @@ class Job:
         self.release, self.arch = platform(label)
         self.src = src
         self.rev = rev
+        # The push's earlier commit (its event's `before`): the one given,
+        # else the checkout's own, so the push is the working tree's
+        # changes alone.
+        self.before = before or rev
         self.patch = patch
         self.untracked = untracked
         self.work = HOME / "work"
@@ -550,6 +556,7 @@ class Job:
             "ref": "refs/heads/main",
             "ref_name": "main",
             "sha": self.rev,
+            "event": self.event(),
             "repository": REPOSITORY,
             "repository_owner": REPOSITORY.split("/")[0],
             "server_url": "https://github.com",
@@ -581,6 +588,22 @@ class Job:
                 ctx[key] = value
         return ctx
 
+    def event(self) -> dict[str, Any]:
+        """The push event's payload, as `github.event` and the event file
+        give it: its ref, the commits it moved the branch from (`before`)
+        and to (`after`), the repository; a subset of GitHub's
+        (https://docs.github.com/en/webhooks/webhook-events-and-payloads#push).
+        Not as on GitHub: `after` (and `github.sha`) is `--rev`, and the
+        checkout commits the working tree's changes on top of it, so a step
+        diffing `before` with `after` would miss them; ci.yml's steps read
+        HEAD."""
+        return {
+            "ref": "refs/heads/main",
+            "before": self.before,
+            "after": self.rev,
+            "repository": {"full_name": REPOSITORY, "default_branch": "main"},
+        }
+
     def chown(self, path: Path) -> None:
         # chown from PATH, as every step finds its tools.
         argv = ["chown", "-R", f"{USER}:{USER}", str(path)]
@@ -594,13 +617,8 @@ class Job:
             self.work / "_github_workflow",
         ):
             d.mkdir(parents=True, exist_ok=True)
-        event = {
-            "ref": "refs/heads/main",
-            "after": self.rev,
-            "repository": {"full_name": REPOSITORY, "default_branch": "main"},
-        }
         (self.work / "_github_workflow" / "event.json").write_text(
-            json.dumps(event) + "\n"
+            json.dumps(self.event()) + "\n"
         )
         self.chown(self.work)
 
@@ -916,6 +934,7 @@ def main(argv: list[str]) -> int:
     p.add_argument("--rev", required=True)
     p.add_argument("--patch", type=Path)
     p.add_argument("--untracked", type=Path)
+    p.add_argument("--before", help="the push's earlier commit (default: --rev)")
     args = parser.parse_args(argv)
     try:
         data = load(args.workflow)
@@ -926,7 +945,14 @@ def main(argv: list[str]) -> int:
             return 0
         os.umask(0o022)
         return Job(
-            data, args.job, args.label, args.src, args.rev, args.patch, args.untracked
+            data,
+            args.job,
+            args.label,
+            args.src,
+            args.rev,
+            args.patch,
+            args.untracked,
+            args.before,
         ).run()
     except JobError as err:
         print(f"rehearsal: {err}", file=sys.stderr)

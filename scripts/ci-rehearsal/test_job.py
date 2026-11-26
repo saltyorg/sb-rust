@@ -7,7 +7,10 @@ that image's Python before the job (scripts/ci-rehearsal.sh), or by hand:
 
 from __future__ import annotations
 
+import os
+import subprocess  # nosec B404 # the tests run git and bash on their own scratch repositories
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from typing import Any, ClassVar
@@ -272,6 +275,141 @@ class Runner(unittest.TestCase):
         self.assertEqual(arm.runner_env()["ImageOS"], "ubuntu26")
         with self.assertRaises(job.JobError):
             job.Job(data, "task", "ubuntu-20.04", Path("/src"), "0" * 40)
+
+
+class PushBase(unittest.TestCase):
+    """ci.yml's task step judges a push against the commit it moved main
+    from, the push event's `before`, as job.py gives it to the step."""
+
+    def test_before_comes_from_the_event(self) -> None:
+        data = job.load(CI)
+        run = job.Job(
+            data, "task", "ubuntu-24.04", Path("/src"), "a" * 40, before="b" * 40
+        )
+        ctx = run.contexts({})
+        self.assertEqual(ctx["github"]["event"]["before"], "b" * 40)
+        self.assertEqual(ctx["github"]["event"]["after"], "a" * 40)
+        self.assertEqual(job.interpolate("${{ github.event.before }}", ctx), "b" * 40)
+        self.assertEqual(run.event()["before"], "b" * 40)
+        # Without one, the checkout's own commit: no change of its own.
+        plain = job.Job(data, "task", "ubuntu-24.04", Path("/src"), "a" * 40)
+        self.assertEqual(plain.contexts({})["github"]["event"]["before"], "a" * 40)
+
+    def base(self, before: str, base_ref: str = "") -> tuple[str, str]:
+        """The base ci.yml's step gives check.sh in a two-commit
+        repository, and what it printed, for a push whose `before` is
+        `before` (`first`, `second`, `side` and `elsewhere` name commits)."""
+        data = job.load(CI)
+        step = next(
+            s for s in data["jobs"]["task"]["steps"] if s.get("name") == "check.sh task"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = root / "gitconfig"
+            config.write_text("")
+            git_env = {
+                "PATH": os.environ["PATH"],
+                "HOME": tmp,
+                "GIT_CONFIG_GLOBAL": str(config),
+                "GIT_CONFIG_SYSTEM": str(config),
+            }
+            repo = root / "repo"
+
+            def git(*args: str) -> str:
+                out = subprocess.run(  # nosec B603 B607
+                    [
+                        "git",
+                        "-c",
+                        "user.name=t",
+                        "-c",
+                        "user.email=t@example.invalid",
+                        *args,
+                    ],
+                    cwd=repo,
+                    env=git_env,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                return out.stdout.strip()
+
+            repo.mkdir()
+            git("init", "--quiet")
+            git("commit", "--quiet", "--allow-empty", "-m", "first")
+            first = git("rev-parse", "HEAD")
+            git("commit", "--quiet", "--allow-empty", "-m", "second")
+            second = git("rev-parse", "HEAD")
+            git("update-ref", "refs/remotes/origin/main", first)
+            # A commit of no history of HEAD's, and one the clone hasn't.
+            side = git("commit-tree", "-m", "side", git("rev-parse", "HEAD^{tree}"))
+            shas = {
+                "first": first,
+                "second": second,
+                "side": side,
+                "elsewhere": "c" * 40,
+            }
+            # A stand-in sudo, first on PATH: it prints check.sh's base.
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            sudo = bin_dir / "sudo"
+            sudo.write_text(
+                '#!/bin/sh\nfor a in "$@"; do last=$a; done\necho "base=$last"\n'
+            )
+            sudo.chmod(0o755)
+            run = job.Job(
+                data,
+                "task",
+                "ubuntu-24.04",
+                Path("/src"),
+                second,
+                before=shas.get(before, before),
+            )
+            ctx = run.contexts({}, {"github": {"base_ref": base_ref}})
+            env = {
+                key: job.interpolate(value, ctx) for key, value in step["env"].items()
+            }
+            env.update(git_env, PATH=f"{bin_dir}:{os.environ['PATH']}")
+            # Run as job.py runs a `run` step: its text in a file, given to
+            # the step's shell.
+            script = root / "step.sh"
+            script.write_text(job.interpolate(step["run"], ctx))
+            out = subprocess.run(  # nosec B603
+                job.shell_argv(step.get("shell"), script),
+                cwd=repo,
+                env=env,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            printed = out.stdout + out.stderr
+            base = next(
+                line for line in printed.splitlines() if line.startswith("base=")
+            )[5:]
+            names = {sha: name for name, sha in shas.items()}
+            return names.get(base, base), printed
+
+    def test_a_push_is_judged_against_its_before(self) -> None:
+        self.assertEqual(self.base("first")[0], "first")
+
+    def test_a_new_branch_is_judged_against_head_and_says_so(self) -> None:
+        base, printed = self.base("0" * 40)
+        self.assertEqual(base, "HEAD")
+        self.assertIn("the push has no earlier commit", printed)
+
+    def test_a_before_that_isnt_an_ancestor_is_judged_against_head_and_says_so(
+        self,
+    ) -> None:
+        base, printed = self.base("side")
+        self.assertEqual(base, "HEAD")
+        self.assertIn("isn't an ancestor of HEAD", printed)
+
+    def test_a_before_the_clone_hasnt_is_judged_against_head_and_says_so(self) -> None:
+        base, printed = self.base("elsewhere")
+        self.assertEqual(base, "HEAD")
+        self.assertIn("isn't in the clone", printed)
+
+    def test_a_pull_request_keeps_its_merge_base(self) -> None:
+        self.assertEqual(self.base("second", base_ref="main")[0], "first")
 
 
 if __name__ == "__main__":

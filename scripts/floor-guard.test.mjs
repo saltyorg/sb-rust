@@ -2469,12 +2469,16 @@ test('check.sh full: the CI rehearsal runs when a file CI reads differently chan
     'rust-toolchain.toml', 'CONSTRAINTS.md']) {
     const r = checkRun('full', { work: { [f]: (f === 'CONSTRAINTS.md' ? TOOLS_MD : '') + '# changed\n' } });
     passes(r, 'full');
-    assert.deepEqual(rehearsals(r), ['--arch amd64'], f + ':\n' + r.output);
+    assert.deepEqual(rehearsals(r), ['--arch amd64 --base HEAD'], f + ':\n' + r.output);
   }
   // Nothing changed since the base: every step, this one too.
   const clean = checkRun('full');
   passes(clean, 'full');
-  assert.deepEqual(rehearsals(clean), ['--arch amd64'], clean.output);
+  assert.deepEqual(rehearsals(clean), ['--arch amd64 --base HEAD'], clean.output);
+  // A run's base is the rehearsal's push's earlier commit.
+  const since = checkRun('full', { commits: ['chore: one\n\nReview: none, a test fixture'], base: 'HEAD~1' });
+  passes(since, 'full');
+  assert.deepEqual(rehearsals(since), ['--arch amd64 --base HEAD~1'], since.output);
 });
 
 test('check.sh full: the CI rehearsal is skipped for other changes, at task, and in GitHub Actions', () => {

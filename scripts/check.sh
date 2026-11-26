@@ -1552,8 +1552,11 @@ full() {
   elif ((rehearsal_changed == 0)); then
     skip "nothing under .github/, scripts/, crates/*/tests/ or .config/, nor rust-toolchain.toml or CONSTRAINTS.md, changed since $base"
   else
+    # The base as the push's earlier commit, so the job's check.sh judges
+    # this run's diff: its changed-line coverage and mutation passes run
+    # on each runner (ci.yml, the push's base).
     local status=0
-    scripts/ci-rehearsal.sh --arch amd64 || status=$?
+    scripts/ci-rehearsal.sh --arch amd64 --base "$base" || status=$?
     # 2: it could not run (no Docker, an image it could not make).
     if ((status == 2)); then exit 2; fi
     ((status == 0))

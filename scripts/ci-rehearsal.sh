@@ -3,7 +3,7 @@
 # containers made the way GitHub's runners are, so that what only a
 # runner shows fails here and not on a push (the maintainer, 2026-11-25).
 #
-#   scripts/ci-rehearsal.sh [--rebuild] [--arch amd64|arm64] [RUNNER...]
+#   scripts/ci-rehearsal.sh [--rebuild] [--arch amd64|arm64] [--base REV] [RUNNER...]
 #
 # RUNNER: a runner label of the job's matrix (ubuntu-24.04, ...); by
 # default its amd64 runners, which check.sh full runs too. arm64 is an
@@ -29,7 +29,10 @@
 #   setup-node, setup-go, setup-python, rust-cache), so the tools come at
 #   ci.yml's versions the way CI installs them, and check.sh task runs
 #   with the command and environment ci.yml gives it, as root through
-#   sudo, as a push to main does (base HEAD: every step);
+#   sudo, as a push to main does: the push's earlier commit (its event's
+#   `before`, which ci.yml judges it against) is HEAD, so the push is the
+#   working tree's changes, or REV with --base (check.sh full gives its
+#   own base);
 # - the tree: HEAD with the working tree's changes (tracked, and
 #   untracked but not ignored, as check.sh reads them) committed on top,
 #   taken once at the start, so every runner checks the same tree; the
@@ -193,7 +196,7 @@ run_one() {
   local layout_cmd=(bash -c "$RESOLVER_LAYOUT")
   local test_cmd=(python3 -B -m unittest discover --start-directory "/src/$here" --pattern 'test_*.py')
   local job_cmd=(python3 -B "/src/$here/job.py" run "/src/$workflow" "$job" "$label" --src /src --rev "$rev"
-    --patch "/src/$tree/worktree.patch" --untracked "/src/$tree/untracked.tar")
+    --before "$before" --patch "/src/$tree/worktree.patch" --untracked "/src/$tree/untracked.tar")
   inner="$(printf '%q ' "${layout_cmd[@]}") || exit 2; $(printf '%q ' "${test_cmd[@]}") && $(printf '%q ' "${job_cmd[@]}")"
   if [[ ${arch_of[$label]} == amd64 ]]; then
     docker run --rm --init --name "$name" --hostname rehearsal "${caps[@]}" "${amd64_privileges[@]}" \
@@ -234,10 +237,15 @@ verdict() {
 main() {
   cd "$root"
   rebuild=0
-  local wanted=() only=''
+  local wanted=() only='' base=HEAD
   while (($#)); do
     case $1 in
     --rebuild) rebuild=1 ;;
+    --base)
+      [[ -n ${2:-} ]] || die "--base takes a revision"
+      base=$2
+      shift
+      ;;
     --arch)
       [[ ${2:-} == amd64 || ${2:-} == arm64 ]] || die "--arch takes amd64 or arm64"
       only=$2
@@ -361,11 +369,13 @@ main() {
   tree="$out/tree.$$"
   mkdir -p "$tree"
   rev=$(git rev-parse HEAD) || die "no HEAD"
+  # The push's earlier commit, as ci.yml reads it (`github.event.before`).
+  before=$(git rev-parse --verify --quiet "$base^{commit}") || die "--base $base is not a commit"
   git diff --binary --no-ext-diff --no-textconv HEAD -- >"$tree/worktree.patch" || die "could not save the tree's changes"
   git ls-files -z --others --exclude-standard | tar --null --no-recursion -T - -cf "$tree/untracked.tar" ||
     die "could not save the untracked files"
   echo "ci-rehearsal: $rev with the working tree's changes ($(stat -c %s "$tree/worktree.patch") bytes of patch," \
-    "$(tar -tf "$tree/untracked.tar" | wc -l) untracked files)"
+    "$(tar -tf "$tree/untracked.tar" | wc -l) untracked files), pushed over $before"
 
   # The images first, one at a time (each a long download and install).
   for label in "${labels[@]}"; do
