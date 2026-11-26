@@ -560,6 +560,19 @@ test('a committed weakening is flagged against its base, a committed clean chang
   clean(checkSh, edit(checkSh, CHECK, 'COVERAGE_MIN=90 ', 'COVERAGE_MIN=95 '), { commit: true });
 });
 
+test('a diff larger than a mebibyte is read whole, untracked, committed and uncommitted', () => {
+  // A pinned upstream data file (CLAUDE.md, Public repository rules) can
+  // be larger than Node's default output buffer for a child process.
+  const big = 'x'.repeat(80) + '\n';
+  const large = { 'data/large.txt': big.repeat(32 * 1024) };
+  clean({}, large);
+  clean({}, large, { commit: true });
+  clean({ 'data/large.txt': '' }, large);
+  // A weakening behind it is still seen.
+  flags(checkSh, { ...large, ...edit(checkSh, CHECK, 'COVERAGE_MIN=90 ', 'COVERAGE_MIN=80 ') },
+    'threshold-loosened ' + CHECK, { commit: true });
+});
+
 // R1: nothing in git's configuration or attributes hides a change.
 
 test('a renamed gate file is flagged as deleted', () => {
