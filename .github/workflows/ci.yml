@@ -57,7 +57,18 @@ jobs:
           fetch-depth: 0
       - name: Toolchain
         run: rustup toolchain install && rustup show active-toolchain
+      # Keyed by the runner too: rust-cache's own key holds the job id and
+      # the runner's OS family and CPU architecture, not its Ubuntu
+      # release, so a 22.04 job could restore a target/ built against a
+      # newer release's glibc and fail to link on symbols 22.04's glibc
+      # lacks. `key` is added beside the job-based key, in the restore key
+      # too, so no release falls back to another's cache:
+      # https://github.com/Swatinem/rust-cache/blob/v2.9.3/README.md
+      # (`key`, and "Cache Details"), and the key's making in
+      # https://github.com/Swatinem/rust-cache/blob/v2.9.3/src/config.ts
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: ${{ matrix.runner }}
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "24"
