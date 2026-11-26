@@ -82,7 +82,7 @@ fn reinstall(tree: &Tree, user: &str) -> (Option<String>, String) {
 #[test]
 fn every_line_of_an_ownership_pass_carries_the_run_id() {
     // Ownership is given only as root (check.sh runs the tests so).
-    if sb_cli_core::root::effective_uid() != 0 {
+    if !sb_cli_core::testing::root_tests() {
         return;
     }
     let (log, dir) = run_log();

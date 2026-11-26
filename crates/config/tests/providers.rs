@@ -351,7 +351,7 @@ async fn a_missing_file_with_a_default_is_copied_then_checked() {
 /// owned by another user gives a copy owned by that user.
 #[tokio::test]
 async fn the_copy_has_the_defaults_owner() {
-    if !rustix::process::geteuid().is_root() {
+    if !sb_cli_core::testing::root_tests() {
         return;
     }
     let root = saltbox_root();

@@ -1323,7 +1323,7 @@ mod tests {
     /// user is refused for root.
     #[test]
     fn as_root_a_manifest_owned_by_nobody_is_refused() {
-        if me() != 0 {
+        if !sb_cli_core::testing::root_tests() {
             return;
         }
         let (_dir, release, manifest) = release();

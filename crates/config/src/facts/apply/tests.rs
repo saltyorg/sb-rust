@@ -148,7 +148,7 @@ fn a_save_replaces_the_file_keeping_its_mode_and_unrelated_bytes() {
 /// and its mode, setuid included (chown before chmod).
 #[test]
 fn owner_and_mode_are_kept_as_root() {
-    if std::env::var_os("SB_TEST_ROOT").is_none_or(|v| v != "1") {
+    if !sb_cli_core::testing::root_tests() {
         return;
     }
     for mode in [0o640, 0o4750] {

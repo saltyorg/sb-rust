@@ -53,7 +53,7 @@ fn every_line_of_an_update_carries_the_run_id() {
     // Ownership is given only as root (check.sh runs the tests so); root
     // owns the fresh files already, so nothing changes, and the record
     // is still written.
-    if sb_cli_core::root::effective_uid() != 0 {
+    if !sb_cli_core::testing::root_tests() {
         return;
     }
     let logs = tempfile::tempdir().expect("log dir");

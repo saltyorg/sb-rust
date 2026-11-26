@@ -704,7 +704,7 @@ mod tests {
             take(&file, "sb install", &token(), |_| {}),
             Err(LockError::UnsafeDir { .. })
         ));
-        if crate::root::effective_uid() != 0 {
+        if !crate::testing::root_tests() {
             return;
         }
         let nobody = Some(65534);
@@ -899,6 +899,10 @@ mod tests {
         let _ = child.kill();
         let _ = child.wait();
         assert_eq!(other, None);
+        // Only a root process is looked for: a run that isn't root checks
+        // that it finds none, and ends there; it skips nothing, so it
+        // isn't listed. The euid, not root_tests(): the stand-in is found
+        // whenever this process is root, asked for or not.
         if !root {
             assert_eq!(found, None);
             return;

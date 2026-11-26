@@ -47,6 +47,8 @@ rustix = { workspace = true, features = ["fs", "process"] }
 fastrand.workspace = true
 
 [dev-dependencies]
+# With `testing`, for the tests' one skip mechanism (root_tests, skip).
+sb-cli-core = { workspace = true, features = ["testing"] }
 sb-term-ui = { workspace = true, features = ["testing"] }
 indicatif.workspace = true
 tracing-subscriber.workspace = true

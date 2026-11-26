@@ -11,7 +11,7 @@ async fn the_local_daemon_lists_and_inspects_every_container() {
     // Any value but `1` (`true`, `yes`) looks like asking: refused rather
     // than quietly skipped, as sb's root gate does.
     let Some(value) = std::env::var_os("SB_LIVE_DOCKER") else {
-        eprintln!("not run: set SB_LIVE_DOCKER=1 to read the local Docker daemon");
+        sb_cli_core::testing::skip("set SB_LIVE_DOCKER=1 to read the local Docker daemon");
         return;
     };
     assert_eq!(

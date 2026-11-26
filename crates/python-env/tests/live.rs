@@ -22,7 +22,7 @@ fn sb_and_sb_go_build_and_accept_each_others_venvs_on_each_release() {
     // Any value but `1` (`true`, `yes`) looks like asking: refused rather
     // than quietly skipped, as sb-docker's live test does.
     let Some(value) = std::env::var_os("SB_LIVE_PYTHON") else {
-        eprintln!("not run: set SB_LIVE_PYTHON=1 to build venvs in containers");
+        sb_cli_core::testing::skip("set SB_LIVE_PYTHON=1 to build venvs in containers");
         return;
     };
     assert_eq!(value, "1", "SB_LIVE_PYTHON must be 1 to run the containers");

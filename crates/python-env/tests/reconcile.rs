@@ -56,12 +56,6 @@ async fn in_step_with(body: impl AsyncFnOnce(&mut Step, &Shutdown) -> anyhow::Re
     }
 }
 
-/// Whether the tests run as root (check.sh runs them so): ownership is
-/// checked only then.
-fn root() -> bool {
-    sb_cli_core::root::effective_uid() == 0
-}
-
 #[tokio::test]
 async fn a_healthy_tree_is_kept_with_sb_gos_steps() {
     let _spawns = SPAWNS.lock().await;
@@ -158,7 +152,9 @@ async fn a_second_run_changes_nothing() {
 
 #[tokio::test]
 async fn the_tree_is_given_to_the_saltbox_user() {
-    if !root() {
+    // Ownership is checked only when the root tests are asked for
+    // (check.sh asks as root).
+    if !sb_cli_core::testing::root_tests() {
         return;
     }
     let _spawns = SPAWNS.lock().await;
@@ -834,7 +830,9 @@ async fn a_cancelled_staged_check_is_interrupted_not_retried() {
 /// A rebuild gives the tree to the Saltbox user, as the healthy path does.
 #[tokio::test]
 async fn a_rebuilt_tree_is_given_to_the_saltbox_user() {
-    if !root() {
+    // Ownership is checked only when the root tests are asked for
+    // (check.sh asks as root).
+    if !sb_cli_core::testing::root_tests() {
         return;
     }
     let _spawns = SPAWNS.lock().await;

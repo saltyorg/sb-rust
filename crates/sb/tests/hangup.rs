@@ -321,7 +321,9 @@ fn a_session_scope_stop_takes_the_grace() {
             !std::path::Path::new("/run/systemd/system").exists(),
             "SB_TEST_NO_SYSTEMD=1 where systemd is running"
         );
-        eprintln!("not run: SB_TEST_NO_SYSTEMD=1, no systemd to start a scope");
+        sb_cli_core::testing::skip(
+            "SB_TEST_NO_SYSTEMD=1, no systemd to start a scope: crates/sb/tests/hangup-systemd.sh runs it",
+        );
         return;
     }
     assert_sighup_not_ignored();

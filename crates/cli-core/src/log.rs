@@ -723,7 +723,7 @@ mod tests {
     /// root run to append to. Making one needs root (`SB_TEST_ROOT=1`).
     #[test]
     fn another_users_directory_is_refused() {
-        if std::env::var_os("SB_TEST_ROOT").is_none_or(|v| v != "1") {
+        if !crate::testing::root_tests() {
             return;
         }
         let dir = tempfile::tempdir().expect("temp dir");
