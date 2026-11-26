@@ -28,6 +28,7 @@ use sb_release::testing::BASES_VARIABLE;
 struct Tools {
     tree: Tree,
     ansible: PathBuf,
+    no_config: PathBuf,
 }
 
 impl Tools {
@@ -35,15 +36,34 @@ impl Tools {
         let tree = Tree::new();
         let _ = tree.healthy();
         let ansible = sb_ops::testing::ansible_playbook(&dir.join("stand-ins"));
-        Self { tree, ansible }
+        let no_config = dir.join("empty.gitconfig");
+        std::fs::write(&no_config, "").expect("empty git config");
+        Self {
+            tree,
+            ansible,
+            no_config,
+        }
     }
 
-    /// The built sb with the tools.
+    /// The built sb with the tools. sb's git reads none of the host's git
+    /// settings (a URL rewrite, `pull.rebase`), as sb-repo's tests' stand-in
+    /// git: its global and system config files are an empty file of the
+    /// test's
+    /// (<https://git-scm.com/docs/git#Documentation/git.txt-GITCONFIGGLOBAL>),
+    /// the per-user ignore and attributes files' default place, under
+    /// `XDG_CONFIG_HOME`, a directory that doesn't exist
+    /// (<https://git-scm.com/docs/git-config#Documentation/git-config.txt-coreexcludesFile>),
+    /// and no setting comes through the environment but the one below.
     fn sb(&self) -> Command {
         let mut cmd = common::sb();
         cmd.env(ROOT_VAR, self.tree.root.path())
             .env(BASES_VARIABLE, self.tree.bases())
             .env("SB_ANSIBLE_PLAYBOOK", &self.ansible)
+            .env("GIT_CONFIG_GLOBAL", &self.no_config)
+            .env("GIT_CONFIG_SYSTEM", &self.no_config)
+            .env("XDG_CONFIG_HOME", self.no_config.with_file_name("no-xdg"))
+            .env_remove("GIT_CONFIG")
+            .env_remove("GIT_CONFIG_PARAMETERS")
             .env("GIT_CONFIG_COUNT", "1")
             .env("GIT_CONFIG_KEY_0", "safe.directory")
             .env("GIT_CONFIG_VALUE_0", "*");

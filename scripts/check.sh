@@ -1078,17 +1078,43 @@ tests_in_sandbox() {
   return "$status"
 }
 
+# no_git_config DIR: sets `git_env` to an env(1) prefix that keeps
+# the host's git configuration from every git a test run starts, sb's own
+# included (sb-repo's checkouts in the ops and ansible tests): the global
+# and system config files are DIR/empty.gitconfig, made empty here (DIR is
+# the run's own TMPDIR; an empty file of the run's, as sb-repo's tests'
+# stand-in git has), the per-user ignore and attributes files' default
+# place, under XDG_CONFIG_HOME, a directory that doesn't exist, and no
+# setting comes through the environment (GIT_CONFIG_COUNT,
+# GIT_CONFIG_PARAMETERS, and GIT_CONFIG, git config's file), so a URL
+# rewrite, a pull.rebase or an ignore file of the host's never reaches a
+# test. A test that wants a setting gives it to its own git.
+# https://git-scm.com/docs/git#Documentation/git.txt-GITCONFIGGLOBAL
+# https://git-scm.com/docs/git-config#Documentation/git-config.txt-GITCONFIGCOUNT
+# https://git-scm.com/docs/git-config#Documentation/git-config.txt-coreexcludesFile
+git_env=()
+no_git_config() {
+  # Readable by every user a test runs git as (nobody, for the relaunch
+  # tests), whatever the umask, as the directory is.
+  : >"$1/empty.gitconfig"
+  chmod 644 "$1/empty.gitconfig"
+  git_env=(env -u GIT_CONFIG -u GIT_CONFIG_COUNT -u GIT_CONFIG_PARAMETERS
+    GIT_CONFIG_GLOBAL="$1/empty.gitconfig" GIT_CONFIG_SYSTEM="$1/empty.gitconfig" XDG_CONFIG_HOME="$1/no-xdg-config")
+}
+
 # test_sandbox CMD...: sets `sandboxed` to CMD in the sandbox for a test
 # step: writable are the run's temp directory (the tests' TMPDIR), the
 # worktree's target/ (the builds and coverage data) and the tests' log
 # directory, $SB_LOG_DIR (under target/, so the same, unless it is a link
 # out of it, as the gate's own tests' scratch repositories make it); the
-# rest of the host, the worktree included, is read-only.
+# rest of the host, the worktree included, is read-only. No host git
+# configuration reaches it (no_git_config).
 test_sandbox() {
   test_tmp_make
+  no_git_config "$test_tmp"
   mkdir -p target "$SB_LOG_DIR"
   sandbox_argv --own-pids "$test_tmp" "$(cd target && pwd -P)" "$(cd "$SB_LOG_DIR" && pwd -P)" -- \
-    env TMPDIR="$test_tmp" "$@"
+    "${git_env[@]}" TMPDIR="$test_tmp" "$@"
 }
 
 # in_sandbox CMD...: CMD in its own process group (in_group), in the test
@@ -1159,10 +1185,12 @@ mutation_pass() {
   mutation_sweeper "$mutation_tmp"
   # In the sandbox: the host read-only but the pass's directory (its
   # TMPDIR), the pass's output and the tests' log directory. Physical
-  # paths, as mountinfo names them.
+  # paths, as mountinfo names them. No host git configuration reaches the
+  # mutants' tests (no_git_config).
   mkdir -p "target/mutants-run-$n" "$SB_LOG_DIR"
+  no_git_config "$mutation_tmp"
   sandbox_argv "$mutation_tmp" "$(cd "target/mutants-run-$n" && pwd -P)" "$(cd "$SB_LOG_DIR" && pwd -P)" -- \
-    "${mutants[@]}" -o "target/mutants-run-$n" --timeout 300
+    "${git_env[@]}" "${mutants[@]}" -o "target/mutants-run-$n" --timeout 300
   # Each mutant's tests, and the baseline's, append their skips
   # (testing::skip) to the pass's file, listed once the pass ends.
   TMPDIR=$mutation_tmp SB_TEST_SKIPS="$mutation_tmp/skips" PATH="$root/target/no-sudo:$PATH" "${sandboxed[@]}" || rc=$?

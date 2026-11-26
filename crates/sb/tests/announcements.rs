@@ -689,8 +689,8 @@ fn a_checkout_without_its_file_says_so() {
 // against the working tree.
 
 /// `git <args>` in `dir`, which must succeed, with none of the host's git
-/// settings (sb-repo's tests' helper).
-fn git(dir: &Path, args: &[&str]) {
+/// settings (sb-repo's tests' helper); its stdout.
+fn git(dir: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
         .args(["-c", "core.excludesFile=/dev/null"])
         .args(["-c", "core.attributesFile=/dev/null"])
@@ -708,6 +708,7 @@ fn git(dir: &Path, args: &[&str]) {
         "git {args:?}: {}",
         String::from_utf8_lossy(&out.stderr)
     );
+    String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
 /// The checkout at `dir` (Saltbox's root, or Sandbox's) a git repository
@@ -1160,12 +1161,8 @@ fn check_a_bad_file() {
     write_cache("0000000000000000000000000000000000000000");
     let out = files.run(&["check", file.to_str().expect("utf-8")]);
     assert_eq!(stdout(&out), expected("", note, 6), "{}", both(&out));
-    let head = Command::new("git")
-        .args(["rev-parse", "HEAD"])
-        .current_dir(files.dir.path())
-        .output()
-        .expect("git");
-    write_cache(String::from_utf8_lossy(&head.stdout).trim());
+    let head = git(files.dir.path(), &["rev-parse", "HEAD"]);
+    write_cache(head.trim());
     let out = files.run(&["check", file.to_str().expect("utf-8")]);
     assert_eq!(out.status.code(), Some(1), "{}", both(&out));
     let tag_line = "  entry 1 (2026-02-30, \"Bad\"): `migration.tag` 'plx' isn't one of \
@@ -1197,14 +1194,7 @@ fn check_a_given_files_repository_and_reading() {
     let files = Files::new();
     files.saltbox_repository(None, SALTBOX_ONE);
     files.sandbox_repository(None, SANDBOX);
-    let head = |dir: &Path| {
-        let out = Command::new("git")
-            .args(["rev-parse", "HEAD"])
-            .current_dir(dir)
-            .output()
-            .expect("git");
-        String::from_utf8_lossy(&out.stdout).trim().to_owned()
-    };
+    let head = |dir: &Path| git(dir, &["rev-parse", "HEAD"]).trim().to_owned();
     let sandbox = files.path("appdata/sandbox");
     std::fs::write(
         files.path("cache.json"),

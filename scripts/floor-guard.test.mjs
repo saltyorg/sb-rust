@@ -1664,6 +1664,19 @@ const stubs = (versions, arch) => {
     + '    ( IFS=,; for n in $STUB_SKIPS; do for _ in 1 2; do echo "skipped: $1::$n (crates/foo/tests/t.rs): needs root" >>"${SB_TEST_SKIPS:?}"; done; done ) ;;\n'
     + '  esac ;;\n'
     + 'esac; fi\n';
+  // With GIT_CONFIG_PROBE set, each test run (the coverage run, the doc
+  // tests, the release-build run, a mutation pass's run) writes the git
+  // configuration its git would read, as `<subcommand> <global> <system>
+  // <xdg> <config> <count> <parameters>`: `empty` for a config file that is
+  // an empty file in the run's TMPDIR, `none` for an XDG_CONFIG_HOME there
+  // that doesn't exist, else the variable's value, `unset` for none.
+  out.cargo += 'if [ -n "${GIT_CONFIG_PROBE:-}" ]; then case "$1" in llvm-cov | test | nextest | mutants)\n'
+    + '  case " $* " in *" --list "*) ;; *)\n'
+    + '    st() { if [ "$1" = "${TMPDIR:-}/empty.gitconfig" ] && [ -f "$1" ] && [ ! -s "$1" ]; then echo empty; else echo "$1"; fi; }\n'
+    + '    x=${XDG_CONFIG_HOME-unset}; case $x in "${TMPDIR:-}"/*) [ -e "$x" ] || x=none ;; esac\n'
+    + '    echo "$1 $(st "${GIT_CONFIG_GLOBAL-unset}") $(st "${GIT_CONFIG_SYSTEM-unset}") $x ${GIT_CONFIG-unset} ${GIT_CONFIG_COUNT-unset} ${GIT_CONFIG_PARAMETERS-unset}" >>"$GIT_CONFIG_PROBE" ;;\n'
+    + '  esac ;;\n'
+    + 'esac; fi\n';
   // With MUTANTS_LISTED set, cargo-mutants lists one mutant in the wide
   // pass (sb-foo's), and its run writes MUTANTS_LISTED as its outcomes;
   // MUTANTS_LISTED_JOURNAL does the same for sb-journal's pass. The run
@@ -2782,6 +2795,31 @@ test('check.sh task: each test run lists the tests it skipped, each once, with t
   const failed = checkRun('task', { work, env: { STUB_SKIPS: 'a', RUN_FAILS_AT: 'llvm-cov' } });
   assert.equal(failed.status, 101, failed.output);
   assert.ok(stepOutput(failed.output, TEST_RUNS[0][0]).includes('\nskipped: 1\nskipped: llvm-cov::a (crates/foo/tests/t.rs): needs root\n'), failed.output);
+});
+
+// No test run reads the host's git configuration, whatever the gate is
+// given: each run's git config files are an empty file in its own
+// TMPDIR, and no setting comes through the environment, in the test steps
+// and in a mutation pass alike (sb's own git in the ops and ansible tests
+// reads them, from sb-repo's checkouts).
+test("check.sh task: no test run reads the host's git configuration", () => {
+  const dir = mkdtempSync(join(tmpdir(), 'git-config-'));
+  const planted = join(dir, 'planted.gitconfig');
+  writeFileSync(planted, '[pull]\n\trebase = true\n');
+  const probe = join(dir, 'probe');
+  try {
+    const r = checkRun('task', {
+      work: { 'crates/foo/src/lib.rs': 'pub fn f() {}\n' }, logDir: dir,
+      env: { MUTANTS_LISTED: MUTANT_CAUGHT, GIT_CONFIG_PROBE: probe, GIT_CONFIG_GLOBAL: planted, GIT_CONFIG_SYSTEM: planted,
+        XDG_CONFIG_HOME: dir, GIT_CONFIG: planted, GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'pull.rebase', GIT_CONFIG_VALUE_0: 'true',
+        GIT_CONFIG_PARAMETERS: "'pull.rebase'='true'" },
+    });
+    passes(r, 'task');
+    assert.equal(readFileSync(probe, 'utf8'),
+      TEST_RUNS.map(([, run]) => run + ' empty empty none unset unset unset\n').join(''), r.output);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 // The verdicts the gate computes with node, run with the real one: the

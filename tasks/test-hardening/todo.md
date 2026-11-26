@@ -40,7 +40,7 @@ invented; no test reads the host's data.
 
 - [x] 2.1: colour variables are scrubbed in one place.
 - [x] 2.2: `SHELL` and the PTY's working directory are the test's.
-- [ ] 2.3: sb's own git reads no host configuration, in sb's tests and in
+- [x] 2.3: sb's own git reads no host configuration, in sb's tests and in
       the gate's sandbox.
 - [ ] 2.4: the configparser reference is frozen, from Saltbox's pinned
       Python.
