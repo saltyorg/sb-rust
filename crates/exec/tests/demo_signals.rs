@@ -14,7 +14,7 @@
 
 use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
@@ -23,6 +23,7 @@ use rustix::process::{
     Pid, Signal, WaitOptions, getpgid, getpid, kill_process, set_child_subreaper,
     test_kill_process_group, waitpid,
 };
+use sb_cli_core::testing::ChildOutput;
 
 fn subreaper() {
     static SET: OnceLock<()> = OnceLock::new();
@@ -33,8 +34,9 @@ fn pid(raw: i32) -> Pid {
     Pid::from_raw(raw).expect("pid")
 }
 
-/// exec-demo, killed if a test fails before it ends.
-struct Demo(Child);
+/// exec-demo, killed if a test fails before it ends, and its stderr (its
+/// "interrupted" block, and what it says when it fails).
+struct Demo(Child, ChildOutput);
 
 impl Drop for Demo {
     fn drop(&mut self) {
@@ -43,22 +45,22 @@ impl Drop for Demo {
     }
 }
 
-/// exec-demo running its child captured.
+/// exec-demo running its child captured, its stderr in a file beside
+/// `file`.
 fn start(file: &Path, mode: &str, grace_ms: u64) -> Demo {
-    Demo(
-        Command::new(env!("CARGO_BIN_EXE_exec-demo"))
-            .arg(file)
-            .arg(mode)
-            .arg(grace_ms.to_string())
-            // Its "interrupted" block isn\'t the test\'s output.
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("exec-demo"),
-    )
+    let output = ChildOutput::new(file.parent().expect("file's directory"), "exec-demo");
+    let child = Command::new(env!("CARGO_BIN_EXE_exec-demo"))
+        .arg(file)
+        .arg(mode)
+        .arg(grace_ms.to_string())
+        .stderr(output.stderr())
+        .spawn()
+        .expect("exec-demo");
+    Demo(child, output)
 }
 
 /// The leader's and grandchild's pids, once the child wrote them.
-fn pids(file: &Path) -> (i32, i32) {
+fn pids(demo: &Demo, file: &Path) -> (i32, i32) {
     let start = Instant::now();
     loop {
         if let Ok(text) = std::fs::read_to_string(file)
@@ -70,7 +72,11 @@ fn pids(file: &Path) -> (i32, i32) {
                 .collect();
             return (pids[0], pids[1]);
         }
-        assert!(start.elapsed() < Duration::from_secs(10), "no pids");
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "no pids\n{}",
+            demo.1
+        );
         std::thread::sleep(Duration::from_millis(10));
     }
 }
@@ -111,7 +117,8 @@ fn wait(demo: &mut Demo) -> std::process::ExitStatus {
         }
         assert!(
             start.elapsed() < Duration::from_secs(20),
-            "exec-demo didn't end"
+            "exec-demo didn't end\n{}",
+            demo.1
         );
         std::thread::sleep(Duration::from_millis(10));
     }
@@ -124,7 +131,7 @@ fn one_signal_stops_the_group_and_ends_by_that_signal() {
         let dir = tempfile::tempdir().expect("temp dir");
         let file = dir.path().join("pids");
         let mut demo = start(&file, "stops", 5000);
-        let (leader, grandchild) = pids(&file);
+        let (leader, grandchild) = pids(&demo, &file);
         check_group(leader, grandchild);
         // Reaped as soon as it is adopted, so its zombie doesn't make the
         // group look alive to exec-demo for the whole grace.
@@ -133,8 +140,17 @@ fn one_signal_stops_the_group_and_ends_by_that_signal() {
         send(&demo, signal);
         let status = wait(&mut demo);
         let took = sent.elapsed();
-        assert!(took < Duration::from_secs(2), "{signal:?}: {took:?}");
-        assert_eq!(status.signal(), Some(number), "{signal:?}: {status:?}");
+        assert!(
+            took < Duration::from_secs(2),
+            "{signal:?}: {took:?}\n{}",
+            demo.1
+        );
+        assert_eq!(
+            status.signal(),
+            Some(number),
+            "{signal:?}: {status:?}\n{}",
+            demo.1
+        );
         assert_eq!(
             reaper.join().expect("reaper"),
             Some(15),
@@ -155,7 +171,7 @@ fn a_second_signal_kills_the_group_on_the_forced_exit() {
     let dir = tempfile::tempdir().expect("temp dir");
     let file = dir.path().join("pids");
     let mut demo = start(&file, "ignores", 60_000);
-    let (leader, grandchild) = pids(&file);
+    let (leader, grandchild) = pids(&demo, &file);
     check_group(leader, grandchild);
     send(&demo, Signal::INT);
     std::thread::sleep(Duration::from_millis(200));
@@ -164,10 +180,11 @@ fn a_second_signal_kills_the_group_on_the_forced_exit() {
     let status = wait(&mut demo);
     assert!(
         started.elapsed() < Duration::from_secs(5),
-        "{:?}",
-        started.elapsed()
+        "{:?}\n{}",
+        started.elapsed(),
+        demo.1
     );
-    assert_eq!(status.signal(), Some(2), "{status:?}");
+    assert_eq!(status.signal(), Some(2), "{status:?}\n{}", demo.1);
     // exec-demo may have reaped its `sh` before it died; if not, the
     // orphan is this process's.
     // Adopted but not yet done dying (`Ok(None)`): ask again briefly.
@@ -196,7 +213,7 @@ fn an_untouched_run_ends_on_its_own() {
     let file = dir.path().join("pids");
     let mut demo = start(&file, "exits", 5000);
     let status = wait(&mut demo);
-    assert_eq!(status.code(), Some(0), "{status:?}");
+    assert_eq!(status.code(), Some(0), "{status:?}\n{}", demo.1);
 }
 
 #[test]

@@ -24,6 +24,9 @@ tracing.workspace = true
 anyhow.workspace = true
 indicatif.workspace = true
 sb-term-ui = { workspace = true, features = ["testing"] }
+# The children's output in files for the failure messages
+# (`testing::ChildOutput`).
+sb-cli-core = { workspace = true, features = ["testing"] }
 tempfile.workspace = true
 tracing-subscriber.workspace = true
 

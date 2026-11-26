@@ -20,6 +20,7 @@ use std::time::{Duration, Instant};
 
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, SlavePty, native_pty_system};
 use rustix::process::{Pid, Signal, kill_process};
+use sb_cli_core::testing::ChildOutput;
 use sb_config::testing::{Fake, saltbox_root};
 
 /// The fake editor: `$0` and each argument on its own line to
@@ -1159,8 +1160,11 @@ fn a_hangup_at_the_question_ends_sb() {
         .env("PID_FILE", &pid_file)
         .env("EXIT_FILE", &exit_file)
         .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null());
+        .stdout(std::process::Stdio::piped());
+    // script's own complaints; the terminal's transcript is the pipe read
+    // below.
+    let output = ChildOutput::new(world.dir.path(), "script");
+    cmd.stderr(output.stderr());
     // Under `nohup` sb would leave SIGHUP ignored (cli-core decision 8),
     // and this would wait out its bound: say so instead. `SigIgn` in
     // `/proc/self/status` (`proc_pid_status(5)`): SIGHUP is bit 0.
@@ -1186,11 +1190,11 @@ fn a_hangup_at_the_question_ends_sb() {
             }
         }
     });
-    assert!(shown.recv_timeout(WAIT).is_ok(), "sb didn't ask");
+    assert!(shown.recv_timeout(WAIT).is_ok(), "sb didn't ask\n{output}");
     session.1 = std::fs::read_to_string(&pid_file)
         .ok()
         .and_then(|text| text.trim().parse().ok());
-    assert!(session.1.is_some(), "sb's pid");
+    assert!(session.1.is_some(), "sb's pid\n{output}");
     // The master closes with `script`.
     session.0.kill().expect("kill script");
     let _ = session.0.wait();
@@ -1198,7 +1202,7 @@ fn a_hangup_at_the_question_ends_sb() {
     while !exit_file.exists() {
         assert!(
             Instant::now() < deadline,
-            "sb didn't end at the hangup:\n{}",
+            "sb didn't end at the hangup:\n{}\n{output}",
             world.log()
         );
         std::thread::sleep(Duration::from_millis(10));
@@ -1206,9 +1210,12 @@ fn a_hangup_at_the_question_ends_sb() {
     // sb has ended and been reaped: its pid may be another's now.
     session.1 = None;
     let exit = std::fs::read_to_string(&exit_file).expect("exit");
-    assert_eq!(exit.trim(), "EXIT=129", "{}", world.log());
+    assert_eq!(exit.trim(), "EXIT=129", "{}\n{output}", world.log());
     let log = world.log();
-    assert!(log.contains("outcome=\"interrupted (exit 129)\""), "{log}");
+    assert!(
+        log.contains("outcome=\"interrupted (exit 129)\""),
+        "{log}\n{output}"
+    );
     assert_eq!(world.runs(), 1);
 }
 
@@ -1281,13 +1288,15 @@ fn a_sigterm_reaches_the_editor_and_ends_sb() {
         return;
     }
     let world = World::new();
-    let mut child = world
-        .sb("settings")
-        .env("VISUAL", world.fake())
-        .env("FAKE_WAIT", "1")
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
+    let output = ChildOutput::new(world.dir.path(), "sb");
+    let mut child = output
+        .attach(
+            world
+                .sb("settings")
+                .env("VISUAL", world.fake())
+                .env("FAKE_WAIT", "1")
+                .stdin(std::process::Stdio::null()),
+        )
         .spawn()
         .expect("run sb");
     let pid_file = PathBuf::from(format!("{}.pid", world.argv_file().display()));
@@ -1295,7 +1304,7 @@ fn a_sigterm_reaches_the_editor_and_ends_sb() {
     while !pid_file.exists() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(10));
     }
-    assert!(pid_file.exists(), "the editor started");
+    assert!(pid_file.exists(), "the editor started\n{output}");
     let sb = Pid::from_raw(i32::try_from(child.id()).expect("pid")).expect("pid");
     kill_process(sb, Signal::TERM).expect("kill");
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -1313,14 +1322,14 @@ fn a_sigterm_reaches_the_editor_and_ends_sb() {
             {
                 let _ = kill_process(editor, Signal::KILL);
             }
-            panic!("sb didn't end after SIGTERM");
+            panic!("sb didn't end after SIGTERM\n{output}");
         }
         std::thread::sleep(Duration::from_millis(10));
     };
-    assert_eq!(status.signal(), Some(15), "{status:?}");
+    assert_eq!(status.signal(), Some(15), "{status:?}\n{output}");
     assert!(
         PathBuf::from(format!("{}.term", world.argv_file().display())).exists(),
-        "the editor got SIGTERM"
+        "the editor got SIGTERM\n{output}"
     );
 }
 

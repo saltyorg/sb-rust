@@ -15,11 +15,13 @@ use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
 use rustix::process::{Pid, Signal, kill_process, kill_process_group, test_kill_process};
+use sb_cli_core::testing::ChildOutput;
 
 /// exec-demo, killed (with its group) if a test fails before it ends,
 /// and its stderr, read on a thread: a child left running holds the pipe
-/// open, which must fail a test, not hang it.
-struct Demo(Child, Receiver<String>);
+/// open, which must fail a test, not hang it. Its stdout, and its attached
+/// child's, in a file of the test's directory, for the failure messages.
+struct Demo(Child, Receiver<String>, ChildOutput);
 
 impl Drop for Demo {
     fn drop(&mut self) {
@@ -35,12 +37,13 @@ fn pid(raw: u32) -> Pid {
 /// exec-demo running `mode`'s child attached (`way`: `attached`, or
 /// `passed` for decision 5's pass-through), in a group of its own.
 fn start(file: &Path, mode: &str, grace_ms: u64, way: &str) -> Demo {
+    let stdout = ChildOutput::new(file.parent().expect("file's directory"), "exec-demo");
     let mut child = Command::new(env!("CARGO_BIN_EXE_exec-demo"))
         .arg(file)
         .args([mode, &grace_ms.to_string(), way])
         .process_group(0)
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
+        .stdout(stdout.stdout())
         .stderr(Stdio::piped())
         .spawn()
         .expect("exec-demo");
@@ -51,11 +54,11 @@ fn start(file: &Path, mode: &str, grace_ms: u64, way: &str) -> Demo {
         let _ = std::io::Read::read_to_string(&mut pipe, &mut text);
         let _ = sent.send(text);
     });
-    Demo(child, read)
+    Demo(child, read, stdout)
 }
 
 /// The child's pid, once it wrote it.
-fn child_pid(file: &Path) -> Pid {
+fn child_pid(demo: &Demo, file: &Path) -> Pid {
     let start = Instant::now();
     loop {
         if let Ok(text) = std::fs::read_to_string(file)
@@ -68,7 +71,11 @@ fn child_pid(file: &Path) -> Pid {
                 .expect("pid");
             return pid(raw);
         }
-        assert!(start.elapsed() < Duration::from_secs(10), "no pid file");
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "no pid file\n{}",
+            demo.2
+        );
         std::thread::sleep(Duration::from_millis(10));
     }
 }
@@ -92,7 +99,11 @@ fn end(demo: &mut Demo) -> (ExitStatus, String) {
                 .unwrap_or_else(|_| "(stderr still held open)".to_string());
             return (status, stderr);
         }
-        assert!(start.elapsed() < Duration::from_secs(15), "exec-demo hung");
+        assert!(
+            start.elapsed() < Duration::from_secs(15),
+            "exec-demo hung\n{}",
+            demo.2
+        );
         std::thread::sleep(Duration::from_millis(10));
     }
 }
@@ -141,7 +152,7 @@ fn held_signals_with_a_surviving_child_wait() {
     for presses in cases {
         let (_dir, file) = file();
         let mut demo = start(&file, "survives", 5000, "attached");
-        child_pid(&file);
+        child_pid(&demo, &file);
         for &signal in presses {
             press(&demo, signal);
             std::thread::sleep(Duration::from_millis(200));
@@ -152,7 +163,12 @@ fn held_signals_with_a_surviving_child_wait() {
         );
         release(&file);
         let (status, stderr) = end(&mut demo);
-        assert_eq!(status.code(), Some(0), "{presses:?}: {status:?} {stderr}");
+        assert_eq!(
+            status.code(),
+            Some(0),
+            "{presses:?}: {status:?} {stderr}\n{}",
+            demo.2
+        );
     }
 }
 
@@ -161,10 +177,10 @@ fn held_signals_with_a_surviving_child_wait() {
 fn ctrl_c_a_child_dies_of_ends_sb_by_sigint() {
     let (_dir, file) = file();
     let mut demo = start(&file, "dies", 5000, "attached");
-    child_pid(&file);
+    child_pid(&demo, &file);
     press(&demo, Signal::INT);
     let (status, stderr) = end(&mut demo);
-    assert_eq!(status.signal(), Some(2), "{status:?} {stderr}");
+    assert_eq!(status.signal(), Some(2), "{status:?} {stderr}\n{}", demo.2);
 }
 
 /// Ctrl-\ with a child that dies of it, and with one that ignores Ctrl-C
@@ -176,7 +192,7 @@ fn ctrl_backslash_ends_sb_by_sigquit_without_a_core() {
     for (mode, ctrl_c_first) in [("dies", false), ("ignores-int", true)] {
         let (_dir, file) = file();
         let mut demo = start(&file, mode, 5000, "attached");
-        let child = child_pid(&file);
+        let child = child_pid(&demo, &file);
         if ctrl_c_first {
             press(&demo, Signal::INT);
             std::thread::sleep(Duration::from_millis(300));
@@ -184,7 +200,12 @@ fn ctrl_backslash_ends_sb_by_sigquit_without_a_core() {
         }
         press(&demo, Signal::QUIT);
         let (status, stderr) = end(&mut demo);
-        assert_eq!(status.signal(), Some(3), "{mode}: {status:?} {stderr}");
+        assert_eq!(
+            status.signal(),
+            Some(3),
+            "{mode}: {status:?} {stderr}\n{}",
+            demo.2
+        );
         assert!(!status.core_dumped(), "{mode}: {status:?}");
     }
 }
@@ -196,7 +217,7 @@ fn a_child_signalled_on_its_own_fails_the_run() {
     let (_dir, file) = file();
     let mut demo = start(&file, "self", 5000, "attached");
     let (status, stderr) = end(&mut demo);
-    assert_eq!(status.code(), Some(1), "{status:?} {stderr}");
+    assert_eq!(status.code(), Some(1), "{status:?} {stderr}\n{}", demo.2);
     assert!(stderr.contains("killed by SIGINT"), "{stderr}");
 }
 
@@ -206,14 +227,14 @@ fn a_child_signalled_on_its_own_fails_the_run() {
 fn sigint_to_sb_alone_stays_and_sigterm_is_forwarded() {
     let (_dir, file) = file();
     let mut demo = start(&file, "dies", 5000, "attached");
-    let child = child_pid(&file);
+    let child = child_pid(&demo, &file);
     kill_process(pid(demo.0.id()), Signal::INT).expect("SIGINT");
     std::thread::sleep(Duration::from_millis(300));
     assert!(alive(child), "not forwarded");
     assert!(demo.0.try_wait().expect("try_wait").is_none(), "sb waits");
     kill_process(pid(demo.0.id()), Signal::TERM).expect("SIGTERM");
     let (status, stderr) = end(&mut demo);
-    assert_eq!(status.signal(), Some(15), "{status:?} {stderr}");
+    assert_eq!(status.signal(), Some(15), "{status:?} {stderr}\n{}", demo.2);
     assert!(!alive(child), "the child is gone");
 }
 
@@ -225,7 +246,7 @@ fn a_child_ignoring_sigterm_is_killed_after_the_grace() {
     let grace = Duration::from_secs(4);
     let (_dir, file) = file();
     let mut demo = start(&file, "ignores-term", 4000, "attached");
-    let child = child_pid(&file);
+    let child = child_pid(&demo, &file);
     let sent = Instant::now();
     kill_process(pid(demo.0.id()), Signal::TERM).expect("SIGTERM");
     std::thread::sleep(Duration::from_millis(200));
@@ -237,7 +258,7 @@ fn a_child_ignoring_sigterm_is_killed_after_the_grace() {
         "pressed within the grace"
     );
     let (status, stderr) = end(&mut demo);
-    assert_eq!(status.signal(), Some(15), "{status:?} {stderr}");
+    assert_eq!(status.signal(), Some(15), "{status:?} {stderr}\n{}", demo.2);
     assert!(
         sent.elapsed() >= grace.checked_sub(Duration::from_millis(100)).unwrap(),
         "waited for the grace"
@@ -251,7 +272,7 @@ fn a_child_ignoring_sigterm_is_killed_after_the_grace() {
 fn a_second_sigterm_forces_the_exit_and_kills_the_child() {
     let (_dir, file) = file();
     let mut demo = start(&file, "ignores-term", 60_000, "attached");
-    let child = child_pid(&file);
+    let child = child_pid(&demo, &file);
     let sent = Instant::now();
     kill_process(pid(demo.0.id()), Signal::TERM).expect("SIGTERM");
     // Well past cli-core's 250 ms repeat window, which runs from when sb
@@ -262,7 +283,7 @@ fn a_second_sigterm_forces_the_exit_and_kills_the_child() {
     std::thread::sleep(Duration::from_secs(1));
     kill_process(pid(demo.0.id()), Signal::TERM).expect("SIGTERM");
     let (status, stderr) = end(&mut demo);
-    assert_eq!(status.signal(), Some(15), "{status:?} {stderr}");
+    assert_eq!(status.signal(), Some(15), "{status:?} {stderr}\n{}", demo.2);
     assert!(
         sent.elapsed() < Duration::from_secs(5),
         "{:?}",
@@ -284,10 +305,10 @@ fn a_second_sigterm_forces_the_exit_and_kills_the_child() {
 fn an_interrupted_pass_through_ends_by_the_signal() {
     let (_dir, file) = file();
     let mut demo = start(&file, "dies", 5000, "passed");
-    child_pid(&file);
+    child_pid(&demo, &file);
     press(&demo, Signal::INT);
     let (status, stderr) = end(&mut demo);
-    assert_eq!(status.signal(), Some(2), "{status:?} {stderr}");
+    assert_eq!(status.signal(), Some(2), "{status:?} {stderr}\n{}", demo.2);
     assert!(!stderr.contains("exited with"), "{stderr}");
 }
 
@@ -298,13 +319,13 @@ fn the_pass_through_exits_with_the_childs_code() {
     let (_dir, file) = file();
     let mut demo = start(&file, "fails", 5000, "passed");
     let (status, stderr) = end(&mut demo);
-    assert_eq!(status.code(), Some(3), "{status:?} {stderr}");
+    assert_eq!(status.code(), Some(3), "{status:?} {stderr}\n{}", demo.2);
     let lines: Vec<&str> = stderr.lines().filter(|l| !l.trim().is_empty()).collect();
     assert_eq!(lines.len(), 1, "{stderr}");
     assert!(lines[0].contains("exited with code 3"), "{stderr}");
     let (_dir, file) = self::file();
     let mut demo = start(&file, "exits", 5000, "passed");
     let (status, stderr) = end(&mut demo);
-    assert_eq!(status.code(), Some(0), "{status:?} {stderr}");
+    assert_eq!(status.code(), Some(0), "{status:?} {stderr}\n{}", demo.2);
     assert!(stderr.trim().is_empty(), "{stderr}");
 }

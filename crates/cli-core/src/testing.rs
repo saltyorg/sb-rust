@@ -145,6 +145,129 @@ pub fn waits_for_a_fork<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'st
     thread.join().expect("work")
 }
 
+/// A child's stdout and stderr in files, for the test's failure messages.
+///
+/// The files are `<name>.stdout` and `<name>.stderr` in a test's temporary
+/// directory; `Display` shows them, so a child that fails says why rather
+/// than leaving its exit status alone.
+///
+/// A file, never a pipe the test doesn't read: a full pipe blocks the
+/// child's next write (64 KiB on Linux, pipe(7),
+/// <https://man7.org/linux/man-pages/man7/pipe.7.html>), and a child
+/// whose ending the test waits for would hang it. The file is std's
+/// `Stdio` from a `File`
+/// (<https://doc.rust-lang.org/std/process/struct.Stdio.html#impl-From%3CFile%3E-for-Stdio>).
+/// Why not `assert_cmd`, which the tests use, or `Command::output`: both
+/// capture a child run to its end, and these are children the test signals
+/// or watches while they run
+/// (<https://docs.rs/assert_cmd/2.2.2/assert_cmd/cmd/struct.Command.html>).
+/// Nor duct's `stdout_path` and `stderr_path`
+/// (<https://docs.rs/duct/1.1.2/duct/struct.Expression.html>), a new
+/// dependency that would wrap each test's `std::process::Command` in its
+/// own expression type for what these few lines do.
+#[derive(Debug, Clone)]
+pub struct ChildOutput {
+    name: String,
+    stdout: std::path::PathBuf,
+    stderr: std::path::PathBuf,
+}
+
+impl ChildOutput {
+    /// The files for the child `name` in `dir`; none is made yet.
+    #[must_use]
+    pub fn new(dir: &Path, name: &str) -> Self {
+        Self {
+            name: name.to_owned(),
+            stdout: dir.join(format!("{name}.stdout")),
+            stderr: dir.join(format!("{name}.stderr")),
+        }
+    }
+
+    /// Both streams of `cmd` to the files.
+    ///
+    /// # Panics
+    ///
+    /// When a file can't be made.
+    #[track_caller]
+    pub fn attach<'a>(&self, cmd: &'a mut Command) -> &'a mut Command {
+        cmd.stdout(self.stdout()).stderr(self.stderr())
+    }
+
+    /// The stdout file, for `Command::stdout`: each call makes it empty
+    /// again, so it is set once for each child.
+    ///
+    /// # Panics
+    ///
+    /// When it can't be made.
+    #[track_caller]
+    #[must_use]
+    pub fn stdout(&self) -> Stdio {
+        Self::create(&self.stdout)
+    }
+
+    /// The stderr file, for `Command::stderr`: each call makes it empty
+    /// again, so it is set once for each child.
+    ///
+    /// # Panics
+    ///
+    /// When it can't be made.
+    #[track_caller]
+    #[must_use]
+    pub fn stderr(&self) -> Stdio {
+        Self::create(&self.stderr)
+    }
+
+    /// What the child wrote to stdout so far, lossily UTF-8 (empty if none).
+    #[must_use]
+    pub fn stdout_text(&self) -> String {
+        Self::read(&self.stdout).unwrap_or_default()
+    }
+
+    /// What the child wrote to stderr so far, lossily UTF-8 (empty if none).
+    #[must_use]
+    pub fn stderr_text(&self) -> String {
+        Self::read(&self.stderr).unwrap_or_default()
+    }
+
+    #[track_caller]
+    fn create(path: &Path) -> Stdio {
+        std::fs::File::create(path)
+            .unwrap_or_else(|e| panic!("making {}: {e}", path.display()))
+            .into()
+    }
+
+    /// The file's text, or `None` when there is no such file.
+    fn read(path: &Path) -> Option<String> {
+        std::fs::read(path)
+            .ok()
+            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+    }
+}
+
+/// Each captured stream, labelled with the child's name, its text ending
+/// in a newline: `<name>'s stdout:` and the text, or `(empty)`.
+impl std::fmt::Display for ChildOutput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut shown = false;
+        for (stream, path) in [("stdout", &self.stdout), ("stderr", &self.stderr)] {
+            let Some(text) = Self::read(path) else {
+                continue;
+            };
+            shown = true;
+            if text.is_empty() {
+                writeln!(f, "{}'s {stream}: (empty)", self.name)?;
+            } else {
+                let end = if text.ends_with('\n') { "" } else { "\n" };
+                write!(f, "{}'s {stream}:\n{text}{end}", self.name)?;
+            }
+        }
+        if !shown {
+            writeln!(f, "{}: no output captured", self.name)?;
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -198,5 +321,90 @@ mod tests {
     fn a_program_that_cant_be_written_panics_with_its_path() {
         let dir = tempfile::tempdir().expect("dir");
         write_program(&dir.path().join("no-such-dir/program"), "#!/bin/sh\n");
+    }
+
+    /// `script` run by `sh` with its output in `output`'s files, to its
+    /// end.
+    fn ran(script: &str, output: impl FnOnce(&mut Command)) -> std::process::ExitStatus {
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", script]);
+        output(&mut cmd);
+        crate::fork_lock::forking(|| cmd.spawn())
+            .and_then(|mut child| child.wait())
+            .expect("run sh")
+    }
+
+    #[test]
+    fn a_childs_output_is_shown_by_stream() {
+        let dir = tempfile::tempdir().expect("dir");
+        let output = ChildOutput::new(dir.path(), "sh");
+        let status = ran("echo out; echo err >&2; printf 'no newline' >&2", |cmd| {
+            output.attach(cmd);
+        });
+        assert!(status.success(), "{status}");
+        assert_eq!(output.stdout_text(), "out\n");
+        assert_eq!(output.stderr_text(), "err\nno newline");
+        assert_eq!(
+            output.to_string(),
+            "sh's stdout:\nout\nsh's stderr:\nerr\nno newline\n"
+        );
+    }
+
+    #[test]
+    fn only_the_streams_captured_are_shown() {
+        let dir = tempfile::tempdir().expect("dir");
+        let output = ChildOutput::new(dir.path(), "sh");
+        let status = ran("echo out; echo err >&2", |cmd| {
+            cmd.stdout(Stdio::piped()).stderr(output.stderr());
+        });
+        assert!(status.success(), "{status}");
+        assert_eq!(output.to_string(), "sh's stderr:\nerr\n");
+        // A stream written to nothing yet, or never started, says so.
+        let silent = ChildOutput::new(dir.path(), "quiet");
+        let status = ran("true", |cmd| {
+            silent.attach(cmd);
+        });
+        assert!(status.success(), "{status}");
+        assert_eq!(
+            silent.to_string(),
+            "quiet's stdout: (empty)\nquiet's stderr: (empty)\n"
+        );
+        let never = ChildOutput::new(dir.path(), "never");
+        assert_eq!(never.to_string(), "never: no output captured\n");
+    }
+
+    /// A child that writes far more than a pipe holds (64 KiB on Linux,
+    /// pipe(7)) ends with nothing reading it: a file never fills.
+    #[test]
+    fn a_child_that_writes_much_never_blocks() {
+        let dir = tempfile::tempdir().expect("dir");
+        let output = ChildOutput::new(dir.path(), "sh");
+        let status = ran(
+            "head -c 1048576 /dev/zero; head -c 1048576 /dev/zero >&2",
+            |cmd| {
+                output.attach(cmd);
+            },
+        );
+        assert!(status.success(), "{status}");
+        assert_eq!(output.stdout_text().len(), 1_048_576);
+        assert_eq!(output.stderr_text().len(), 1_048_576);
+    }
+
+    #[test]
+    fn output_that_isnt_utf8_is_shown_lossily() {
+        let dir = tempfile::tempdir().expect("dir");
+        let output = ChildOutput::new(dir.path(), "sh");
+        let status = ran(r"printf 'a\377b' >&2", |cmd| {
+            output.attach(cmd);
+        });
+        assert!(status.success(), "{status}");
+        assert_eq!(output.stderr_text(), "a\u{fffd}b");
+    }
+
+    #[test]
+    #[should_panic(expected = "no-such-dir")]
+    fn an_output_file_that_cant_be_made_panics_with_its_path() {
+        let dir = tempfile::tempdir().expect("dir");
+        let _ = ChildOutput::new(&dir.path().join("no-such-dir"), "sh").stdout();
     }
 }

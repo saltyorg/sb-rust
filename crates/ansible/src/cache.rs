@@ -965,7 +965,9 @@ mod tests {
             std::fs::Permissions::from_mode(0o600),
         )
         .expect("chmod");
-        let status = std::process::Command::new("sh")
+        // Run to its end: std's output() reads both streams, so the
+        // child's failure shows in the message.
+        let child = std::process::Command::new("sh")
             .args(["-c", r#"umask 077; exec "$0" "$@""#])
             .arg(std::env::current_exe().expect("this test"))
             .args([
@@ -974,10 +976,9 @@ mod tests {
                 "--quiet",
             ])
             .env(UMASK_CHILD, dir.path())
-            .stdout(std::process::Stdio::null())
-            .status()
+            .output()
             .expect("the child");
-        assert!(status.success(), "{status:?}");
+        assert!(child.status.success(), "{child:?}");
         let meta = std::fs::metadata(dir.path().join(FILE)).expect("meta");
         assert_eq!(meta.mode() & 0o777, 0o644);
         let text = std::fs::read_to_string(dir.path().join(FILE)).expect("read");

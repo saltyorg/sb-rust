@@ -19,6 +19,7 @@ use std::time::Duration;
 
 use processes::{KillOnDrop, StandIn, gone, wait_for};
 use rustix::process::{Pid, Signal, kill_process};
+use sb_cli_core::testing::ChildOutput;
 use sb_docker::testing::controller::FakeController;
 
 const UNIT: &str = "saltbox_managed_docker_controller.service";
@@ -123,23 +124,25 @@ fn a_sighup_cancels_as_sigterm_does() {
     let fake = FakeController::start().expect("fake");
     let mut cmd = common::sb();
     world.env(&mut cmd, fake.url());
-    cmd.args(["docker", "start"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+    let output = ChildOutput::new(world.dir.path(), "sb");
+    output.attach(cmd.args(["docker", "start"]).stdin(Stdio::null()));
     let mut sb = KillOnDrop(cmd.spawn().expect("run sb"), None);
     let stand_in = world.stand_in();
     signal(sb.0.id(), Signal::HUP);
     let status = sb.0.wait().expect("wait");
-    assert_eq!(status.signal(), Some(Signal::HUP.as_raw()), "{status:?}");
+    assert_eq!(
+        status.signal(),
+        Some(Signal::HUP.as_raw()),
+        "{status:?}\n{output}"
+    );
     assert!(
         wait_for(|| gone(stand_in.0).then_some(())).is_some(),
-        "the stand-in was left running"
+        "the stand-in was left running\n{output}"
     );
     let log = world.log();
     assert!(
         log.contains("run finished") && log.contains("outcome=\"interrupted (exit 129)\""),
-        "{log}"
+        "{log}\n{output}"
     );
 }
 
@@ -179,32 +182,33 @@ fn a_real_hangup_logs_the_ending_and_leaves_no_child() {
         .env("TERM", "xterm-256color")
         .env("SB", &program)
         .env("DIR", world.dir.path())
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stdin(Stdio::piped());
+    // script's stdout is the terminal's transcript: sb's output.
+    let output = ChildOutput::new(world.dir.path(), "script");
+    output.attach(&mut cmd);
     let mut script = KillOnDrop(cmd.spawn().expect("run script"), None);
     let sb_pid: i32 = wait_for(|| {
         std::fs::read_to_string(world.file("sb.pid"))
             .ok()
             .and_then(|text| text.trim().parse().ok())
     })
-    .expect("sb's pid");
+    .unwrap_or_else(|| panic!("sb's pid\n{output}"));
     let stand_in = world.stand_in();
     // The master closes with `script`.
     script.0.kill().expect("kill script");
     let _ = script.0.wait();
     let exit = wait_for(|| std::fs::read_to_string(world.file("exit")).ok())
-        .expect("the wrapper's record of sb's end");
-    assert_eq!(exit.trim(), "EXIT=129", "{}", world.log());
-    assert!(gone(sb_pid));
+        .unwrap_or_else(|| panic!("the wrapper's record of sb's end\n{output}"));
+    assert_eq!(exit.trim(), "EXIT=129", "{}\n{output}", world.log());
+    assert!(gone(sb_pid), "{output}");
     assert!(
         wait_for(|| gone(stand_in.0).then_some(())).is_some(),
-        "the stand-in was left running"
+        "the stand-in was left running\n{output}"
     );
     let log = world.log();
     assert!(
         log.contains("run finished") && log.contains("outcome=\"interrupted (exit 129)\""),
-        "{log}"
+        "{log}\n{output}"
     );
 }
 
@@ -237,9 +241,10 @@ fn a_doubled_hangup_from_bash_still_takes_the_grace() {
             .env("SHELL", "/bin/bash")
             .env("HISTFILE", world.file("history"))
             .env("TERM", "xterm-256color")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
+            .stdin(Stdio::piped());
+        // script's stdout is the terminal's transcript: bash's and sb's.
+        let output = ChildOutput::new(world.dir.path(), "script");
+        output.attach(&mut cmd);
         let mut script = KillOnDrop(cmd.spawn().expect("run script"), None);
         let line = format!(
             "sh -c 'echo $$ > \"$1\"; exec \"$0\" docker start' '{program}' '{}'\n",
@@ -252,7 +257,7 @@ fn a_doubled_hangup_from_bash_still_takes_the_grace() {
                 .ok()
                 .and_then(|text| text.trim().parse().ok())
         })
-        .expect("sb's pid");
+        .unwrap_or_else(|| panic!("run {run}: sb's pid\n{output}"));
         let stand_in = world.stand_in();
         // The master closes with `script`: bash is hung up.
         script.0.kill().expect("kill script");
@@ -260,18 +265,21 @@ fn a_doubled_hangup_from_bash_still_takes_the_grace() {
         drop(input);
         assert!(
             wait_for(|| gone(sb_pid).then_some(())).is_some(),
-            "run {run}: sb still running"
+            "run {run}: sb still running\n{output}"
         );
         let log = world.log();
         assert!(
             log.contains("run finished") && log.contains("outcome=\"interrupted (exit 129)\""),
-            "run {run}: no ending in the run log\n{log}"
+            "run {run}: no ending in the run log\n{log}\n{output}"
         );
         assert!(
             world.file("done").exists(),
-            "run {run}: the stand-in didn't get its grace"
+            "run {run}: the stand-in didn't get its grace\n{output}"
         );
-        assert!(gone(stand_in.0), "run {run}: the stand-in was left running");
+        assert!(
+            gone(stand_in.0),
+            "run {run}: the stand-in was left running\n{output}"
+        );
     }
 }
 
@@ -323,9 +331,9 @@ fn a_session_scope_stop_takes_the_grace() {
     cmd.args(["--scope", "-q", "--unit", &unit, "-p", "SendSIGHUP=yes"])
         .arg(program)
         .args(["docker", "start"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stdin(Stdio::null());
+    let output = ChildOutput::new(world.dir.path(), "sb");
+    output.attach(&mut cmd);
     let mut sb = KillOnDrop(cmd.spawn().expect("run systemd-run"), None);
     let stand_in = world.stand_in();
     let stopped = Command::new("systemctl")
@@ -340,19 +348,19 @@ fn a_session_scope_stop_takes_the_grace() {
     let code = match status.signal() {
         Some(signal) if signal == Signal::TERM.as_raw() => 143,
         Some(signal) if signal == Signal::HUP.as_raw() => 129,
-        _ => panic!("sb didn't end by SIGTERM or SIGHUP: {status:?}"),
+        _ => panic!("sb didn't end by SIGTERM or SIGHUP: {status:?}\n{output}"),
     };
     let log = world.log();
     assert!(
         log.contains("run finished")
             && log.contains(&format!("outcome=\"interrupted (exit {code})\"")),
-        "no ending in the run log\n{log}"
+        "no ending in the run log\n{log}\n{output}"
     );
     assert!(
         world.file("done").exists(),
-        "the stand-in didn't get its grace"
+        "the stand-in didn't get its grace\n{output}"
     );
-    assert!(gone(stand_in.0), "the stand-in was left running");
+    assert!(gone(stand_in.0), "the stand-in was left running\n{output}");
 }
 
 /// Under `nohup` SIGHUP stays ignored (decision 8): a hangup doesn't
@@ -369,19 +377,30 @@ fn under_nohup_a_hangup_does_not_cancel() {
     world.env(&mut cmd, fake.url());
     cmd.arg(program)
         .args(["docker", "start"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stdin(Stdio::null());
+    // Neither stream a terminal: nohup writes no nohup.out (nohup(1)).
+    let output = ChildOutput::new(world.dir.path(), "sb");
+    output.attach(&mut cmd);
     // nohup execs sb: the same pid.
     let mut sb = KillOnDrop(cmd.spawn().expect("run nohup"), None);
     let stand_in = world.stand_in();
     signal(sb.0.id(), Signal::HUP);
     std::thread::sleep(Duration::from_millis(500));
-    assert!(sb.0.try_wait().expect("try_wait").is_none(), "sb ended");
-    assert!(!gone(stand_in.0), "the stand-in was stopped");
+    assert!(
+        sb.0.try_wait().expect("try_wait").is_none(),
+        "sb ended\n{output}"
+    );
+    assert!(!gone(stand_in.0), "the stand-in was stopped\n{output}");
     signal(sb.0.id(), Signal::TERM);
     let status = sb.0.wait().expect("wait");
-    assert_eq!(status.signal(), Some(Signal::TERM.as_raw()), "{status:?}");
+    assert_eq!(
+        status.signal(),
+        Some(Signal::TERM.as_raw()),
+        "{status:?}\n{output}"
+    );
     let log = world.log();
-    assert!(log.contains("outcome=\"interrupted (exit 143)\""), "{log}");
+    assert!(
+        log.contains("outcome=\"interrupted (exit 143)\""),
+        "{log}\n{output}"
+    );
 }

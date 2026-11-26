@@ -26,6 +26,7 @@ use std::time::{Duration, Instant};
 
 use processes::{KillOnDrop, StandIn, gone, wait_for};
 use rustix::process::{Pid, Signal, kill_process};
+use sb_cli_core::testing::ChildOutput;
 use sb_docker::testing::controller::{Answer, FakeController};
 
 const UNIT: &str = "saltbox_managed_docker_controller.service";
@@ -102,6 +103,12 @@ impl World {
         self.dir.path().join(name)
     }
 
+    /// `timeout`'s and `script`'s stderr (their refusals; the terminal's
+    /// transcript is script's stdout, the pipe [`signal_and_read`] reads).
+    fn script_output(&self) -> ChildOutput {
+        ChildOutput::new(self.dir.path(), "script")
+    }
+
     /// `sb <args>` on a terminal, its controller `url`, started from the
     /// terminal's shell as a user starts it; returns the running `script`
     /// and sb's pid once it is known.
@@ -127,14 +134,14 @@ impl World {
             )
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null());
+            .stderr(self.script_output().stderr());
         let mut child = KillOnDrop(cmd.spawn().expect("run script"), None);
         let pid = wait_for(|| {
             std::fs::read_to_string(&pid_file)
                 .ok()
                 .and_then(|text| text.trim().parse::<i32>().ok())
         })
-        .expect("sb's pid");
+        .unwrap_or_else(|| panic!("sb's pid\n{}", self.script_output()));
         child.1 = Some(pid);
         (child, pid)
     }
@@ -143,10 +150,16 @@ impl World {
 /// Send `signal` to `pid`, time sb's own end, and read the terminal to its
 /// end (script closes its output when the shell is done); the text and
 /// how long sb took.
-fn signal_and_read(child: &mut KillOnDrop, pid: i32, signal: Signal) -> (String, Duration) {
+fn signal_and_read(
+    world: &World,
+    child: &mut KillOnDrop,
+    pid: i32,
+    signal: Signal,
+) -> (String, Duration) {
     kill_process(Pid::from_raw(pid).expect("pid"), signal).expect("kill");
     let sent = Instant::now();
-    wait_for(|| gone(pid).then_some(())).expect("sb ended");
+    wait_for(|| gone(pid).then_some(()))
+        .unwrap_or_else(|| panic!("sb ended\n{}", world.script_output()));
     let took = sent.elapsed();
     let mut text = String::new();
     child
@@ -163,22 +176,23 @@ fn signal_and_read(child: &mut KillOnDrop, pid: i32, signal: Signal) -> (String,
 
 /// The run's common endings: the code, the terminal put back, and the
 /// interrupted rows given.
-fn assert_interrupted(text: &str, code: i32, took: Duration, rows: &[&str]) {
+fn assert_interrupted(world: &World, text: &str, code: i32, took: Duration, rows: &[&str]) {
+    let output = world.script_output();
     assert!(
         took < ENDS_WITHIN,
-        "ended {took:?} after the signal\n{text}"
+        "ended {took:?} after the signal\n{text}\n{output}"
     );
-    assert_eq!(exit_code(text), Some(code), "{text}");
+    assert_eq!(exit_code(text), Some(code), "{text}\n{output}");
     let plain = console::strip_ansi_codes(text);
     for label in rows {
         let row = last_row(&plain, &format!("✗ {label}"));
         assert!(
             row.is_some_and(|r| r.contains("interrupted")),
-            "{label}: {row:?}\n{text}"
+            "{label}: {row:?}\n{text}\n{output}"
         );
     }
-    assert!(echo_restored(text), "{text}");
-    assert!(cursor_hidden_then_shown(text), "{text}");
+    assert!(echo_restored(text), "{text}\n{output}");
+    assert!(cursor_hidden_then_shown(text), "{text}\n{output}");
 }
 
 /// SIGINT and SIGTERM while sb waits between polls: the wait and its
@@ -198,9 +212,10 @@ fn a_signal_mid_wait_interrupts_with_the_notice() {
         wait_for(|| (fake.seen().len() >= 2).then_some(())).expect("the first poll");
         // Into the 5 s sleep between polls.
         std::thread::sleep(Duration::from_millis(50));
-        let (text, took) = signal_and_read(&mut child, pid, signal);
+        let (text, took) = signal_and_read(&world, &mut child, pid, signal);
         assert!(world.file("ran").exists(), "the stand-in ran");
         assert_interrupted(
+            &world,
             &text,
             code,
             took,
@@ -211,7 +226,8 @@ fn a_signal_mid_wait_interrupts_with_the_notice() {
             plain.contains(
                 "the controller may still be starting containers; sb docker ps shows where they are"
             ),
-            "{signal:?}: {text}"
+            "{signal:?}: {text}\n{}",
+            world.script_output()
         );
         // An extra poll on the way out would show here.
         assert_eq!(fake.seen().len(), 2, "{signal:?}: no poll after it");
@@ -232,9 +248,10 @@ fn a_signal_during_the_request_interrupts_with_the_notice() {
         fake.script("/stop", Answer::ok(JOB).after(Duration::from_secs(30)));
         let (mut child, pid) = world.start(fake.url(), "docker stop");
         wait_for(|| (!fake.seen().is_empty()).then_some(())).expect("the request");
-        let (text, took) = signal_and_read(&mut child, pid, signal);
+        let (text, took) = signal_and_read(&world, &mut child, pid, signal);
         assert!(world.file("ran").exists(), "the stand-in ran");
         assert_interrupted(
+            &world,
             &text,
             code,
             took,
@@ -245,7 +262,8 @@ fn a_signal_during_the_request_interrupts_with_the_notice() {
             plain.contains(
                 "the controller may still be stopping containers; sb docker ps shows where they are"
             ),
-            "{signal:?}: {text}"
+            "{signal:?}: {text}\n{}",
+            world.script_output()
         );
     }
 }
@@ -271,8 +289,9 @@ fn a_signal_during_the_check_interrupts_without_a_notice() {
             })
             .expect("systemctl running"),
         );
-        let (text, took) = signal_and_read(&mut child, pid, signal);
+        let (text, took) = signal_and_read(&world, &mut child, pid, signal);
         assert_interrupted(
+            &world,
             &text,
             code,
             took,
@@ -286,8 +305,16 @@ fn a_signal_during_the_check_interrupts_without_a_notice() {
             "{signal:?}: the stand-in was left running"
         );
         let plain = console::strip_ansi_codes(&text);
-        assert!(!plain.contains("not running"), "{signal:?}: {text}");
-        assert!(!plain.contains("may still be"), "{signal:?}: {text}");
+        assert!(
+            !plain.contains("not running"),
+            "{signal:?}: {text}\n{}",
+            world.script_output()
+        );
+        assert!(
+            !plain.contains("may still be"),
+            "{signal:?}: {text}\n{}",
+            world.script_output()
+        );
         assert_eq!(fake.seen().len(), 0);
     }
 }
@@ -320,17 +347,28 @@ fn a_second_signal_kills_a_stuck_systemctl() {
     // exec has sent SIGTERM, which the stand-in ignores: still there.
     std::thread::sleep(Duration::from_millis(300));
     assert!(!gone(stuck), "ignores SIGTERM");
-    let (text, took) = signal_and_read(&mut child, pid, Signal::INT);
+    let (text, took) = signal_and_read(&world, &mut child, pid, Signal::INT);
     assert!(
         took < ENDS_WITHIN,
-        "ended {took:?} after the second signal\n{text}"
+        "ended {took:?} after the second signal\n{text}\n{}",
+        world.script_output()
     );
     assert!(
         wait_for(|| gone(stuck).then_some(())).is_some(),
-        "the stand-in was left running\n{text}"
+        "the stand-in was left running\n{text}\n{}",
+        world.script_output()
     );
-    assert!(echo_restored(&text), "{text}");
-    assert!(cursor_hidden_then_shown(&text), "{text}");
+    assert!(echo_restored(&text), "{text}\n{}", world.script_output());
+    assert!(
+        cursor_hidden_then_shown(&text),
+        "{text}\n{}",
+        world.script_output()
+    );
     // Ended by the first signal (cli-core's forced exit; exec decision 7).
-    assert_eq!(exit_code(&text), Some(130), "{text}");
+    assert_eq!(
+        exit_code(&text),
+        Some(130),
+        "{text}\n{}",
+        world.script_output()
+    );
 }
