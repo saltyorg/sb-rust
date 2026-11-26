@@ -270,20 +270,59 @@ const inTestModule = (f, lines, n) => {
   }
   return testModules.get(f).some(([from, to]) => n > from && n < to);
 };
+// The work tree's lines of `f` (none when it is gone), read once.
 const workLines = new Map();
+const workText = (f) => {
+  if (!workLines.has(f)) {
+    let content = null;
+    try { content = readFileSync(f, 'utf8'); } catch (e) { if (e.code !== 'ENOENT') bail('could not read ' + f); }
+    workLines.set(f, content === null ? [] : content.split('\n'));
+  }
+  return workLines.get(f);
+};
 for (const { file, text, line } of added) {
   if (!isRust(file) || !DISCARDS.test(text) || REASON_AFTER.test(text)) continue;
-  if (!workLines.has(file)) {
-    let content = null;
-    try { content = readFileSync(file, 'utf8'); } catch (e) { if (e.code !== 'ENOENT') bail('could not read ' + file); }
-    workLines.set(file, content === null ? [] : content.split('\n'));
-  }
-  const lines = workLines.get(file);
+  const lines = workText(file);
   if (!isTestFile(file) && !inTestModule(file, lines, line)) continue;
   let above = line - 2;
   while (above >= 0 && STDIO_STEP.test(lines[above])) above--;
   if (above >= 0 && REASON_LINE.test(lines[above])) continue;
   flag('output-discarded', file, text);
+}
+
+// 2e. A skip by hand: an added early return in test code (as 2d reads it)
+// whose condition reads the root ask or the euid (`SB_TEST_ROOT`,
+// `effective_uid`, `geteuid`, `is_root`), outside sb-cli-core's testing.rs.
+// The tests skip through that module (`testing::root_tests`,
+// `testing::skip`), which lists each skip for the gate; a hand-rolled one
+// passes unseen. The condition's line holds `if`, `else` (a `let ... else`
+// too) or `match`; the return is on that line or in the next few, up to
+// the block's closing brace, or the line alone when its braces close there.
+// Reported for the reviewer, not blocking: a test that only branches on the
+// euid can still be right. Not seen: a skip whose condition reads something
+// else (a variable set from the euid), a return added to a block that was
+// there, one past an earlier arm's block body or in an `else` block, and
+// a name rustfmt moved off the condition's line.
+const SKIP_CONDITION = /^(?=.*\b(if|else|match)\b)(?=.*\b(SB_TEST_ROOT|effective_uid|geteuid|is_root)\b)/;
+const SKIP_HELPER = 'crates/cli-core/src/testing.rs';
+const uncommented = (l) => l.replace(/\/\/.*$/, '');
+for (const { file, text, line } of added) {
+  const code = uncommented(text);
+  if (!isRust(file) || file === SKIP_HELPER || !SKIP_CONDITION.test(code)) continue;
+  const lines = workText(file);
+  if (!isTestFile(file) && !inTestModule(file, lines, line)) continue;
+  // A block opened and closed on the condition's line is all of it; else
+  // the lines after it, up to the block's closing brace (`line` is
+  // 1-based, so lines[line] is the one after it).
+  const block = [code];
+  const opens = (code.match(/\{/g) ?? []).length;
+  if (opens === 0 || opens !== (code.match(/\}/g) ?? []).length) {
+    for (let n = line; n < Math.min(lines.length, line + 5); n++) {
+      block.push(uncommented(lines[n]));
+      if (/^\s*\}/.test(lines[n])) break;
+    }
+  }
+  if (block.some((l) => /\breturn\b/.test(l))) flag('skip-added', file, text);
 }
 
 // 5. The gate files: the files outside Rust and CONSTRAINTS.md that hold
@@ -699,11 +738,11 @@ for (const { file, text } of added) {
 
 // 6. The reported findings (ADR-029): printed for the code reviewer, who
 // judges each against the commit message; they never fail the run.
-const REPORTED = ['assertion-removed', 'test-removed', 'test-deleted', 'gate-line-removed'];
+const REPORTED = ['assertion-removed', 'test-removed', 'test-deleted', 'gate-line-removed', 'skip-added'];
 const reported = findings.filter((f) => REPORTED.includes(f.rule));
 findings.splice(0, findings.length, ...findings.filter((f) => !REPORTED.includes(f.rule)));
 if (reported.length) {
-  console.log('floor-guard: ' + reported.length + ' removal(s) for the code reviewer to judge (not blocking):');
+  console.log('floor-guard: ' + reported.length + ' finding(s) for the code reviewer to judge (not blocking):');
   for (const f of reported) console.log(`  [${f.rule}] ${f.file}: ${f.text}`);
 }
 

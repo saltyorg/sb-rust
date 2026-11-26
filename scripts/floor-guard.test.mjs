@@ -81,7 +81,7 @@ const run = (base, change, { commit = false, config = {}, message = 'test', base
 };
 
 // The findings that are only reported, never blocking (ADR-029).
-const REPORTED = ['assertion-removed', 'test-removed', 'test-deleted', 'gate-line-removed'];
+const REPORTED = ['assertion-removed', 'test-removed', 'test-deleted', 'gate-line-removed', 'skip-added'];
 const isReported = (finding) => REPORTED.includes(finding.split(' ')[0]);
 // flags: the change gives exactly these findings, in any order, blocking
 // and reported, and at least one blocks, so the run fails. reports: it
@@ -1122,6 +1122,43 @@ test('a test: a discard in a test module, a tests.rs or a new test file is flagg
   const NEW = 'crates/sb/tests/new.rs';
   flags({}, { [NEW]: spawnRs[SPAWN].replace(STDIN, STDIN + '        .stdout(Stdio::null())\n') }, 'output-discarded ' + NEW);
   flags(spawnRs, edit(spawnRs, SPAWN, STDIN, STDIN + '        .stdout(Stdio::null())\n'), discarded, { commit: true });
+});
+
+// A skip by hand (2e): an early return on the root ask or the euid, in
+// test code, is reported; the helper's own form, and production code, are
+// clean.
+const handSkip = (cond) => '        if ' + cond + ' {\n            return;\n        }\n';
+const ADDS = '        assert_eq!(add(1, 2), 3);\n';
+test('a test: an added early return on the root ask or the euid is reported, the helper\'s form is clean', () => {
+  const skipped = 'skip-added ' + LIB;
+  for (const cond of ['rustix::process::geteuid().as_raw() != 0', '!nix::unistd::Uid::effective().is_root()',
+    'sb_cli_core::root::effective_uid() != 0', 'std::env::var_os("SB_TEST_ROOT").is_none_or(|v| v != "1")']) {
+    reports(libRs, edit(libRs, LIB, ADDS, handSkip(cond) + ADDS), skipped);
+  }
+  // On one line, as a let-else, and in a tests/ file.
+  reports(libRs, edit(libRs, LIB, ADDS, '        if geteuid() != 0 { return; }\n' + ADDS), skipped);
+  reports(libRs, edit(libRs, LIB, ADDS, '        let Some(_) = std::env::var_os("SB_TEST_ROOT") else {\n            return;\n        };\n' + ADDS),
+    skipped);
+  const NEW = 'crates/sb/tests/new.rs';
+  reports({}, { [NEW]: '#[test]\nfn t() {\n' + handSkip('geteuid() != 0') + '}\n' }, 'skip-added ' + NEW);
+  reports(libRs, edit(libRs, LIB, ADDS, '        match rustix::process::geteuid().as_raw() {\n            0 => {}\n            _ => return,\n        }\n' + ADDS),
+    skipped);
+  // The helper's form; a branch on the euid with no return, and one whose
+  // block ends before a return of something else, on its line or below; a
+  // comment, on its own line or after the helper's call; the helper
+  // itself; production code.
+  clean(libRs, edit(libRs, LIB, ADDS, handSkip('!sb_cli_core::testing::root_tests()') + ADDS));
+  clean(libRs, edit(libRs, LIB, ADDS, '        let expected = if geteuid() == 0 { 3 } else { 3 };\n        assert_eq!(add(1, 2), expected);\n' + ADDS));
+  clean(libRs, edit(libRs, LIB, ADDS, '        let uid = if geteuid() == 0 { 0 } else { 1 };\n        let Some(_) = Some(uid) else {\n            return;\n        };\n' + ADDS));
+  clean(libRs, edit(libRs, LIB, ADDS, '        if geteuid() == 0 {\n            assert_eq!(add(0, 0), 0);\n        }\n        if add(1, 1) != 2 {\n            return;\n        }\n'
+    + ADDS));
+  clean(libRs, edit(libRs, LIB, ADDS, '        // if geteuid() != 0 { return; }\n' + ADDS));
+  clean(libRs, edit(libRs, LIB, ADDS, '        if !sb_cli_core::testing::root_tests() { // not geteuid\n            return;\n        }\n' + ADDS));
+  const HELPER = 'crates/cli-core/src/testing.rs';
+  clean({ [HELPER]: libRs[LIB] }, edit({ [HELPER]: libRs[LIB] }, HELPER, ADDS, handSkip('std::env::var_os("SB_TEST_ROOT").is_none()') + ADDS));
+  clean(libRs, edit(libRs, LIB, '    a + b\n', handSkip('geteuid() != 0').replace(/^ {4}/gm, '') + '    a + b\n'));
+  // Reported once committed too, and never blocking.
+  reports(libRs, edit(libRs, LIB, ADDS, handSkip('geteuid() != 0') + ADDS), skipped, { commit: true });
 });
 
 const CONS = 'CONSTRAINTS.md';
