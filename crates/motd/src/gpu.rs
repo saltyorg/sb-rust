@@ -907,29 +907,35 @@ mod tests {
         }
     }
 
-    /// On the host's own pci.ids where it has one (read only), the
-    /// parser gives the reference's names for every vendor and device in
-    /// it, all wanted at once, and the same names for one vendor at a
-    /// time (a sample, and the display vendors).
+    /// On upstream's whole pci.ids, pinned in the repository (its
+    /// PROVENANCE.md; no test reads the host's copy), the parser gives
+    /// the reference's names for every vendor and device in it, all
+    /// wanted at once, and the same names for one vendor at a time (a
+    /// sample, and the display vendors).
     #[test]
-    fn the_parser_matches_the_text_parser_on_the_hosts_pci_ids() {
-        let Ok(host) = read_ids(Path::new("/usr/share/misc/pci.ids"), IDS_CAP) else {
-            return;
-        };
-        let every: Vec<u16> = String::from_utf8_lossy(&host)
+    fn the_parser_matches_the_text_parser_on_upstream_pci_ids() {
+        let path =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/pci-ids-upstream/pci.ids");
+        let upstream = read_ids(&path, IDS_CAP).unwrap();
+        let every: Vec<u16> = String::from_utf8_lossy(&upstream)
             .lines()
             .filter_map(|line| {
                 line.get(..4)
                     .and_then(|id| u16::from_str_radix(id, 16).ok())
             })
             .collect();
-        assert!(every.len() > 2000, "{}", every.len());
-        let all = reference(&host, &every);
-        assert_eq!(parse(&host, &every), all);
-        assert!(all.devices.len() > 20_000, "{}", all.devices.len());
+        let all = reference(&upstream, &every);
+        assert_eq!(parse(&upstream, &every), all);
+        // The pinned copy's own counts, so the comparison above is of the
+        // whole file: its vendor lines and device lines before the class
+        // section, each ID once.
+        assert_eq!(
+            (all.vendors.len(), all.devices.len(), all.malformed),
+            (2499, 20590, 0)
+        );
         let sample = every.iter().step_by(20).copied();
         for vendor in sample.chain([0x10de, 0x8086, 0x1002, 0x1a03, 0x15ad, 0x1234, 0x1af4]) {
-            let one = parse(&host, &[vendor]);
+            let one = parse(&upstream, &[vendor]);
             assert_eq!(
                 one.vendors.get(&vendor),
                 all.vendors.get(&vendor),
@@ -943,7 +949,7 @@ mod tests {
                 .collect();
             assert_eq!(one.devices, devices, "{vendor:04x}");
         }
-        assert_eq!(parse(&host, &[0xffff]), reference(&host, &[0xffff]));
+        assert_eq!(parse(&upstream, &[0xffff]), reference(&upstream, &[0xffff]));
     }
 
     /// Each wanted vendor's block is found wherever it is: at the file's

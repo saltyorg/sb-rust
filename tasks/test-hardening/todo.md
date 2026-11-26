@@ -12,7 +12,7 @@ invented; no test reads the host's data.
 
 ## Ahead of the batches
 
-- [ ] 2.6: the pci.ids comparison reads a pinned upstream copy, never the
+- [x] 2.6: the pci.ids comparison reads a pinned upstream copy, never the
       host's (the fix for CI run 45746849992).
 
 ## Batch 1: fix first
