@@ -22,7 +22,7 @@ invented; no test reads the host's data.
 - [x] 1.3a: every other skip goes through the helper.
 - [ ] 1.3b: the floor guard reports a new hand-rolled skip; the
       CONSTRAINTS.md bullet.
-- [ ] 1.4: `sb logs` tests are root-gated, and isolation.rs catches the
+- [x] 1.4: `sb logs` tests are root-gated, and isolation.rs catches the
       next one.
 - [ ] 1.5: the systemd hangup test runs in `check.sh full` (Q2).
 - [ ] 1.6: sb-repo's tests ignore an inherited `GIT_DIR` and the host's

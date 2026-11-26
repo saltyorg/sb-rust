@@ -10,6 +10,7 @@
 use std::collections::HashMap;
 
 use crate::logs_pty::{self, Pty, World};
+use crate::root_gate;
 use sb_docker::testing::{FakeEngine, FakeEntry, FakeLog, Options, container_event};
 use serde_json::{Value, json};
 
@@ -63,6 +64,9 @@ fn world(engine: &FakeEngine) -> World {
 /// log has the source and none of its content.
 #[test]
 fn a_containers_log_follows_across_a_restart() {
+    if !root_gate::requested() {
+        return;
+    }
     let engine = engine();
     let world = world(&engine);
     let mut pty = Pty::spawn(&["logs"], world.envs());
@@ -137,6 +141,9 @@ fn a_containers_log_follows_across_a_restart() {
 /// Ctrl-C in the viewer: exit 130, quietly, the terminal restored.
 #[test]
 fn ctrl_c_exits_130_with_the_terminal_restored() {
+    if !root_gate::requested() {
+        return;
+    }
     let engine = engine();
     let world = world(&engine);
     let mut pty = Pty::spawn(&["logs"], world.envs());
@@ -153,6 +160,9 @@ fn ctrl_c_exits_130_with_the_terminal_restored() {
 /// log from there too.
 #[test]
 fn sb_logs_lists_services_and_containers() {
+    if !root_gate::requested() {
+        return;
+    }
     let units = r#"[{"unit":"docker.service","load":"loaded","active":"active","sub":"running","description":"Docker"}]"#;
     let files = r#"[{"unit_file":"docker.service","state":"enabled","vendor_preset":null}]"#;
     let engine = engine();
@@ -178,6 +188,9 @@ fn sb_logs_lists_services_and_containers() {
 /// "Entry points").
 #[test]
 fn tab_shows_one_kind_at_a_time() {
+    if !root_gate::requested() {
+        return;
+    }
     let units = r#"[{"unit":"docker.service","load":"loaded","active":"active","sub":"running","description":"Docker"}]"#;
     let files = r#"[{"unit_file":"docker.service","state":"enabled","vendor_preset":null}]"#;
     let engine = engine();
@@ -219,6 +232,9 @@ fn tab_shows_one_kind_at_a_time() {
 /// across the restart; Ctrl-C ends it by SIGINT.
 #[test]
 fn piped_stdout_streams_a_containers_log_across_a_restart() {
+    if !root_gate::requested() {
+        return;
+    }
     let engine = engine();
     let world = world(&engine);
     let out = world.dir.path().join("out.txt");
@@ -262,6 +278,9 @@ fn piped_stdout_streams_a_containers_log_across_a_restart() {
 /// following again.
 #[test]
 fn home_and_end_reach_a_containers_ends() {
+    if !root_gate::requested() {
+        return;
+    }
     // One a second from 10:00:00 on 2026-11-13, UTC.
     let entries = (0..3_000_u32)
         .map(|i| {

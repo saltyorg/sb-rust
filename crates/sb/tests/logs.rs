@@ -6,11 +6,15 @@
 //! service's log, an appended entry appears while following, Esc back to
 //! the picker, `q` exits 0, Ctrl-C exits 130, the terminal restored
 //! (alternate screen left, mouse off, the PTY's termios read back in
-//! canonical mode with echo), and no log content in the run log.
+//! canonical mode with echo), and no log content in the run log. Root
+//! runs (`SB_TEST_ROOT=1`): `logs` needs root, and a run that isn't root
+//! would relaunch through sudo (the world's stand-in refuses it); the help
+//! test runs without it, as `--help` and a parse error never relaunch.
 
 mod common;
 mod logs_containers;
 mod logs_pty;
+mod root_gate;
 
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -202,13 +206,19 @@ fn help_is_pinned() {
         "logs_help",
         String::from_utf8_lossy(&help.get_output().stdout)
     );
-    common::sb().args(["logs", "x"]).assert().code(2);
+    // In a world, so its stand-in refuses sudo if `logs` ever took the
+    // argument and relaunched.
+    let out = World::new("[]", "[]").piped(&["logs", "x"]);
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
 }
 
 /// No services: sb-go's message, extended to both kinds, exit 0, before
 /// any screen (so piped too).
 #[test]
 fn no_services_print_the_message_and_exit_0() {
+    if !root_gate::requested() {
+        return;
+    }
     let engine = FakeEngine::start(Options {
         inspects: Vec::new(),
         ..Options::default()
@@ -228,6 +238,9 @@ fn no_services_print_the_message_and_exit_0() {
 /// section's one row, which needs a terminal.
 #[test]
 fn no_services_and_no_docker_open_the_picker_with_the_unreachable_row() {
+    if !root_gate::requested() {
+        return;
+    }
     let world = World::new("[]", "[]");
     let out = world.without_terminal(&["logs"]);
     assert_eq!(out.status.code(), Some(1), "{out:?}");
@@ -248,6 +261,9 @@ fn no_services_and_no_docker_open_the_picker_with_the_unreachable_row() {
 /// A failing `systemctl`: host's error in the error block, exit 1.
 #[test]
 fn a_failing_service_list_is_an_error() {
+    if !root_gate::requested() {
+        return;
+    }
     let world = World::with_script("echo 'Failed to connect to bus' >&2\nexit 1\n");
     let out = world.piped(&["logs"]);
     assert_eq!(out.status.code(), Some(1), "{out:?}");
@@ -263,6 +279,9 @@ fn a_failing_service_list_is_an_error() {
 /// error, exit 1, nothing on stdout.
 #[test]
 fn no_terminal_is_an_error_with_nothing_on_stdout() {
+    if !root_gate::requested() {
+        return;
+    }
     let world = World::new(UNITS, UNIT_FILES);
     world.write_journal();
     let out = world.without_terminal(&["logs"]);
@@ -279,6 +298,9 @@ fn no_terminal_is_an_error_with_nothing_on_stdout() {
 /// screen, exit 1.
 #[test]
 fn an_unreadable_journal_is_an_error_before_the_screen() {
+    if !root_gate::requested() {
+        return;
+    }
     let world = World::new(UNITS, UNIT_FILES);
     std::fs::remove_dir(world.journal()).expect("no journal");
     let mut pty = Pty::spawn(&["logs"], world.envs());
@@ -298,6 +320,9 @@ fn an_unreadable_journal_is_an_error_before_the_screen() {
 /// content.
 #[test]
 fn the_picker_opens_a_services_log_which_follows() {
+    if !root_gate::requested() {
+        return;
+    }
     let world = World::new(UNITS, UNIT_FILES);
     world.write_journal();
     let mut pty = Pty::spawn(&["logs"], world.envs());
@@ -341,6 +366,9 @@ fn the_picker_opens_a_services_log_which_follows() {
 /// Ctrl-C in the viewer: exit 130, quietly, the terminal restored.
 #[test]
 fn ctrl_c_exits_130_with_the_terminal_restored() {
+    if !root_gate::requested() {
+        return;
+    }
     let world = World::new(UNITS, UNIT_FILES);
     world.write_journal();
     let mut pty = Pty::spawn(&["logs"], world.envs());
@@ -357,6 +385,9 @@ fn ctrl_c_exits_130_with_the_terminal_restored() {
 /// Ctrl-C in the picker: exit 130 too.
 #[test]
 fn ctrl_c_in_the_picker_exits_130() {
+    if !root_gate::requested() {
+        return;
+    }
     let world = World::new(UNITS, UNIT_FILES);
     world.write_journal();
     let mut pty = Pty::spawn(&["logs"], world.envs());
@@ -370,6 +401,9 @@ fn ctrl_c_in_the_picker_exits_130() {
 /// `q` in the viewer quits sb, exit 0, rather than going back.
 #[test]
 fn q_in_the_viewer_quits() {
+    if !root_gate::requested() {
+        return;
+    }
     let world = World::new(UNITS, UNIT_FILES);
     world.write_journal();
     let mut pty = Pty::spawn(&["logs"], world.envs());
@@ -388,6 +422,9 @@ fn q_in_the_viewer_quits() {
 /// `q` then quits, exit 0.
 #[test]
 fn question_mark_shows_the_keys_in_the_picker_and_the_log() {
+    if !root_gate::requested() {
+        return;
+    }
     let world = World::new(UNITS, UNIT_FILES);
     world.write_journal();
     let mut pty = Pty::spawn(&["logs"], world.envs());
@@ -425,6 +462,9 @@ fn question_mark_shows_the_keys_in_the_picker_and_the_log() {
 /// in the running sb; the hard limit stays.
 #[test]
 fn the_open_files_limit_is_raised() {
+    if !root_gate::requested() {
+        return;
+    }
     let world = World::new(UNITS, UNIT_FILES);
     world.write_journal();
     let mut pty = Pty::spawn_shell(r#"ulimit -Sn 1024 && exec "$0" logs"#, &[], world.envs());
@@ -490,6 +530,9 @@ fn hello_lit(args: &[&str], extra: &[(&str, Option<&str>)]) -> (bool, bool, vt10
 /// decision 23).
 #[test]
 fn a_match_is_reversed_with_colour_off_and_in_sixteen_colours() {
+    if !root_gate::requested() {
+        return;
+    }
     let reversed = (true, false, vt100::Color::Default);
     assert_eq!(hello_lit(&["logs"], &[]), reversed, "NO_COLOR");
     assert_eq!(
@@ -519,6 +562,9 @@ fn a_match_is_reversed_with_colour_off_and_in_sixteen_colours() {
 /// `.service`).
 #[test]
 fn a_dotted_service_name_opens_its_log() {
+    if !root_gate::requested() {
+        return;
+    }
     let units = r#"[{"unit":"saltbox_managed_a.b.service","load":"loaded","active":"active","sub":"running","description":"a.b"}]"#;
     let files =
         r#"[{"unit_file":"saltbox_managed_a.b.service","state":"enabled","vendor_preset":null}]"#;
@@ -540,6 +586,9 @@ fn a_dotted_service_name_opens_its_log() {
 /// run log has the change but none of the refresh's own records.
 #[test]
 fn a_service_change_shows_within_six_seconds() {
+    if !root_gate::requested() {
+        return;
+    }
     let world = World::new(UNITS, UNIT_FILES);
     world.write_journal();
     let mut pty = Pty::spawn(&["logs"], world.envs());
@@ -590,6 +639,9 @@ fn a_service_change_shows_within_six_seconds() {
 /// none of the log in the run log.
 #[test]
 fn piped_stdout_picks_on_the_terminal_and_streams_the_log() {
+    if !root_gate::requested() {
+        return;
+    }
     let world = World::new(UNITS, UNIT_FILES);
     world.write_journal();
     let out = world.dir.path().join("out.txt");
@@ -627,6 +679,9 @@ fn piped_stdout_picks_on_the_terminal_and_streams_the_log() {
 /// the next line written.
 #[test]
 fn a_closed_reader_ends_the_stream_with_141() {
+    if !root_gate::requested() {
+        return;
+    }
     let world = World::new(UNITS, UNIT_FILES);
     world.write_journal();
     let out = world.dir.path().join("out.txt");
@@ -668,6 +723,9 @@ fn a_closed_reader_ends_the_stream_with_141() {
 /// surroundings and shows it, numbered; Esc clears the search.
 #[test]
 fn a_search_reaches_a_match_outside_the_loaded_lines() {
+    if !root_gate::requested() {
+        return;
+    }
     let world = World::new(UNITS, UNIT_FILES);
     world.write_long_journal(3_000);
     let mut pty = Pty::spawn(&["logs"], world.envs());
@@ -705,6 +763,9 @@ fn a_search_reaches_a_match_outside_the_loaded_lines() {
 /// following again.
 #[test]
 fn home_and_end_reach_a_services_ends() {
+    if !root_gate::requested() {
+        return;
+    }
     let world = World::new(UNITS, UNIT_FILES);
     world.write_long_journal(3_000);
     let mut pty = Pty::spawn(&["logs"], world.envs());

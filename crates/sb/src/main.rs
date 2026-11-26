@@ -2545,6 +2545,75 @@ mod tests {
         assert_eq!(json_document(false, false, &results), None);
     }
 
+    /// tests/isolation.rs's list of the commands that need root is every
+    /// command but `version`, `completion` and clap's `help`, and each of
+    /// them needs root; `version` and `completion generate` don't. (Its
+    /// check that the tests of those commands ask for the root tests reads
+    /// the list.)
+    #[test]
+    fn isolation_lists_every_command_that_needs_root() {
+        // A command's shortest line: each required positional's first value
+        // (or `x`), then, where a command is required, its first one's. A
+        // required option would fail the parse, loudly.
+        fn shortest(cmd: &clap::Command) -> Vec<String> {
+            let mut args = vec![cmd.get_name().to_string()];
+            for arg in cmd.get_positionals().filter(|arg| arg.is_required_set()) {
+                let first = arg
+                    .get_possible_values()
+                    .first()
+                    .map(|v| v.get_name().to_string());
+                args.push(first.unwrap_or_else(|| "x".to_string()));
+            }
+            if cmd.is_subcommand_required_set()
+                && let Some(sub) = cmd.get_subcommands().next()
+            {
+                args.extend(shortest(sub));
+            }
+            args
+        }
+        let text = include_str!("../tests/isolation.rs");
+        let list = &text[text.find("const ROOT_COMMANDS").expect("the list")..];
+        let list = &list[list.find("= [").expect("its start")..list.find("];").expect("its end")];
+        let listed: Vec<&str> = list.split('"').skip(1).step_by(2).collect();
+        // Built, as clap asks before its definitions are read: a command
+        // declared with `defer` has its arguments only then, and clap's
+        // `help` is added
+        // (https://docs.rs/clap/4.6.7/clap/struct.Command.html#method.build).
+        let mut cli = Cli::command();
+        cli.build();
+        let mut root: Vec<&str> = cli
+            .get_subcommands()
+            .map(clap::Command::get_name)
+            // `help` is clap's own, added by the build; it relaunches nothing.
+            .filter(|name| !["version", "completion", "help"].contains(name))
+            .collect();
+        root.sort_unstable();
+        assert_eq!(
+            listed, root,
+            "tests/isolation.rs's ROOT_COMMANDS (sorted) differs from sb's commands that need root"
+        );
+        let needs = |args: &[String]| {
+            let line = std::iter::once("sb".to_string()).chain(args.iter().cloned());
+            Cli::try_parse_from(line)
+                .unwrap_or_else(|e| panic!("sb {args:?}: {e}"))
+                .command
+                .needs_root()
+        };
+        for name in &root {
+            let sub = cli.find_subcommand(name).expect("a command");
+            assert!(
+                needs(&shortest(sub)),
+                "{name}'s shortest line needs no root: leave it out here and of ROOT_COMMANDS"
+            );
+        }
+        assert!(!needs(&["version".to_string()]));
+        assert!(!needs(&[
+            "completion".into(),
+            "generate".into(),
+            "bash".into()
+        ]));
+    }
+
     #[test]
     fn validate_config_needs_root() {
         let command = Command::ValidateConfig { json: false };

@@ -61,6 +61,13 @@ impl World {
             &program,
             format!("#!/bin/sh\nWORLD='{world}'\n{script}"),
         );
+        // A refusing `sudo` first on `PATH`, never the host's: a run that
+        // isn't root relaunches through sudo (`logs` needs root), so a test
+        // that runs one without the root gate fails, saying why.
+        sb_cli_core::testing::write_program(
+            &bin.join("sudo"),
+            "#!/bin/sh\necho 'sb logs tests: sudo refused (a test without root_gate::requested?)' >&2\nexit 97\n",
+        );
         std::fs::create_dir(dir.path().join("journal")).expect("journal");
         std::fs::create_dir(dir.path().join("logs")).expect("logs");
         Self {
@@ -90,8 +97,9 @@ impl World {
     }
 
     /// The environment of every run: `common::apply_sb_env`'s, then the
-    /// world's: the run log's and the journal's directories, the stand-in
-    /// first on `PATH`, and the daemon if one was given.
+    /// world's: the run log's and the journal's directories, the stand-ins
+    /// (`systemctl`, the refusing `sudo`) first on `PATH`, and the daemon
+    /// if one was given.
     pub fn envs(&self) -> Vec<(String, Option<String>)> {
         let mut extra = vec![
             (
