@@ -980,13 +980,9 @@ stale_snapshots() {
   echo "none"
 }
 
-# test_sandbox CMD...: sets `sandboxed` to CMD in the sandbox for a test
-# step: writable are the run's temp directory (the tests' TMPDIR), the
-# worktree's target/ (the builds and coverage data) and the tests' log
-# directory, $SB_LOG_DIR (under target/, so the same, unless it is a link
-# out of it, as the gate's own tests' scratch repositories make it); the
-# rest of the host, the worktree included, is read-only.
-test_sandbox() {
+# test_tmp_make: makes the test steps' temp directory, test_tmp, unless
+# it is made already.
+test_tmp_make() {
   if [[ -z $test_tmp ]]; then
     test_tmp=$(mktemp -d "${TMPDIR:-/tmp}/sb-check.XXXXXX")
     test_tmp=$(cd "$test_tmp" && pwd -P)
@@ -998,6 +994,51 @@ test_sandbox() {
     # directory from a live one's (test_tmp_sweep_stale).
     echo "$$ $(proc_start $$)" >"$test_tmp/.sb-check.pid"
   fi
+}
+
+# skips_report FILE: the tests a run skipped, which sb-cli-core's
+# testing::skip appended to FILE (SB_TEST_SKIPS), each once, after their
+# count (`skipped: N`), or `skipped: none`; FILE is removed. A mutation
+# pass's list holds each test that skipped in its baseline or in any of
+# its mutants, once.
+skips_report() {
+  local sorted='' lines=()
+  # A plain assignment, so a file that can't be read stops the check
+  # (`mapfile < <(...)` would drop sort's status).
+  if [[ -s $1 ]]; then sorted=$(LC_ALL=C sort -u -- "$1"); fi
+  if [[ -n $sorted ]]; then mapfile -t lines <<<"$sorted"; fi
+  if ((${#lines[@]})); then
+    echo "skipped: ${#lines[@]}"
+    printf '%s\n' "${lines[@]}"
+  else
+    echo "skipped: none"
+  fi
+  rm -f -- "$1"
+}
+
+# tests_in_sandbox CMD...: a test run in the sandbox (as in_sandbox), its
+# skips (testing::skip) appended to a file of its own in the run's TMPDIR,
+# then listed (skips_report), whatever the run's status; returns that
+# status. The sandbox is set up outside the `||`, where errexit still
+# stops the check on a failing step.
+tests_in_sandbox() {
+  local status=0
+  test_tmp_make
+  rm -f -- "$test_tmp/skips"
+  test_sandbox env SB_TEST_SKIPS="$test_tmp/skips" "$@"
+  sandboxed_run "$*" || status=$?
+  skips_report "$test_tmp/skips"
+  return "$status"
+}
+
+# test_sandbox CMD...: sets `sandboxed` to CMD in the sandbox for a test
+# step: writable are the run's temp directory (the tests' TMPDIR), the
+# worktree's target/ (the builds and coverage data) and the tests' log
+# directory, $SB_LOG_DIR (under target/, so the same, unless it is a link
+# out of it, as the gate's own tests' scratch repositories make it); the
+# rest of the host, the worktree included, is read-only.
+test_sandbox() {
+  test_tmp_make
   mkdir -p target "$SB_LOG_DIR"
   sandbox_argv --own-pids "$test_tmp" "$(cd target && pwd -P)" "$(cd "$SB_LOG_DIR" && pwd -P)" -- \
     env TMPDIR="$test_tmp" "$@"
@@ -1007,11 +1048,18 @@ test_sandbox() {
 # steps' sandbox (test_sandbox), returning its status; a sandbox that
 # could not be set up (125) is no verdict: exit 2.
 in_sandbox() {
-  local status=0
   test_sandbox "$@"
+  sandboxed_run "$*"
+}
+
+# sandboxed_run WHAT: runs the command test_sandbox set up, `sandboxed`,
+# in its own process group (in_group), returning its status; a sandbox
+# that could not be set up (125) is no verdict: exit 2, naming WHAT.
+sandboxed_run() {
+  local status=0
   in_group "${sandboxed[@]}" || status=$?
   if ((status == 125)); then
-    echo "check: the sandbox could not be set up for: $*" >&2
+    echo "check: the sandbox could not be set up for: $1" >&2
     exit 2
   fi
   return "$status"
@@ -1068,8 +1116,11 @@ mutation_pass() {
   mkdir -p "target/mutants-run-$n" "$SB_LOG_DIR"
   sandbox_argv "$mutation_tmp" "$(cd "target/mutants-run-$n" && pwd -P)" "$(cd "$SB_LOG_DIR" && pwd -P)" -- \
     "${mutants[@]}" -o "target/mutants-run-$n" --timeout 300
-  TMPDIR=$mutation_tmp PATH="$root/target/no-sudo:$PATH" "${sandboxed[@]}" || rc=$?
+  # Each mutant's tests, and the baseline's, append their skips
+  # (testing::skip) to the pass's file, listed once the pass ends.
+  TMPDIR=$mutation_tmp SB_TEST_SKIPS="$mutation_tmp/skips" PATH="$root/target/no-sudo:$PATH" "${sandboxed[@]}" || rc=$?
   mutation_sweeper_stop
+  skips_report "$mutation_tmp/skips"
   if ! mutation_sweep "$mutation_tmp"; then
     # Kept for a look, and not swept again on exit, nor by a later run:
     # it names no check.sh now.
@@ -1204,9 +1255,9 @@ task() {
   if [[ $(id -u) == 0 ]]; then
     echo "in the sandbox; hangup's a_session_scope_stop_takes_the_grace skips (no systemd): run crates/sb/tests/hangup-systemd.sh"
   fi
-  in_sandbox cargo llvm-cov --locked --quiet "${pkg_args[@]}" --lcov --output-path target/lcov.info
+  tests_in_sandbox cargo llvm-cov --locked --quiet "${pkg_args[@]}" --lcov --output-path target/lcov.info
   step "tests (doc tests)"
-  in_sandbox cargo test --locked --quiet --doc "${pkg_args[@]}"
+  tests_in_sandbox cargo test --locked --quiet --doc "${pkg_args[@]}"
   step "changed-line coverage >= ${COVERAGE_MIN}% (diff-cover)"
   # New files are untracked until committed; without --include-untracked
   # they would not count as changed lines.
@@ -1231,7 +1282,7 @@ task() {
   # other crates' release builds left untested.
   step "tests (crates), release build"
   need cargo-nextest
-  in_sandbox cargo nextest run --locked --cargo-profile release-tests --profile release-tests "${pkg_args[@]}"
+  tests_in_sandbox cargo nextest run --locked --cargo-profile release-tests --profile release-tests "${pkg_args[@]}"
   mutation_check
   step "startup: sb --help and sb version, median <= ${STARTUP_MAX_MS} ms"
   need hyperfine

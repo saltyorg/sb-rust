@@ -5,6 +5,109 @@ use std::io::Write as _;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
+/// The variable that asks for the tests that need root (cli-core spec,
+/// Testing strategy): `1`, as `scripts/check.sh` sets it when it runs as
+/// root.
+const ROOT_TESTS: &str = "SB_TEST_ROOT";
+
+/// The file each skip is appended to, when the gate names one
+/// (`scripts/check.sh`, which prints the run's skips after it).
+const SKIPS: &str = "SB_TEST_SKIPS";
+
+/// Whether this run asked for the tests that need root (a private mount
+/// namespace, switching to `nobody`, a root run that logs) with
+/// `SB_TEST_ROOT=1`. Not asked, the calling test is skipped through
+/// [`skip`], so the gate lists it; the caller returns:
+/// `if !root_tests() { return; }`.
+///
+/// # Panics
+///
+/// On any value but `1` (`true`, `yes` look like asking, and are refused
+/// rather than read as not asking), and on `1` without root: asked but not
+/// root is a failure, never a quiet pass.
+#[track_caller]
+#[must_use]
+pub fn root_tests() -> bool {
+    let value = std::env::var_os(ROOT_TESTS);
+    assert!(
+        value.as_ref().is_none_or(|v| v == "1"),
+        "{ROOT_TESTS} must be 1 to run the root tests, got {value:?}"
+    );
+    if value.is_none() {
+        skip("needs root: set SB_TEST_ROOT=1 (as root) to run it");
+        return false;
+    }
+    assert_eq!(
+        crate::root::effective_uid(),
+        0,
+        "{ROOT_TESTS}=1 asks for the root tests, but this run isn't root"
+    );
+    true
+}
+
+/// Records that the calling test is skipped, for `reason`: the line
+/// `skipped: <test> (<file>): <reason>` goes to stderr and, when the gate
+/// names a file in `SB_TEST_SKIPS`, is appended to it. The caller then
+/// returns.
+///
+/// - The test's name is its thread's: libtest runs each test on a thread
+///   named after it, under `cargo test` and under nextest alike (the
+///   toolchain's `library/test/src/lib.rs`, `run_test`:
+///   `thread::Builder::new().name(name...)`), unless the thread limit
+///   refuses that thread, when the test runs on `main`. A skip from a
+///   thread the test started itself is named by that thread, or as
+///   unnamed.
+/// - The file is the caller's (`#[track_caller]`, through
+///   [`root_tests`] too: `std::panic::Location::caller`), since an
+///   integration test's name is its function's alone, and two test
+///   binaries can hold a test of the same name.
+/// - stderr is written directly, not through `eprint!` (which cli-core's
+///   lints deny): libtest doesn't capture such a write, so the line shows
+///   in a `cargo test` run's output whether the test passes or not.
+///
+/// Why a runtime skip, not libtest's own ignore attribute with a reason
+/// (which nextest and libtest list): each root test would then carry a
+/// new one, which the floor guard blocks without the maintainer's
+/// approval (ADR-029), and every test command of the gate would change
+/// (the maintainer, 2026-11-26).
+///
+/// # Panics
+///
+/// When the gate's file can't be appended to: a skip it can't record would
+/// pass unseen.
+#[track_caller]
+pub fn skip(reason: &str) {
+    let thread = std::thread::current();
+    let line = format!(
+        "skipped: {} ({}): {reason}\n",
+        thread.name().unwrap_or("(an unnamed thread)"),
+        std::panic::Location::caller().file()
+    );
+    // Shown or not, the gate's file decides what is listed.
+    let _ = std::io::stderr().write_all(line.as_bytes());
+    if let Some(path) = std::env::var_os(SKIPS) {
+        record_skip(Path::new(&path), &line);
+    }
+}
+
+/// Appends `line` to `path` in one write: a file opened for appending
+/// takes each write whole at its end, whichever thread or process writes
+/// (open(2), `O_APPEND`:
+/// <https://man7.org/linux/man-pages/man2/open.2.html>), so the parallel
+/// tests of one binary, and nextest's process for each test, lose no line.
+#[track_caller]
+fn record_skip(path: &Path, line: &str) {
+    let written = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .and_then(|mut file| file.write_all(line.as_bytes()));
+    // A panic in this body, not a closure's, so it names the caller.
+    if let Err(e) = written {
+        panic!("recording a skip in {}: {e}", path.display());
+    }
+}
+
 /// Writes `contents` to `path`, mode 0755, for a test to run as a
 /// stand-in program.
 ///
@@ -399,6 +502,173 @@ mod tests {
         });
         assert!(status.success(), "{status}");
         assert_eq!(output.stderr_text(), "a\u{fffd}b");
+    }
+
+    /// Set in a child re-run of this binary: the child test calls
+    /// `root_tests()` and prints its answer.
+    const CHILD: &str = "SB_TESTING_ROOT_CHILD";
+
+    /// In a child re-run only: `root_tests()`'s answer, on stdout.
+    #[test]
+    fn root_tests_child() {
+        if std::env::var_os(CHILD).is_some() {
+            let answer = format!("root_tests: {}\n", root_tests());
+            std::io::stdout()
+                .write_all(answer.as_bytes())
+                .expect("stdout");
+        }
+    }
+
+    /// This test binary re-run for `root_tests_child` alone: `cmd` is
+    /// the binary (or a copy of it, under `setpriv`, say), given the test's
+    /// filter here, with `SB_TEST_ROOT` as given (`None`: unset) and its
+    /// skips in `skips`.
+    fn root_child(mut cmd: Command, value: Option<&str>, skips: &Path) -> std::process::Output {
+        cmd.args([
+            "testing::tests::root_tests_child",
+            "--exact",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env(CHILD, "1")
+        .env(SKIPS, skips);
+        match value {
+            Some(v) => cmd.env(ROOT_TESTS, v),
+            None => cmd.env_remove(ROOT_TESTS),
+        };
+        crate::fork_lock::forking(|| cmd.output()).unwrap_or_else(|e| {
+            panic!(
+                "run the child {:?} (as nobody, its directory's parents must be searchable): {e}",
+                cmd.get_program()
+            )
+        })
+    }
+
+    /// This test binary, to re-run.
+    fn this_binary() -> Command {
+        Command::new(std::env::current_exe().expect("test binary"))
+    }
+
+    fn text(bytes: &[u8]) -> String {
+        String::from_utf8_lossy(bytes).into_owned()
+    }
+
+    #[test]
+    fn root_tests_are_not_asked_for_without_the_variable_and_the_test_is_listed() {
+        let dir = tempfile::tempdir().expect("dir");
+        let skips = dir.path().join("skips");
+        let out = root_child(this_binary(), None, &skips);
+        let shown = format!("{}{}", text(&out.stdout), text(&out.stderr));
+        assert!(out.status.success(), "{}: {shown}", out.status);
+        assert!(shown.contains("root_tests: false"), "{shown}");
+        let line = format!(
+            "skipped: testing::tests::root_tests_child ({}): needs root: set SB_TEST_ROOT=1 (as root) to run it\n",
+            file!()
+        );
+        assert!(text(&out.stderr).contains(&line), "{shown}");
+        assert_eq!(std::fs::read_to_string(&skips).expect("skips"), line);
+    }
+
+    #[test]
+    fn root_tests_refuse_a_value_other_than_1() {
+        let dir = tempfile::tempdir().expect("dir");
+        let skips = dir.path().join("skips");
+        for value in ["yes", "true", "0", ""] {
+            let out = root_child(this_binary(), Some(value), &skips);
+            let shown = format!("{}{}", text(&out.stdout), text(&out.stderr));
+            assert_eq!(out.status.code(), Some(101), "{value:?}: {shown}");
+            assert!(
+                shown.contains(&format!(
+                    "SB_TEST_ROOT must be 1 to run the root tests, got Some({value:?})"
+                )),
+                "{value:?}: {shown}"
+            );
+            assert!(!shown.contains("root_tests:"), "{value:?}: {shown}");
+        }
+        assert!(!skips.exists(), "a refused value is no skip");
+    }
+
+    /// Asked with `1`: true as root; a panic without root. A root run
+    /// proves both, the second as `nobody` (`setpriv`) from a copy of this
+    /// binary that `nobody` can reach (a checkout in a 0750 home is out of
+    /// its reach); a run that isn't root proves the second, and skips the
+    /// first.
+    #[test]
+    fn root_tests_are_asked_for_with_1_and_need_root() {
+        let dir = tempfile::tempdir().expect("dir");
+        let skips = dir.path().join("skips");
+        let refused = |out: &std::process::Output| {
+            let shown = format!("{}{}", text(&out.stdout), text(&out.stderr));
+            assert_eq!(out.status.code(), Some(101), "{shown}");
+            assert!(
+                shown.contains("SB_TEST_ROOT=1 asks for the root tests, but this run isn't root"),
+                "{shown}"
+            );
+            assert!(!shown.contains("root_tests:"), "{shown}");
+        };
+        if crate::root::effective_uid() != 0 {
+            refused(&root_child(this_binary(), Some("1"), &skips));
+            skip("needs root: the answer as root");
+            return;
+        }
+        let out = root_child(this_binary(), Some("1"), &skips);
+        let shown = format!("{}{}", text(&out.stdout), text(&out.stderr));
+        assert!(out.status.success(), "{}: {shown}", out.status);
+        assert!(shown.contains("root_tests: true"), "{shown}");
+        // As nobody, from a copy in a directory it can enter.
+        let program_dir = dir.path().join("program");
+        std::fs::create_dir(&program_dir).expect("program dir");
+        for d in [dir.path(), &program_dir] {
+            std::fs::set_permissions(d, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        }
+        let copy = program_dir.join("tests");
+        copy_program(&std::env::current_exe().expect("test binary"), &copy);
+        // nobody's ids on Ubuntu (base-passwd). std sets the group, then the
+        // user, and drops the supplementary groups as root does so
+        // (`CommandExt::uid`, `gid`:
+        // https://doc.rust-lang.org/std/os/unix/process/trait.CommandExt.html).
+        let mut nobody = Command::new(&copy);
+        std::os::unix::process::CommandExt::uid(&mut nobody, 65534);
+        std::os::unix::process::CommandExt::gid(&mut nobody, 65534);
+        // nobody reaches the copy only through TMPDIR's searchable parents
+        // (as `/tmp`'s are).
+        refused(&root_child(nobody, Some("1"), &skips));
+        assert!(!skips.exists(), "an answer, or a refusal, is no skip");
+    }
+
+    /// Lines appended from two threads at once each arrive whole, none
+    /// lost.
+    #[test]
+    fn skips_recorded_from_parallel_threads_are_all_kept() {
+        let dir = tempfile::tempdir().expect("dir");
+        let skips = dir.path().join("skips");
+        let lines = 500;
+        std::thread::scope(|s| {
+            for name in ["first", "second"] {
+                let skips = &skips;
+                s.spawn(move || {
+                    for i in 0..lines {
+                        record_skip(skips, &format!("skipped: {name}: line {i}\n"));
+                    }
+                });
+            }
+        });
+        let recorded = std::fs::read_to_string(&skips).expect("skips");
+        let mut got: Vec<&str> = recorded.lines().collect();
+        got.sort_unstable();
+        let mut want: Vec<String> = ["first", "second"]
+            .iter()
+            .flat_map(|name| (0..lines).map(move |i| format!("skipped: {name}: line {i}")))
+            .collect();
+        want.sort_unstable();
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    #[should_panic(expected = "recording a skip in ")]
+    fn a_skip_that_cant_be_recorded_panics_with_its_path() {
+        let dir = tempfile::tempdir().expect("dir");
+        record_skip(&dir.path().join("no-such-dir/skips"), "skipped: t: r\n");
     }
 
     #[test]

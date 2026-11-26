@@ -1590,6 +1590,24 @@ const stubs = (versions, arch) => {
   out.cargo += 'if [ -n "${SIGNALS_PROBE:-}" ]; then case "$1" in llvm-cov | test | nextest)\n'
     + '  while read -r k v; do [ "$k" = SigIgn: ] && echo "$1 $v" >>"$SIGNALS_PROBE"; done </proc/$$/status ;;\n'
     + 'esac; fi\n';
+  // With STUB_SKIPS set, each test run appends a skip line, as
+  // sb-cli-core's testing::skip does, for each test it names (a
+  // comma-separated list) to the gate's SB_TEST_SKIPS, twice, as tests that
+  // skip in a pass's baseline and in its mutant would.
+  out.cargo += 'if [ -n "${STUB_SKIPS:-}" ]; then case "$1" in llvm-cov | test | nextest | mutants)\n'
+    + '  case " $* " in *" --list "*) ;; *)\n'
+    + '    ( IFS=,; for n in $STUB_SKIPS; do for _ in 1 2; do echo "skipped: $1::$n (crates/foo/tests/t.rs): needs root" >>"${SB_TEST_SKIPS:?}"; done; done ) ;;\n'
+    + '  esac ;;\n'
+    + 'esac; fi\n';
+  // With MUTANTS_LISTED set, cargo-mutants lists one mutant in the wide
+  // pass (sb-foo's), and its run writes MUTANTS_LISTED as its outcomes.
+  out.cargo += 'if [ "$1" = mutants ] && [ -n "${MUTANTS_LISTED:-}" ]; then\n'
+    + '  case " $* " in *" --list "*) case " $* " in *" -p sb-foo "*) echo "crates/foo/src/lib.rs:1:1: replace f with ()" ;; esac; exit 0 ;; esac\n'
+    + '  while [ $# -gt 0 ]; do [ "$1" = -o ] && out="$2"; shift; done\n'
+    + '  mkdir -p "$out/mutants.out"\n'
+    + '  echo "$MUTANTS_LISTED" >"$out/mutants.out/outcomes.json"\n'
+    + '  exit 0\n'
+    + 'fi\n';
   // With RUN_FAILS_AT set (`llvm-cov` or `nextest`), that test run fails
   // as a failing test makes cargo fail, with status 101.
   out.cargo += 'if [ -n "${RUN_FAILS_AT:-}" ] && [ "$1" = "$RUN_FAILS_AT" ]; then exit 101; fi\n';
@@ -2650,6 +2668,39 @@ test('check.sh task: the crates\' tests run once under coverage, then the doc te
   assert.equal(runs[2], 'nextest run --locked --cargo-profile release-tests --profile release-tests' + crates);
   // No cargo test run but the doc tests, and none over the workspace.
   assert.ok(!r.calls.some((c) => c.tool === 'cargo' && /^test (?!.*--doc)/.test(c.args)), r.output);
+});
+
+// The output of the step whose heading starts with `heading`, up to the
+// next step's heading.
+const stepOutput = (output, heading) => {
+  const start = output.indexOf('== ' + heading);
+  assert.ok(start >= 0, heading + ' never ran:\n' + output);
+  const next = output.indexOf('\x1b[1m== ', start);
+  return output.slice(start, next < 0 ? undefined : next);
+};
+const TEST_RUNS = [['tests (crates), with', 'llvm-cov'], ['tests (doc tests)', 'test'], ['tests (crates), release build', 'nextest'],
+  ['mutation score', 'mutants']];
+const MUTANT_CAUGHT = '{"caught":1,"missed":0,"timeout":0}';
+
+test('check.sh task: each test run lists the tests it skipped, each once, with their count, or says none did', () => {
+  const work = { 'crates/foo/src/lib.rs': 'pub fn f() {}\n' };
+  const none = checkRun('task', { work, env: { MUTANTS_LISTED: MUTANT_CAUGHT } });
+  passes(none, 'task');
+  for (const [heading] of TEST_RUNS) {
+    assert.match(stepOutput(none.output, heading), /\nskipped: none\n/, heading + ':\n' + none.output);
+  }
+  // Each test names its run; each skips twice, in sorted order once.
+  const some = checkRun('task', { work, env: { STUB_SKIPS: 'b,a', MUTANTS_LISTED: MUTANT_CAUGHT } });
+  passes(some, 'task');
+  for (const [heading, run] of TEST_RUNS) {
+    const lines = '\nskipped: 2\nskipped: ' + run + '::a (crates/foo/tests/t.rs): needs root\nskipped: ' + run
+      + '::b (crates/foo/tests/t.rs): needs root\n';
+    assert.ok(stepOutput(some.output, heading).includes(lines), heading + ':\n' + some.output);
+  }
+  // A failing run lists its skips too, and still fails.
+  const failed = checkRun('task', { work, env: { STUB_SKIPS: 'a', RUN_FAILS_AT: 'llvm-cov' } });
+  assert.equal(failed.status, 101, failed.output);
+  assert.ok(stepOutput(failed.output, TEST_RUNS[0][0]).includes('\nskipped: 1\nskipped: llvm-cov::a (crates/foo/tests/t.rs): needs root\n'), failed.output);
 });
 
 // insta removes a stale pending snapshot when a test runs, which fails in
