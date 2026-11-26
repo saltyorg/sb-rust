@@ -23,7 +23,7 @@ use ratatui::Frame;
 use ratatui::widgets::Paragraph;
 use rustix::fs::{Mode, OFlags, open};
 use rustix::process::{Pid, Signal, kill_process};
-use rustix::termios::{LocalModes, tcgetattr};
+use rustix::termios::{LocalModes, OptionalActions, tcgetattr, tcsetattr};
 use sb_cli_core::cancel::Shutdown;
 use sb_cli_core::exit::finish_run;
 use sb_cli_core::log::RunLog;
@@ -348,6 +348,50 @@ impl Pty {
         );
     }
 
+    /// Nothing the child left on the terminal is queued for the shell.
+    ///
+    /// Called once the child has exited: the input still on the terminal
+    /// is what the shell would read (or echo) next, raw-mode bytes
+    /// included; the bytes and the screen are shown if some are. The count
+    /// is the kernel's (`FIONREAD`, rustix's `ioctl_fionread`:
+    /// <https://man7.org/linux/man-pages/man2/ioctl_tty.2.html>,
+    /// `TIOCINQ`), taken with canonical mode off a moment and then put
+    /// back: in canonical mode it counts only up to the last line end
+    /// (`n_tty`'s `inq_canon`, in `n_tty_ioctl`:
+    /// <https://github.com/torvalds/linux/blob/v6.8/drivers/tty/n_tty.c>),
+    /// so bytes that came after the restore without a newline would go
+    /// uncounted; bytes left from raw mode become a line when canonical
+    /// mode comes back (`n_tty_set_termios`). The switch drops nothing,
+    /// `TCSANOW` flushes nothing, and what is counted is read here first.
+    fn assert_nothing_queued(&self) {
+        // NOCTTY: the test process never takes the PTY as its terminal;
+        // NONBLOCK: the read of what is counted never waits.
+        let tty = open(
+            &self.tty,
+            OFlags::RDONLY | OFlags::NOCTTY | OFlags::NONBLOCK,
+            Mode::empty(),
+        )
+        .expect("tty");
+        let modes = tcgetattr(&tty).expect("termios");
+        let mut counting = modes.clone();
+        counting.local_modes.remove(LocalModes::ICANON);
+        tcsetattr(&tty, OptionalActions::Now, &counting).expect("non-canonical");
+        let queued = rustix::io::ioctl_fionread(&tty).expect("FIONREAD");
+        let mut bytes = vec![0; usize::try_from(queued).expect("a count")];
+        match rustix::io::read(&tty, &mut bytes) {
+            Ok(read) => bytes.truncate(read),
+            Err(e) => bytes = format!("<not read: {e}>").into_bytes(),
+        }
+        tcsetattr(&tty, OptionalActions::Now, &modes).expect("the modes back");
+        assert_eq!(
+            queued,
+            0,
+            "queued for the shell: {:?}\n{}",
+            String::from_utf8_lossy(&bytes),
+            self.parser.screen().contents()
+        );
+    }
+
     /// What the child wrote on its stdout when it ran on `/dev/tty`.
     fn stdout(&self) -> String {
         std::fs::read_to_string(self.log.path().join("stdout")).unwrap_or_default()
@@ -420,8 +464,10 @@ fn q_leaves_the_screen_once_and_mouse_codes_after_it_never_reach_the_shell() {
         if late {
             continue;
         }
-        // Back in cooked mode the terminal would echo them (`^[[<35;10;5M`).
+        // Back in cooked mode the terminal would echo them (`^[[<35;10;5M`),
+        // and the shell would read them.
         assert!(!raw.contains("<35;10;5M"), "{raw:?}");
+        pty.assert_nothing_queued();
         return;
     }
     panic!("the harness never sent the codes inside the drain");
@@ -449,6 +495,7 @@ fn the_exit_drain_ends_at_the_terminals_answer_and_nothing_reaches_the_shell() {
     let after = &raw[raw.find("\x1b[c").expect("the query")..];
     assert!(!after.contains("<35;10;5M"), "{raw:?}");
     assert!(!after.contains("?62;22c"), "{raw:?}");
+    pty.assert_nothing_queued();
     // Ended by the answer, not the 1 s cap (a wall-clock bound would fail
     // on a loaded host).
     assert!(pty.run_log().contains("answered=true"), "{}", pty.run_log());
@@ -479,6 +526,7 @@ fn a_slow_links_answer_ends_the_drain_and_nothing_reaches_the_shell() {
         let after = &raw[raw.find("\x1b[c").expect("the query")..];
         assert!(!after.contains("<35;10;5M"), "{round_trip} ms: {raw:?}");
         assert!(!after.contains("?62;22c"), "{round_trip} ms: {raw:?}");
+        pty.assert_nothing_queued();
     }
 }
 
@@ -507,6 +555,7 @@ fn a_terminal_that_never_answers_drains_for_the_whole_second() {
     assert!(left >= Duration::from_millis(950), "{left:?}");
     let raw = String::from_utf8_lossy(&pty.raw).into_owned();
     assert!(!raw.contains("<35;10;5M"), "{raw:?}");
+    pty.assert_nothing_queued();
 }
 
 /// The mouse in use when the screen is left: no query (a terminal that
@@ -526,6 +575,7 @@ fn with_the_mouse_in_use_the_exit_drains_the_whole_150_ms_without_a_query() {
     let raw = String::from_utf8_lossy(&pty.raw).into_owned();
     assert!(!raw.contains("\x1b[c"), "{raw:?}");
     assert!(!raw.contains("<35;10;5M"), "{raw:?}");
+    pty.assert_nothing_queued();
     assert!(
         pty.run_log().contains("the mouse in use"),
         "{}",
@@ -545,6 +595,7 @@ fn on_the_tty_the_exit_drain_ends_at_the_answer() {
     assert!(pty.exit().success());
     pty.assert_restored();
     pty.assert_stdout_clean();
+    pty.assert_nothing_queued();
     assert!(pty.run_log().contains("answered=true"), "{}", pty.run_log());
 }
 
