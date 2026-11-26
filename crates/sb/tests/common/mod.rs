@@ -174,8 +174,15 @@ pub fn apply_sb_env(cmd: &mut std::process::Command) {
         test_log_dir().join("no-ansible-playbook"),
     );
     // Nor the developer's colour profile (an `ascii` one would turn colour
-    // off on a terminal); tests that want one set it.
-    cmd.env_remove("SB_COLOR_PROFILE");
+    // off on a terminal), nor their colour switches: `NO_COLOR` takes
+    // colour away, `CLICOLOR=0` too on a terminal, and `CLICOLOR_FORCE`
+    // colours piped output, as anstream and console read them
+    // (<https://docs.rs/anstream/1.0.0/anstream/struct.AutoStream.html#method.choice>,
+    // <https://docs.rs/console/0.16.6/console/fn.colors_enabled.html>);
+    // tests that want one set it.
+    for name in ["SB_COLOR_PROFILE", "NO_COLOR", "CLICOLOR", "CLICOLOR_FORCE"] {
+        cmd.env_remove(name);
+    }
     // Nor the developer's editor: `sb edit` tests set a fake one.
     cmd.env_remove("VISUAL");
     cmd.env_remove("EDITOR");

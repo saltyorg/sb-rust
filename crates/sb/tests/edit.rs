@@ -778,7 +778,8 @@ struct Pty {
 }
 
 impl Pty {
-    /// `sb edit <args>` in `world`, `extra` set after its environment.
+    /// `sb edit <args>` in `world`, with `TERM=xterm-256color` and
+    /// `NO_COLOR`, `extra` set after them.
     fn spawn(world: &World, args: &[&str], extra: &[(&str, &std::ffi::OsStr)]) -> Self {
         Self::spawn_with(world, args, extra, None)
     }
@@ -802,10 +803,7 @@ impl Pty {
             .expect("pty");
         // The environment as `World::edit` gives it, read back from a
         // `Command` built that way.
-        let mut base = world.edit(args);
-        for (key, value) in extra {
-            base.env(key, value);
-        }
+        let base = world.edit(args);
         let mut cmd = match redirect {
             None => CommandBuilder::new(base.get_program()),
             Some(redirect) => {
@@ -816,13 +814,16 @@ impl Pty {
             }
         };
         cmd.args(base.get_args());
-        cmd.env("TERM", "xterm-256color");
-        cmd.env("NO_COLOR", "1");
         for (key, value) in base.get_envs() {
             match value {
                 Some(value) => cmd.env(key, value),
                 None => cmd.env_remove(key),
             }
+        }
+        cmd.env("TERM", "xterm-256color");
+        cmd.env("NO_COLOR", "1");
+        for (key, value) in extra {
+            cmd.env(key, value);
         }
         let child = pair.slave.spawn_command(cmd).expect("spawn");
         let tty = pair.master.tty_name().expect("tty name");

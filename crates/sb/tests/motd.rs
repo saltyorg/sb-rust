@@ -22,12 +22,7 @@ fn motd(args: &[&str], logs: &Path, env: &[(&str, &str)]) -> Output {
     if !args.contains(&"--title") {
         cmd.args(["--title", ""]);
     }
-    cmd.args(args)
-        .env("SB_LOG_DIR", logs)
-        .env_remove("NO_COLOR")
-        .env_remove("SB_COLOR_PROFILE")
-        .env_remove("CLICOLOR")
-        .env_remove("CLICOLOR_FORCE");
+    cmd.args(args).env("SB_LOG_DIR", logs);
     for (name, value) in env {
         cmd.env(name, value);
     }

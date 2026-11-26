@@ -11,6 +11,22 @@ mod common;
 
 use std::process::Output;
 
+/// None of the developer's colour settings reach sb: `common::sb()`
+/// removes each (`apply_sb_env`), so a `CLICOLOR_FORCE=1` or `NO_COLOR=1`
+/// in the shell that runs the tests changes no test's output; a test that
+/// wants one sets it.
+#[test]
+fn the_developers_colour_settings_never_reach_sb() {
+    let cmd = common::sb();
+    let envs: Vec<_> = cmd.get_envs().collect();
+    for name in ["NO_COLOR", "CLICOLOR", "CLICOLOR_FORCE", "SB_COLOR_PROFILE"] {
+        assert!(
+            envs.contains(&(std::ffi::OsStr::new(name), None)),
+            "{name} is not removed: {envs:?}"
+        );
+    }
+}
+
 fn has_escape(bytes: &[u8]) -> bool {
     bytes.contains(&0x1b)
 }
@@ -21,10 +37,7 @@ fn sb_on_a_terminal(args: &str, env: &[(&str, &str)]) -> Output {
     let mut cmd = std::process::Command::new("script");
     common::apply_sb_env(&mut cmd);
     cmd.args(["-qec", &format!("exec '{program}' {args}"), "/dev/null"])
-        .env("TERM", "xterm-256color")
-        .env_remove("NO_COLOR")
-        .env_remove("CLICOLOR")
-        .env_remove("CLICOLOR_FORCE");
+        .env("TERM", "xterm-256color");
     for (k, v) in env {
         cmd.env(k, v);
     }
@@ -133,12 +146,7 @@ fn always_colours_piped_help_even_with_no_color() {
 
 #[test]
 fn piped_help_is_plain_by_default() {
-    let out = common::sb()
-        .arg("--help")
-        .env_remove("CLICOLOR")
-        .env_remove("CLICOLOR_FORCE")
-        .output()
-        .expect("run sb");
+    let out = common::sb().arg("--help").output().expect("run sb");
     assert!(!has_escape(&out.stdout));
 }
 
@@ -224,7 +232,7 @@ fn ascii_reaches_clap_output_too() {
 fn ascii_help_is_the_plain_layout() {
     let help = |args: &[&str], env: Option<&str>| {
         let mut cmd = common::sb();
-        cmd.args(args).env_remove("NO_COLOR");
+        cmd.args(args);
         match env {
             Some(profile) => cmd.env("SB_COLOR_PROFILE", profile),
             None => cmd.env_remove("SB_COLOR_PROFILE"),

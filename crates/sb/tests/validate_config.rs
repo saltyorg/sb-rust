@@ -454,9 +454,6 @@ fn validate_on_a_terminal(
         "/dev/null",
     ])
     .env("TERM", "xterm-256color")
-    .env_remove("NO_COLOR")
-    .env_remove("CLICOLOR")
-    .env_remove("CLICOLOR_FORCE")
     .env("SB_SALTBOX_DIR", root)
     .env("CLOUDFLARE_BASE_URL", format!("{}/client/v4/", fake.url()))
     .env(

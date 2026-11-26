@@ -28,6 +28,8 @@ fn on_a_terminal(cols: u16, args: &str) -> String {
         ])
         .env("TERM", "xterm-256color")
         .env_remove("NO_COLOR")
+        .env_remove("CLICOLOR")
+        .env_remove("CLICOLOR_FORCE")
         .output()
         .expect("run script");
     assert_eq!(out.status.code(), Some(0), "{out:?}");

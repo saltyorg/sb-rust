@@ -109,7 +109,6 @@ fn ps(engine: &FakeEngine, args: &[&str]) -> std::process::Output {
         .args(["docker", "ps"])
         .args(args)
         .env("DOCKER_HOST", engine.host())
-        .env_remove("CLICOLOR_FORCE")
         .output()
         .expect("run sb")
 }

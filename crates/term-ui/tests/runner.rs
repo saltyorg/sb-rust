@@ -19,7 +19,9 @@ fn on_a_terminal_with(args: &str, term: &str) -> Output {
 }
 
 /// The demo with `args` on a 100x30 pseudo-terminal; `NO_COLOR` set to
-/// `no_color` when given, removed otherwise.
+/// `no_color` when given, removed otherwise; none of the developer's
+/// `CLICOLOR` and `CLICOLOR_FORCE` (`CLICOLOR=0` takes colour away on a
+/// terminal).
 fn on_a_terminal_env(args: &str, term: &str, no_color: Option<&str>) -> Output {
     let program = demo().display().to_string();
     let mut cmd = Command::new("script");
@@ -28,7 +30,9 @@ fn on_a_terminal_env(args: &str, term: &str, no_color: Option<&str>) -> Output {
         &format!("stty cols 100 rows 30; exec '{program}' {args}"),
         "/dev/null",
     ])
-    .env("TERM", term);
+    .env("TERM", term)
+    .env_remove("CLICOLOR")
+    .env_remove("CLICOLOR_FORCE");
     match no_color {
         Some(value) => cmd.env("NO_COLOR", value),
         None => cmd.env_remove("NO_COLOR"),

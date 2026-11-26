@@ -38,7 +38,7 @@ invented; no test reads the host's data.
 
 ## Batch 2: environment and tooling
 
-- [ ] 2.1: colour variables are scrubbed in one place.
+- [x] 2.1: colour variables are scrubbed in one place.
 - [ ] 2.2: `SHELL` and the PTY's working directory are the test's.
 - [ ] 2.3: sb's own git reads no host configuration, in sb's tests and in
       the gate's sandbox.

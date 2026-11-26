@@ -146,14 +146,14 @@ impl Pty {
         };
         cmd.args(base.get_args());
         cmd.args(args);
-        cmd.env("TERM", "xterm-256color");
-        cmd.env("NO_COLOR", "1");
         for (key, value) in base.get_envs() {
             match value {
                 Some(value) => cmd.env(key, value),
                 None => cmd.env_remove(key),
             }
         }
+        cmd.env("TERM", "xterm-256color");
+        cmd.env("NO_COLOR", "1");
         let child = pair.slave.spawn_command(cmd).expect("spawn");
         let mut reader = pair.master.try_clone_reader().expect("reader");
         let writer = pair.master.take_writer().expect("writer");

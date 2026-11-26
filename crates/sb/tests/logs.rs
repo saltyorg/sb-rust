@@ -490,9 +490,6 @@ fn hello_lit(args: &[&str], extra: &[(&str, Option<&str>)]) -> (bool, bool, vt10
     let world = World::new(UNITS, UNIT_FILES);
     world.write_journal();
     let mut envs = world.envs();
-    // A developer's CLICOLOR settings would change the colour-on cases.
-    envs.push(("CLICOLOR".to_owned(), None));
-    envs.push(("CLICOLOR_FORCE".to_owned(), None));
     envs.extend(
         extra
             .iter()

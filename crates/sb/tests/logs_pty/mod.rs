@@ -150,7 +150,9 @@ impl World {
     }
 }
 
-/// `common::apply_sb_env`'s environment, then `extra`'s values.
+/// `common::apply_sb_env`'s environment, then `NO_COLOR=1` (which that
+/// environment removes, and these runs keep unless a test removes it),
+/// then `extra`'s values.
 pub fn sb_envs(extra: &[(&str, String)]) -> Vec<(String, Option<String>)> {
     let mut base = std::process::Command::new("sb");
     common::apply_sb_env(&mut base);
@@ -163,6 +165,7 @@ pub fn sb_envs(extra: &[(&str, String)]) -> Vec<(String, Option<String>)> {
             )
         })
         .collect();
+    envs.push(("NO_COLOR".to_owned(), Some("1".to_owned())));
     for (k, v) in extra {
         envs.push(((*k).to_owned(), Some(v.clone())));
     }

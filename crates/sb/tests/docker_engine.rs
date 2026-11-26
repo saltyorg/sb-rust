@@ -25,9 +25,7 @@ fn ps(host: &str, args: &[&str], env: &[(&str, &str)]) -> Output {
     let mut cmd = common::sb();
     cmd.args(["docker", "ps"])
         .args(args)
-        .env("DOCKER_HOST", host)
-        .env_remove("CLICOLOR_FORCE")
-        .env_remove("NO_COLOR");
+        .env("DOCKER_HOST", host);
     for (k, v) in env {
         cmd.env(k, v);
     }
@@ -45,11 +43,7 @@ fn ps_on_a_terminal(host: &str, args: &str, cols: u16, env: &[(&str, &str)]) -> 
         &format!("stty cols {cols} rows 30; exec '{program}' docker ps {args}"),
         "/dev/null",
     ]);
-    cmd.env("DOCKER_HOST", host)
-        .env("TERM", "xterm-256color")
-        .env_remove("NO_COLOR")
-        .env_remove("CLICOLOR")
-        .env_remove("CLICOLOR_FORCE");
+    cmd.env("DOCKER_HOST", host).env("TERM", "xterm-256color");
     for (k, v) in env {
         cmd.env(k, v);
     }
