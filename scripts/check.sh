@@ -20,6 +20,11 @@
 #                                  aarch64 build under QEMU
 #
 # base: the commit the work started from (default HEAD = uncommitted work).
+# SB_GATE_MUTATION=off leaves the mutation passes out, saying so: CI's
+# task job sets it, the passes being the local gate's (CONSTRAINTS.md,
+# Mutation). Only in GitHub Actions (GITHUB_ACTIONS=true): elsewhere a run
+# is the commit's gate, and the local gate is where mutation is judged.
+# Unset or `on`, they run; anything else is refused (exit 2).
 # A change that touches only docs/ and tasks/ ends task and full after the
 # fast checks (and full's commit messages): no build can read those files
 # (ADR-016). With nothing changed since the base, every step runs, but
@@ -105,6 +110,19 @@ stage="${1:-}"
 base="${2:-HEAD}"
 case "$stage" in fast | task | full) ;; *)
   echo "usage: scripts/check.sh fast|task|full [base]" >&2
+  exit 2
+  ;;
+esac
+case ${SB_GATE_MUTATION:-on} in
+on) ;;
+off)
+  if [[ ${GITHUB_ACTIONS:-} != true ]]; then
+    echo "check: SB_GATE_MUTATION=off is CI's (GitHub Actions); the local gate runs the mutation passes" >&2
+    exit 2
+  fi
+  ;;
+*)
+  echo "check: SB_GATE_MUTATION must be on or off, got '$SB_GATE_MUTATION'" >&2
   exit 2
   ;;
 esac
@@ -1323,7 +1341,14 @@ task() {
   step "tests (crates), release build"
   need cargo-nextest
   tests_in_sandbox cargo nextest run --locked --cargo-profile release-tests --profile release-tests "${pkg_args[@]}"
-  mutation_check
+  # CI's task job leaves the passes to the local gate (the header,
+  # SB_GATE_MUTATION; CONSTRAINTS.md, Mutation).
+  if [[ ${SB_GATE_MUTATION:-on} == off ]]; then
+    step "mutation score on changed code >= ${MUTATION_MIN}%"
+    skip "SB_GATE_MUTATION=off: the mutation passes are the local gate's"
+  else
+    mutation_check
+  fi
   step "startup: sb --help and sb version, median <= ${STARTUP_MAX_MS} ms"
   need hyperfine
   cargo build --locked --quiet --release -p sb
@@ -1553,8 +1578,9 @@ full() {
     skip "nothing under .github/, scripts/, crates/*/tests/ or .config/, nor rust-toolchain.toml or CONSTRAINTS.md, changed since $base"
   else
     # The base as the push's earlier commit, so the job's check.sh judges
-    # this run's diff: its changed-line coverage and mutation passes run
-    # on each runner (ci.yml, the push's base).
+    # this run's diff: its changed-line coverage runs on each runner
+    # (ci.yml, the push's base); mutation is the local gate's (ci.yml sets
+    # SB_GATE_MUTATION=off).
     local status=0
     scripts/ci-rehearsal.sh --arch amd64 --base "$base" || status=$?
     # 2: it could not run (no Docker, an image it could not make).

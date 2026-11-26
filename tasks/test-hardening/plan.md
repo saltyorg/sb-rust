@@ -2147,6 +2147,14 @@ alternative weighed are kept.
   limit. Otherwise mutation stays local: CI runs coverage on a push,
   mutation is judged by the local gate only, and ci.yml and CONSTRAINTS.md
   say so.
+  - *Measured* (batch 1's rehearsal, runner-sized containers, cold
+    builds): about 2 min a mutant, the rest of the job about half an
+    hour, so some 45 mutants fit in the 120 minutes; single commits of
+    the recent history hold up to 99.
+  - *Decided* (the maintainer, 2026-11-26): mutation stays local. CI's
+    task job sets `SB_GATE_MUTATION=off`, which check.sh takes in GitHub
+    Actions only, to skip the passes with a line, for pushes and pull
+    requests; coverage and changed-line coverage still run in CI.
 - **Q4. The run where tests share a process.** Moving coverage to
   `cargo llvm-cov nextest` leaves no run with libtest's thread per test,
   which catches shared-process races (signal listeners, tracing interest,

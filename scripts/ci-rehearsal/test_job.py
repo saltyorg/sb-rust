@@ -8,6 +8,7 @@ that image's Python before the job (scripts/ci-rehearsal.sh), or by hand:
 from __future__ import annotations
 
 import os
+import re
 import subprocess  # nosec B404 # the tests run git and bash on their own scratch repositories
 import sys
 import tempfile
@@ -407,6 +408,21 @@ class PushBase(unittest.TestCase):
         base, printed = self.base("elsewhere")
         self.assertEqual(base, "HEAD")
         self.assertIn("isn't in the clone", printed)
+
+    def test_the_task_step_leaves_mutation_to_the_local_gate(self) -> None:
+        data = job.load(CI)
+        step = next(
+            s for s in data["jobs"]["task"]["steps"] if s.get("name") == "check.sh task"
+        )
+        self.assertEqual(step["env"]["SB_GATE_MUTATION"], "off")
+        # Kept through sudo, as check.sh runs as root, with GITHUB_ACTIONS,
+        # which check.sh asks for beside it.
+        kept = re.search(r"--preserve-env=(\S+)", step["run"])
+        if kept is None:
+            self.fail(step["run"])
+        self.assertLessEqual(
+            {"SB_GATE_MUTATION", "GITHUB_ACTIONS"}, set(kept.group(1).split(","))
+        )
 
     def test_a_pull_request_keeps_its_merge_base(self) -> None:
         self.assertEqual(self.base("second", base_ref="main")[0], "first")

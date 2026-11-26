@@ -26,9 +26,10 @@ const guard = join(dirname(fileURLToPath(import.meta.url)), 'floor-guard.mjs');
 // Nor does a FLOOR_APPROVED the caller set for its own uncommitted work
 // (ADR-029): the `approved` option sets it where a case needs it. Nor the
 // gate's SB_TEST_ROOT: a scratch check.sh sets its own as root, and the
-// cases that ask for the root tests set it themselves.
+// cases that ask for the root tests set it themselves. Nor CI's
+// SB_GATE_MUTATION: the cases that leave mutation out set it.
 const env = Object.fromEntries(Object.entries(process.env)
-  .filter(([k]) => !k.startsWith('GIT_') && k !== 'FLOOR_APPROVED' && k !== 'SB_TEST_ROOT'));
+  .filter(([k]) => !k.startsWith('GIT_') && !['FLOOR_APPROVED', 'SB_TEST_ROOT', 'SB_GATE_MUTATION'].includes(k)));
 env.GIT_CONFIG_GLOBAL = '/dev/null';
 env.GIT_CONFIG_SYSTEM = '/dev/null';
 
@@ -2838,6 +2839,33 @@ test('check.sh task: a startup median above STARTUP_MAX_MS fails, one at it pass
   refuses(checkRun('task', { work, env: { HYPERFINE_MEDIAN_HELP: ms(max + 0.01) } }), 1,
     new RegExp('sb --help: median ' + (max + 0.01).toFixed(2) + ' ms'));
   refuses(checkRun('task', { work, env: { HYPERFINE_NO_MEDIAN: '1' } }), 2, /no wall-clock median in the hyperfine output/);
+});
+
+// SB_GATE_MUTATION=off (CI's task job) leaves the mutation passes out,
+// saying so, and runs everything else, changed-line coverage included,
+// in GitHub Actions only: elsewhere it is refused, as any other value is,
+// before any stage; unset or on runs them.
+test('check.sh task: SB_GATE_MUTATION=off skips the mutation passes with a line, coverage still runs', () => {
+  const work = { 'crates/foo/src/lib.rs': 'pub fn f() {}\n' };
+  const mutants = (r) => r.calls.filter((c) => c.tool === 'cargo' && /^mutants /.test(c.args) && !c.args.includes('--version')).length;
+  const off = checkRun('task', { work, env: { SB_GATE_MUTATION: 'off', GITHUB_ACTIONS: 'true', MUTANTS_LISTED: MUTANT_CAUGHT } });
+  passes(off, 'task');
+  assert.equal(mutants(off), 0, off.output);
+  assert.match(stepOutput(off.output, 'mutation score'), /\nskipped: SB_GATE_MUTATION=off: the mutation passes are the local gate's\n/, off.output);
+  assert.ok(off.calls.some((c) => c.tool === 'diff-cover' && c.args.includes('--compare-branch=HEAD')), off.output);
+  assert.ok(off.calls.some((c) => c.tool === 'cargo' && /^llvm-cov /.test(c.args)), off.output);
+  for (const value of [undefined, 'on']) {
+    const r = checkRun('task', { work, env: { MUTANTS_LISTED: MUTANT_CAUGHT, ...(value ? { SB_GATE_MUTATION: value } : {}) } });
+    passes(r, 'task');
+    assert.ok(mutants(r) > 0, String(value) + ':\n' + r.output);
+  }
+  const bad = checkRun('task', { work, env: { SB_GATE_MUTATION: 'no' } });
+  refuses(bad, 2, /check: SB_GATE_MUTATION must be on or off, got 'no'/);
+  assert.doesNotMatch(bad.output, /== /, bad.output);
+  // Off outside GitHub Actions: the local gate is where mutation runs.
+  const local = checkRun('task', { work, env: { SB_GATE_MUTATION: 'off', MUTANTS_LISTED: MUTANT_CAUGHT } });
+  refuses(local, 2, /check: SB_GATE_MUTATION=off is CI's \(GitHub Actions\); the local gate runs the mutation passes/);
+  assert.doesNotMatch(local.output, /== /, local.output);
 });
 
 // With nothing changed since the base, changed-line coverage and mutation

@@ -119,7 +119,13 @@ jobs:
       # before the push",
       # https://docs.github.com/en/webhooks/webhook-events-and-payloads#push),
       # so the push's own diff selects the steps and gets changed-line
-      # coverage and mutation, as a pull request's does. A push with no
+      # coverage, as a pull request's does. The mutation passes are the
+      # local gate's (the maintainer, 2026-11-26), for pushes and pull
+      # requests: SB_GATE_MUTATION=off, kept through sudo with
+      # GITHUB_ACTIONS, which check.sh asks for beside it. Most mutants run
+      # every crate's tests, about 2 min a mutant on a 4-vCPU runner in
+      # the CI rehearsal, against this job's 120-minute limit, and a
+      # push's diff can hold dozens. A push with no
       # usable earlier commit runs every step against HEAD and says why: a
       # new branch (git's all-zeros name for no commit), or a `before` the
       # clone doesn't have or that isn't an ancestor of HEAD (a force
@@ -133,6 +139,7 @@ jobs:
           BASE_REF: ${{ github.base_ref }}
           BEFORE: ${{ github.event.before }}
           SB_TEST_ROOT: "1"
+          SB_GATE_MUTATION: "off"
         run: |
           base=HEAD
           if [[ -n ${BASE_REF} ]]; then
@@ -146,7 +153,8 @@ jobs:
           else
             echo "check.sh task: the push's earlier commit ${BEFORE} isn't an ancestor of HEAD; every step runs against HEAD"
           fi
-          sudo --preserve-env=PATH,HOME,CARGO_HOME,RUSTUP_HOME,SB_TEST_ROOT env "PATH=$PATH" \
+          sudo --preserve-env=PATH,HOME,CARGO_HOME,RUSTUP_HOME,SB_TEST_ROOT,SB_GATE_MUTATION,GITHUB_ACTIONS \
+            env "PATH=$PATH" \
             scripts/check.sh task "$base"
       # The root run leaves root-owned files where rust-cache's post step,
       # as the runner user, saves from.
