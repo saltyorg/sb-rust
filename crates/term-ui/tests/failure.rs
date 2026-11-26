@@ -162,7 +162,9 @@ fn a_sibling_panic_stays_on_screen() {
 const TOKEN: &str = "cf-demo";
 
 /// The demo with `args` on a 100x30 pseudo-terminal, logging under
-/// `log_dir`; what the terminal received.
+/// `log_dir`; what the terminal received. `script` runs the command with
+/// `$SHELL -c` (script(1), ENVIRONMENT): a POSIX shell, whatever the
+/// developer's.
 fn on_a_terminal(args: &str, log_dir: &Path) -> Output {
     let program = demo().display().to_string();
     Command::new("script")
@@ -172,6 +174,7 @@ fn on_a_terminal(args: &str, log_dir: &Path) -> Output {
             "/dev/null",
         ])
         .env("TERM", "xterm-256color")
+        .env("SHELL", "/bin/sh")
         .env("SB_LOG_DIR", log_dir)
         .output()
         .expect("run script")

@@ -4,6 +4,7 @@
 //! on the terminal.
 
 use std::io::{Read as _, Write as _};
+use std::path::Path;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
@@ -35,6 +36,14 @@ impl Pty {
             .expect("pty");
         let mut builder = CommandBuilder::new(cmd.get_program());
         builder.args(cmd.get_args());
+        // In the caller's directory, else the test's, as `cmd` itself
+        // would start: portable-pty starts its child in `$HOME` unless
+        // given one (`CommandBuilder::cwd`, the fallback in `as_command`:
+        // <https://docs.rs/crate/portable-pty/0.9.0/source/src/cmdbuilder.rs>).
+        builder.cwd(
+            cmd.get_current_dir()
+                .map_or_else(|| std::env::current_dir().expect("cwd"), Path::to_path_buf),
+        );
         builder.env("TERM", "xterm-256color");
         for (name, value) in cmd.get_envs() {
             match value {

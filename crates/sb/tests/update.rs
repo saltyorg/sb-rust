@@ -636,8 +636,11 @@ fn under_an_interactive_shell_ctrl_c_leaves_one_blank_line() {
     let script = world.dir.path().join("run.sh");
     std::fs::write(&script, line.join(" ")).expect("script");
     let mut bash = Command::new("bash");
+    // bash's history goes to the world, not the home of the user running
+    // the tests.
     bash.args(["--norc", "--noprofile", "-i"])
-        .env("PS1", "PROMPT> ");
+        .env("PS1", "PROMPT> ")
+        .env("HISTFILE", world.dir.path().join("history"));
     let mut pty = Pty::spawn(&bash);
     assert!(pty.showing("PROMPT> "), "{}", pty.text());
     pty.send(format!("bash {}\r", script.display()).as_bytes());

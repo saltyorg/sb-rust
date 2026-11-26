@@ -183,6 +183,12 @@ pub fn apply_sb_env(cmd: &mut std::process::Command) {
     for name in ["SB_COLOR_PROFILE", "NO_COLOR", "CLICOLOR", "CLICOLOR_FORCE"] {
         cmd.env_remove(name);
     }
+    // Nor the developer's login shell: util-linux `script` runs its
+    // command with `$SHELL -c` (script(1), ENVIRONMENT,
+    // <https://man7.org/linux/man-pages/man1/script.1.html>), and the
+    // tests' commands are POSIX shell; tests that want another shell set
+    // it.
+    cmd.env("SHELL", "/bin/sh");
     // Nor the developer's editor: `sb edit` tests set a fake one.
     cmd.env_remove("VISUAL");
     cmd.env_remove("EDITOR");

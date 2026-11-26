@@ -814,6 +814,11 @@ impl Pty {
             }
         };
         cmd.args(base.get_args());
+        // In the test's working directory, where a std `Command` starts its
+        // child: portable-pty starts it in `$HOME` unless given one
+        // (`CommandBuilder::cwd`, the fallback in `as_command`:
+        // <https://docs.rs/crate/portable-pty/0.9.0/source/src/cmdbuilder.rs>).
+        cmd.cwd(std::env::current_dir().expect("cwd"));
         for (key, value) in base.get_envs() {
             match value {
                 Some(value) => cmd.env(key, value),
@@ -1160,7 +1165,6 @@ fn a_hangup_at_the_question_ends_sb() {
          echo \"EXIT=$?\" > \"$EXIT_FILE.part\" && /bin/mv \"$EXIT_FILE.part\" \"$EXIT_FILE\"\n",
     );
     cmd.args(["-qec", &format!("{}; :", wrapper.display()), "/dev/null"])
-        .env("SHELL", "/bin/sh")
         .env("TERM", "xterm-256color")
         .env("NO_COLOR", "1")
         .env("VISUAL", world.fake())

@@ -186,7 +186,6 @@ fn a_real_hangup_logs_the_ending_and_leaves_no_child() {
     let mut cmd = Command::new("script");
     world.env(&mut cmd, fake.url());
     cmd.args(["-qec", &format!("{}; :", wrapper.display()), "/dev/null"])
-        .env("SHELL", "/bin/sh")
         .env("TERM", "xterm-256color")
         .env("SB", &program)
         .env("DIR", world.dir.path())

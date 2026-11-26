@@ -27,6 +27,9 @@ fn on_a_terminal(cols: u16, args: &str) -> String {
             "/dev/null",
         ])
         .env("TERM", "xterm-256color")
+        // `script` runs the command with `$SHELL -c` (script(1),
+        // ENVIRONMENT): a POSIX shell, whatever the developer's.
+        .env("SHELL", "/bin/sh")
         .env_remove("NO_COLOR")
         .env_remove("CLICOLOR")
         .env_remove("CLICOLOR_FORCE")

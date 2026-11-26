@@ -563,6 +563,11 @@ impl Pty {
             sb.args(base.get_args());
             sb
         };
+        // In the test's working directory, where a std `Command` starts its
+        // child: portable-pty starts it in `$HOME` unless given one
+        // (`CommandBuilder::cwd`, the fallback in `as_command`:
+        // <https://docs.rs/crate/portable-pty/0.9.0/source/src/cmdbuilder.rs>).
+        cmd.cwd(std::env::current_dir().expect("cwd"));
         for (k, v) in base.get_envs() {
             match v {
                 Some(v) => cmd.env(k, v),

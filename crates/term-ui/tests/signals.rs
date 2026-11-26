@@ -19,7 +19,9 @@ fn demo() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_demo"))
 }
 
-/// Run `shell` (with `$DEMO` set) on a terminal; returns all it printed.
+/// Run `shell` (with `$DEMO` set) on a terminal, in `/bin/sh` whatever
+/// the developer's `SHELL` (`script` runs `$SHELL -c`, script(1),
+/// ENVIRONMENT); returns all it printed.
 fn on_a_terminal(shell: &str, log_dir: &Path) -> String {
     let out = Command::new("timeout")
         .args([
@@ -32,6 +34,7 @@ fn on_a_terminal(shell: &str, log_dir: &Path) -> String {
         .env("DEMO", demo())
         .env("SB_LOG_DIR", log_dir)
         .env("TERM", "xterm-256color")
+        .env("SHELL", "/bin/sh")
         .output()
         .expect("run script");
     String::from_utf8_lossy(&out.stdout).into_owned()
@@ -277,6 +280,8 @@ fn type_during_a_run(flag: &str) -> String {
         .env("DEMO", demo())
         .env("SB_LOG_DIR", dir.path())
         .env("TERM", "xterm-256color")
+        // As on_a_terminal: `script` runs `$SHELL -c`.
+        .env("SHELL", "/bin/sh")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()

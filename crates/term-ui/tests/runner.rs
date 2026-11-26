@@ -21,7 +21,8 @@ fn on_a_terminal_with(args: &str, term: &str) -> Output {
 /// The demo with `args` on a 100x30 pseudo-terminal; `NO_COLOR` set to
 /// `no_color` when given, removed otherwise; none of the developer's
 /// `CLICOLOR` and `CLICOLOR_FORCE` (`CLICOLOR=0` takes colour away on a
-/// terminal).
+/// terminal); `script` runs the command with `/bin/sh -c`, whatever the
+/// developer's `SHELL` (script(1), ENVIRONMENT).
 fn on_a_terminal_env(args: &str, term: &str, no_color: Option<&str>) -> Output {
     let program = demo().display().to_string();
     let mut cmd = Command::new("script");
@@ -31,6 +32,7 @@ fn on_a_terminal_env(args: &str, term: &str, no_color: Option<&str>) -> Output {
         "/dev/null",
     ])
     .env("TERM", term)
+    .env("SHELL", "/bin/sh")
     .env_remove("CLICOLOR")
     .env_remove("CLICOLOR_FORCE");
     match no_color {

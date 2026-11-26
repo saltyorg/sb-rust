@@ -217,6 +217,11 @@ impl Pty {
             .expect("pty");
         let mut cmd = CommandBuilder::new(program);
         cmd.args(args);
+        // In the test's working directory, where a std `Command` starts its
+        // child: portable-pty starts it in `$HOME` unless given one
+        // (`CommandBuilder::cwd`, the fallback in `as_command`:
+        // <https://docs.rs/crate/portable-pty/0.9.0/source/src/cmdbuilder.rs>).
+        cmd.cwd(std::env::current_dir().expect("cwd"));
         cmd.env("TERM", "xterm-256color");
         cmd.env("NO_COLOR", "1");
         for (k, v) in envs {
