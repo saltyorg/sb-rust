@@ -74,8 +74,10 @@ fi
 # every stage checks (docker plan Task 9), and python-env's live opt-in
 # would start containers from every test run (module build M21). A
 # leftover SB_TEST_NO_SYSTEMD would skip a test outside the sandbox, the
-# only place that sets it (sandbox_argv).
-unset SB_TEST_BINARY SB_LIVE_DOCKER SB_LIVE_PYTHON SB_TEST_NO_SYSTEMD
+# only place that sets it (sandbox_argv). A leftover SB_CONFIGPARSER_TEXTS
+# (set to freeze sb-config's configparser texts) would have every test
+# run write its texts there.
+unset SB_TEST_BINARY SB_LIVE_DOCKER SB_LIVE_PYTHON SB_TEST_NO_SYSTEMD SB_CONFIGPARSER_TEXTS
 # nextest's runs (the mutation passes' and the release-build tests) read
 # their settings from .config/nextest.toml's profiles alone: an inherited NEXTEST_*
 # variable (a profile, retries, a test-thread count, another config file)

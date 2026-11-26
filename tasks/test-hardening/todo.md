@@ -42,7 +42,7 @@ invented; no test reads the host's data.
 - [x] 2.2: `SHELL` and the PTY's working directory are the test's.
 - [x] 2.3: sb's own git reads no host configuration, in sb's tests and in
       the gate's sandbox.
-- [ ] 2.4: the configparser reference is frozen, from Saltbox's pinned
+- [x] 2.4: the configparser reference is frozen, from Saltbox's pinned
       Python.
 - [ ] 2.5: the disk log test uses invented filesystem figures.
 - [ ] 2.10: no test depends on the host's data, and the gate says so.

@@ -509,9 +509,7 @@ fn a_comment_ends_a_continuation() {
     );
     let deleted = apply(original, &[delete_fact("default", "k")]).unwrap();
     assert_eq!(deleted, "[default]\n# comment\n    second = independent\n");
-    for text in [original, edited.as_str(), deleted.as_str()] {
-        assert_eq!(python_reads(text), ours(text), "{text}");
-    }
+    reads_as_ours(&[original, edited.as_str(), deleted.as_str()]);
 }
 
 // sb-go TestApplyMatchesSaltboxPythonReader
@@ -526,7 +524,7 @@ fn saltboxs_reader_reads_what_the_writer_writes() {
         ],
     )
     .unwrap();
-    let python = python_reads(&written);
+    let python = saltbox_reads(&written);
     assert_eq!(python["default"]["change"], "first\nsecond");
     assert_eq!(python["DEFAULT"]["hidden"], "`literal`");
     assert_eq!(python["empty"]["new"], "None");
@@ -539,8 +537,6 @@ fn saltboxs_reader_reads_what_the_writer_writes() {
 fn an_indented_semicolon_line_after_a_value_continues_it() {
     let original = "[a]\nj = w\nk = v\n\t; x\n; comment\n";
     assert_eq!(values(original)["a"]["k"], "v\n; x");
-    let without_legacy = original.replace("; comment\n", "");
-    assert_eq!(python_reads(&without_legacy), ours(&without_legacy));
     let edited = apply(original, &[set("a", "k", "new")]).unwrap();
     assert_eq!(edited, "[a]\nj = w\nk = new\n; comment\n");
     let deleted = apply(original, &[delete_fact("a", "k")]).unwrap();
@@ -550,14 +546,9 @@ fn an_indented_semicolon_line_after_a_value_continues_it() {
         semicolon.starts_with("[a]\nj = first\n\t; second\nk = v\n"),
         "{semicolon}"
     );
-    for text in [&edited, &deleted, &semicolon] {
-        let without_legacy = text.replace("; comment\n", "");
-        assert_eq!(
-            python_reads(&without_legacy),
-            ours(&without_legacy),
-            "{text}"
-        );
-    }
+    let texts =
+        [original, &edited, &deleted, &semicolon].map(|text| text.replace("; comment\n", ""));
+    reads_as_ours(&texts.each_ref().map(String::as_str));
 }
 
 #[test]
@@ -585,7 +576,7 @@ fn indents_and_whitespace_are_pythons() {
     let original = "[a]\n  k = v\n\u{3000}x = y\nz = w\u{1f}\n";
     assert_eq!(values(original)["a"].len(), 3);
     assert_eq!(values(original)["a"]["z"], "w");
-    assert_eq!(python_reads(original), ours(original));
+    assert_eq!(saltbox_reads(original), ours(original));
     assert_eq!(
         apply(original, &[set("a", "z", "w\u{1f}")]).unwrap_err(),
         DocumentError::Whitespace
@@ -713,7 +704,7 @@ fn saltboxs_reader_reads_the_corpus_as_we_do() {
                 .is_some_and(|name| name.to_string_lossy().starts_with("sb-only-"))
         })
         .collect();
-    let python = python_reads_all(texts.iter().map(|(_, text)| text.as_str()));
+    let python = saltbox_reads_all(texts.iter().map(|(_, text)| text.as_str()));
     for ((path, text), python) in texts.iter().zip(python) {
         assert_eq!(python, Some(ours(text)), "{}", path.display());
     }
@@ -722,59 +713,100 @@ fn saltboxs_reader_reads_the_corpus_as_we_do() {
 type Sections = BTreeMap<String, BTreeMap<String, String>>;
 
 /// Each section's values as sb reads them, `DEFAULT` as one entry, as
-/// [`python_reads_all`] gives Saltbox's.
+/// [`saltbox_reads_all`] gives Saltbox's.
 fn ours(text: &str) -> Sections {
     parse(text).facts().into_iter().collect()
 }
 
-/// Each text read as Saltbox's module reads a fact file: `configparser`
-/// with its settings (`saltbox_facts.py`'s `create_config_parser`, as
-/// sb-go's `readSaltboxPythonFacts`), from a UTF-8 text stream with
-/// universal newlines (its `open(path, encoding="utf-8")`), each section's
-/// own keys (its `_sections`, no `DEFAULT` inherited) and `DEFAULT` as its
-/// own entry. `None` where Python refuses the text. One python3 for all.
-/// Saltbox runs where python3 is, so the test needs it too.
-fn python_reads_all<'a>(texts: impl IntoIterator<Item = &'a str>) -> Vec<Option<Sections>> {
-    const SCRIPT: &str = r"import configparser, io, json, sys
-out = []
-for text in json.load(sys.stdin):
-    c = configparser.ConfigParser(interpolation=None, comment_prefixes=('#',), inline_comment_prefixes=None, default_section='DEFAULT', delimiters=('=',), empty_lines_in_values=False)
-    c.optionxform = str
-    try:
-        c.read_file(io.TextIOWrapper(io.BytesIO(text.encode('utf-8')), encoding='utf-8'))
-    except configparser.Error:
-        out.append(None)
-        continue
-    sections = {s: dict(c._sections[s]) for s in c.sections()}
-    sections['DEFAULT'] = dict(c._defaults)
-    out.append(sections)
-print(json.dumps(out))
-";
-    use std::io::Write as _;
+/// Each text as Saltbox's module reads a fact file (`configparser` with
+/// its settings, `saltbox_facts.py`'s `create_config_parser`, as sb-go's
+/// `readSaltboxPythonFacts`): each section's own keys, `DEFAULT` as its
+/// own entry, `None` where Python refuses the text. Frozen in
+/// `tests/fixtures/configparser/reads.json` by
+/// `scripts/configparser-corpus.py` on the Python minor Saltbox's master
+/// pins, so no test starts a Python. The file is checked against that
+/// Python, in a container, from the repository's root, with
+/// `docker run --rm -v "$PWD:/src:ro" -w /src python:<version>-slim
+/// python3 -I scripts/configparser-corpus.py --check`; after a change to
+/// the texts these tests compare, the script's header says how to freeze
+/// them again. A text the file doesn't hold fails the test.
+fn saltbox_reads_all<'a>(texts: impl IntoIterator<Item = &'a str>) -> Vec<Option<Sections>> {
     let texts: Vec<&str> = texts.into_iter().collect();
-    let mut child = std::process::Command::new("python3")
-        .args(["-c", SCRIPT])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .spawn()
-        .expect("python3 runs (Saltbox's reader is the consumer check)");
-    let input = serde_json::to_vec(&texts).expect("the texts as JSON");
-    child
-        .stdin
-        .take()
-        .expect("stdin")
-        .write_all(&input)
-        .expect("python3 reads the texts");
-    let output = child.wait_with_output().expect("python3 finishes");
-    assert!(output.status.success(), "python3 failed");
-    serde_json::from_slice(&output.stdout).expect("python3's JSON")
+    record(&texts);
+    let frozen = frozen_reads();
+    let missing: Vec<&&str> = texts
+        .iter()
+        .filter(|text| !frozen.contains_key(**text))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "{} of {} texts aren't in the frozen reads, the first {:?}: freeze them as \
+         scripts/configparser-corpus.py's header says",
+        missing.len(),
+        texts.len(),
+        missing[0]
+    );
+    texts.iter().map(|text| frozen[*text].clone()).collect()
 }
 
-fn python_reads(text: &str) -> Sections {
-    python_reads_all([text])
+/// Each of `texts` reads in Saltbox's reader as it reads in sb: one call
+/// of [`saltbox_reads_all`] per test, so that freezing records every text
+/// the test compares at once.
+fn reads_as_ours(texts: &[&str]) {
+    for (text, read) in texts.iter().zip(saltbox_reads_all(texts.iter().copied())) {
+        assert_eq!(read, Some(ours(text)), "{text:?}");
+    }
+}
+
+fn saltbox_reads(text: &str) -> Sections {
+    saltbox_reads_all([text])
         .pop()
         .flatten()
-        .unwrap_or_else(|| panic!("python3 refused {text:?}"))
+        .unwrap_or_else(|| panic!("Saltbox's reader refuses {text:?}"))
+}
+
+/// The frozen reads, by text.
+fn frozen_reads() -> &'static std::collections::HashMap<String, Option<Sections>> {
+    #[derive(serde::Deserialize)]
+    struct Frozen {
+        reads: Vec<Read>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Read {
+        text: String,
+        sections: Option<Sections>,
+    }
+    static FROZEN: std::sync::OnceLock<std::collections::HashMap<String, Option<Sections>>> =
+        std::sync::OnceLock::new();
+    FROZEN.get_or_init(|| {
+        let path =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/configparser/reads.json");
+        let text = std::fs::read_to_string(&path).expect("the frozen reads");
+        let frozen: Frozen = serde_json::from_str(&text).expect("the frozen reads' JSON");
+        frozen
+            .reads
+            .into_iter()
+            .map(|read| (read.text, read.sections))
+            .collect()
+    })
+}
+
+/// With `SB_CONFIGPARSER_TEXTS` naming a directory, each batch of texts
+/// compared is written there as a JSON list, a file per call, for
+/// `scripts/configparser-corpus.py --texts` to freeze. Read from the
+/// environment on purpose: only the person freezing the texts sets it;
+/// unset (every gate and CI run), nothing is written.
+fn record(texts: &[&str]) {
+    static CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let Some(dir) = std::env::var_os("SB_CONFIGPARSER_TEXTS") else {
+        return;
+    };
+    let call = CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let thread = std::thread::current();
+    let name = thread.name().unwrap_or("test").replace("::", "-");
+    let path = Path::new(&dir).join(format!("{name}-{call}.json"));
+    std::fs::write(&path, serde_json::to_vec(texts).expect("the texts as JSON"))
+        .unwrap_or_else(|err| panic!("{}: {err}", path.display()));
 }
 
 /// A generated fact file and what it holds.
@@ -1114,7 +1146,7 @@ fn generated_documents_round_trip_and_edits_touch_only_their_lines() {
 #[test]
 fn saltboxs_reader_reads_generated_and_edited_documents_as_we_do() {
     let texts: Vec<String> = (0..300).flat_map(|seed| edited_texts(seed, true)).collect();
-    let python = python_reads_all(texts.iter().map(String::as_str));
+    let python = saltbox_reads_all(texts.iter().map(String::as_str));
     for (text, python) in texts.iter().zip(python) {
         assert_eq!(python, Some(ours(text)), "{text:?}");
     }

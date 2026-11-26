@@ -1705,8 +1705,9 @@ the test's directory.
   facts/*_test.go (CRLF, continuations, comments between keys, brackets
   in keys, `;` comments and indented `;` continuations, the lossless
   refusals, CR and NUL, a lone CR, duplicates, `DEFAULT`), checked
-  against Saltbox's own reader (python3 configparser with
-  saltbox_facts.py's settings). A property test: parse then write
+  against Saltbox's own reader (configparser with saltbox_facts.py's
+  settings, its reads frozen from the Python Saltbox pins by
+  scripts/configparser-corpus.py). A property test: parse then write
   with no changes gives the same bytes. Files Saltbox's own writer
   produces (tab continuations, `True`/`False`) are fixtures, written by
   hand from saltbox_facts.py's rules.
