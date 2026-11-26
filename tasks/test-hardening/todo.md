@@ -20,7 +20,7 @@ invented; no test reads the host's data.
 - [x] 1.1: one skip mechanism, and the gate's report of skips.
 - [x] 1.2: the gate refuses a root run it asked for and didn't get.
 - [x] 1.3a: every other skip goes through the helper.
-- [ ] 1.3b: the floor guard reports a new hand-rolled skip; the
+- [x] 1.3b: the floor guard reports a new hand-rolled skip; the
       CONSTRAINTS.md bullet.
 - [x] 1.4: `sb logs` tests are root-gated, and isolation.rs catches the
       next one.
