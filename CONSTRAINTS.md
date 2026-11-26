@@ -87,7 +87,11 @@ tooling.
 All of the above but the two journal rows (and the CI rehearsal's opt-in
 arm64 runners) run through `scripts/check.sh fast|task|full [base]`.
 `fast` runs after edits, `task` before handing work back (a few minutes),
-and `full` before committing. In CI, ci.yml runs `task` and release.yml
+and `full` before committing. In CI, ci.yml runs `task` against a base:
+for a pull request its merge base, for a push the commit the push moved
+the branch from, so the push's own diff selects the steps and gets
+changed-line coverage and mutation. A push with no usable earlier commit
+(a new branch, a force push) runs every step against HEAD. release.yml
 runs `full` on each release tag. Every failing check blocks.
 
 What a run covers follows the files that differ from the base

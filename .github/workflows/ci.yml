@@ -113,20 +113,38 @@ jobs:
           scripts/install-check-jsonschema.sh "$RUNNER_TEMP/check-jsonschema" "$RUNNER_TEMP/bin"
           echo "$RUNNER_TEMP/bin" >>"$GITHUB_PATH"
           rustup component add llvm-tools
-      # A pull request is checked against what it merges into; a push to
-      # main with no base checks everything (check.sh: nothing changed
-      # since the base runs every step). As root, as check.sh runs its
-      # sandbox. The root tests are asked for explicitly, SB_TEST_ROOT=1
-      # kept through sudo: check.sh refuses the ask in a run that isn't
-      # root, so a run that lost its root fails instead of skipping them.
+      # check.sh task runs against a base: for a pull request its merge
+      # base, for a push the commit the push moved the branch from (the
+      # push event's `before`: "The SHA of the most recent commit on ref
+      # before the push",
+      # https://docs.github.com/en/webhooks/webhook-events-and-payloads#push),
+      # so the push's own diff selects the steps and gets changed-line
+      # coverage and mutation, as a pull request's does. A push with no
+      # usable earlier commit runs every step against HEAD and says why: a
+      # new branch (git's all-zeros name for no commit), or a `before` the
+      # clone doesn't have or that isn't an ancestor of HEAD (a force
+      # push). The clone has every branch and tag (fetch-depth 0). As root, as check.sh
+      # runs its sandbox. The root tests are asked for explicitly,
+      # SB_TEST_ROOT=1 kept through sudo: check.sh refuses the ask in a
+      # run that isn't root, so a run that lost its root fails instead of
+      # skipping them.
       - name: check.sh task
         env:
           BASE_REF: ${{ github.base_ref }}
+          BEFORE: ${{ github.event.before }}
           SB_TEST_ROOT: "1"
         run: |
           base=HEAD
           if [[ -n ${BASE_REF} ]]; then
             base=$(git merge-base "origin/${BASE_REF}" HEAD)
+          elif [[ -z ${BEFORE} || ${BEFORE} =~ ^0+$ ]]; then
+            echo "check.sh task: the push has no earlier commit; every step runs against HEAD"
+          elif ! git cat-file -e "${BEFORE}^{commit}"; then
+            echo "check.sh task: the push's earlier commit ${BEFORE} isn't in the clone (a force push?); every step runs against HEAD"
+          elif git merge-base --is-ancestor "${BEFORE}" HEAD; then
+            base=${BEFORE}
+          else
+            echo "check.sh task: the push's earlier commit ${BEFORE} isn't an ancestor of HEAD; every step runs against HEAD"
           fi
           sudo --preserve-env=PATH,HOME,CARGO_HOME,RUSTUP_HOME,SB_TEST_ROOT env "PATH=$PATH" \
             scripts/check.sh task "$base"

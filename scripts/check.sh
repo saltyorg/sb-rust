@@ -22,7 +22,9 @@
 # base: the commit the work started from (default HEAD = uncommitted work).
 # A change that touches only docs/ and tasks/ ends task and full after the
 # fast checks (and full's commit messages): no build can read those files
-# (ADR-016). With nothing changed since the base, every step runs.
+# (ADR-016). With nothing changed since the base, every step runs, but
+# changed-line coverage and mutation, which then have no line to judge,
+# say so (`skipped: no changed lines since <base>`).
 # Every tool a stage runs is checked against the CONSTRAINTS.md Tools table
 # before the stage starts.
 # Exit: 0 all passed, 1 a check failed, 2 a check could not run (a tool
@@ -1203,7 +1205,13 @@ mutation_check() {
     done
   } >target/changes.diff
   if [[ ! -s target/changes.diff ]]; then
-    skip "no changed crate code"
+    # Nothing changed since the base at all: no line to judge, so the step
+    # says so.
+    if ((${#changed_files[@]} == 0)); then
+      skip "no changed lines since $base"
+    else
+      skip "no changed crate code"
+    fi
     return
   fi
   # A mutant can make sb relaunch itself through sudo; as root with
@@ -1287,9 +1295,14 @@ task() {
   tests_in_sandbox cargo test --locked --quiet --doc "${pkg_args[@]}"
   step "changed-line coverage >= ${COVERAGE_MIN}% (diff-cover)"
   # New files are untracked until committed; without --include-untracked
-  # they would not count as changed lines.
-  diff-cover target/lcov.info --compare-branch="$base" --include-untracked \
-    --fail-under="$COVERAGE_MIN"
+  # they would not count as changed lines. With nothing changed there is
+  # no line to judge, and the run says so rather than passing silently.
+  if ((${#changed_files[@]} == 0)); then
+    skip "no changed lines since $base"
+  else
+    diff-cover target/lcov.info --compare-branch="$base" --include-untracked \
+      --fail-under="$COVERAGE_MIN"
+  fi
   # The crates' tests again, in a release build: a test that passes only
   # at a debug build's speed, or a bug only the optimiser or the missing
   # debug assertions show, fails here. indicatif's rate limit dropped the

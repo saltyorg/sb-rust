@@ -2759,6 +2759,23 @@ test('check.sh task: each test run lists the tests it skipped, each once, with t
   assert.ok(stepOutput(failed.output, TEST_RUNS[0][0]).includes('\nskipped: 1\nskipped: llvm-cov::a (crates/foo/tests/t.rs): needs root\n'), failed.output);
 });
 
+// With nothing changed since the base, changed-line coverage and mutation
+// have no line to judge, and say so; a one-line change to crate code runs
+// both.
+test('check.sh task: an empty diff skips changed-line coverage and mutation with a line, a crate change runs both', () => {
+  const none = checkRun('task');
+  passes(none, 'task');
+  for (const heading of ['changed-line coverage', 'mutation score']) {
+    assert.match(stepOutput(none.output, heading), /\nskipped: no changed lines since HEAD\n/, heading + ':\n' + none.output);
+  }
+  assert.ok(!none.calls.some((c) => c.tool === 'diff-cover' && !c.args.includes('--version')), none.output);
+  const one = checkRun('task', { work: { 'crates/foo/src/lib.rs': 'pub fn f() {}\n' }, env: { MUTANTS_LISTED: MUTANT_CAUGHT } });
+  passes(one, 'task');
+  assert.ok(one.calls.some((c) => c.tool === 'diff-cover' && c.args.includes('--compare-branch=HEAD')), one.output);
+  assert.ok(one.calls.some((c) => c.tool === 'cargo' && /^mutants /.test(c.args) && !c.args.includes('--list')), one.output);
+  assert.doesNotMatch(one.output, /no changed lines since/, one.output);
+});
+
 // hangup's session-scope test needs systemd, which the sandbox hides: full
 // runs it in its container when a file under crates/ or scripts/ changed,
 // in GitHub Actions too; its failure fails the gate and its own exit 2 is
