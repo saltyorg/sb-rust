@@ -7,6 +7,8 @@
 //! Real git on temp dirs (`file://` only); nothing touches a Saltbox
 //! checkout or the network.
 
+mod common;
+
 use std::path::Path;
 use std::process::Command;
 
@@ -17,7 +19,7 @@ use sb_term_ui::{Labels, Options, Runner, Target};
 
 /// `git <args>` in `dir`, which must succeed.
 fn git(dir: &Path, args: &[&str]) {
-    let out = Command::new("git")
+    let out = common::isolate(&mut Command::new("git"))
         // None of the host's git settings, as tests/update.rs's helper:
         // its global and system config files (commit signing, rewrites)
         // and its per-user ignore and attributes files stay out.
@@ -69,7 +71,9 @@ fn every_line_of_an_update_carries_the_run_id() {
     git(&work, &["commit", "--quiet", "-m", "first"]);
     git(&work, &["push", "--quiet", &remote, "master"]);
     git(dir.path(), &["clone", "--quiet", &remote, "checkout"]);
-    let repo = Repo::open("Sandbox", &checkout).expect("open");
+    let repo = Repo::open("Sandbox", &checkout)
+        .expect("open")
+        .with_git(common::isolated_git(dir.path()));
 
     let _run = log.enter();
     let runtime = tokio::runtime::Builder::new_current_thread()

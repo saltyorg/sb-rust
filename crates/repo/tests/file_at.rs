@@ -1,6 +1,8 @@
 //! `Repo::file_at` (repo spec, amended 2026-11-18): a file's text at a
 //! git ref, in a temporary repository made with the host's git.
 
+mod common;
+
 use std::path::Path;
 use std::process::Command;
 
@@ -8,9 +10,10 @@ use sb_repo::{Repo, RepoError};
 use tokio_util::sync::CancellationToken;
 
 /// `git <args>` in `dir`, which must succeed, with none of the host's git
-/// settings (as update.rs's helper).
+/// settings and none of the caller's repository variables (as update.rs's
+/// helper).
 fn git(dir: &Path, args: &[&str]) {
-    let out = Command::new("git")
+    let out = common::isolate(&mut Command::new("git"))
         .args(["-c", "core.excludesFile=/dev/null"])
         .args(["-c", "core.attributesFile=/dev/null"])
         .args(["-c", "user.name=sb", "-c", "user.email=sb@example.invalid"])
@@ -55,12 +58,21 @@ fn token() -> CancellationToken {
     CancellationToken::new()
 }
 
+/// The repository at `path`, its git the isolating stand-in in `bin`
+/// (`common::isolated_git`).
+fn open(path: &Path, bin: &Path) -> Repo {
+    Repo::open("Saltbox", path)
+        .expect("open")
+        .with_git(common::isolated_git(bin))
+}
+
 /// The committed text at `HEAD`, not the working tree's edit; a branch's
 /// own text; a commit without the file reads as none.
 #[tokio::test]
 async fn the_text_at_a_ref_or_none() {
     let dir = fixture();
-    let repo = Repo::open("Saltbox", dir.path()).expect("open");
+    let bin = tempfile::tempdir().expect("bin");
+    let repo = open(dir.path(), bin.path());
     let at = async |reference: &str| {
         repo.file_at(reference, "announcements.yml", &token())
             .await
@@ -82,7 +94,8 @@ async fn the_text_at_a_ref_or_none() {
 #[tokio::test]
 async fn an_unknown_ref_is_named() {
     let dir = fixture();
-    let repo = Repo::open("Saltbox", dir.path()).expect("open");
+    let bin = tempfile::tempdir().expect("bin");
+    let repo = open(dir.path(), bin.path());
     for reference in ["nope", "-p", "--all", "HEAD:announcements.yml"] {
         let err = repo
             .file_at(reference, "announcements.yml", &token())
@@ -111,7 +124,8 @@ async fn a_big_or_binary_file_is_refused() {
     std::fs::write(work.join("cut.yml"), b"ok \xf0\x9f\x98\n").expect("write");
     git(work, &["add", "big.yml", "binary.yml", "cut.yml"]);
     git(work, &["commit", "--quiet", "-m", "files"]);
-    let repo = Repo::open("Saltbox", work).expect("open");
+    let bin = tempfile::tempdir().expect("bin");
+    let repo = open(work, bin.path());
     let err = repo
         .file_at("HEAD", "big.yml", &token())
         .await
@@ -129,7 +143,8 @@ async fn a_big_or_binary_file_is_refused() {
 #[tokio::test]
 async fn outside_a_repository_is_gits_error() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let repo = Repo::open("Saltbox", dir.path()).expect("open");
+    let bin = tempfile::tempdir().expect("bin");
+    let repo = open(dir.path(), bin.path());
     let err = repo
         .file_at("HEAD", "announcements.yml", &token())
         .await
@@ -149,7 +164,8 @@ async fn a_directory_at_the_path_is_no_file() {
     std::fs::write(work.join("folder/inside"), "x\n").expect("write");
     git(work, &["add", "folder"]);
     git(work, &["commit", "--quiet", "-m", "folder"]);
-    let repo = Repo::open("Saltbox", work).expect("open");
+    let bin = tempfile::tempdir().expect("bin");
+    let repo = open(work, bin.path());
     assert_eq!(
         repo.file_at("HEAD", "folder", &token())
             .await
@@ -159,13 +175,13 @@ async fn a_directory_at_the_path_is_no_file() {
 }
 
 /// A git at `path` that runs `then` (shell) when its arguments match the
-/// shell pattern `when`, and the host's git otherwise; each stand-in has
-/// its own path. Written by a child, so no other test's fork makes its
-/// exec fail with ETXTBSY (`write_program`).
+/// shell pattern `when`, and the real git otherwise, isolated as
+/// `common::stand_in` runs it; each stand-in has its own path.
 fn git_that(path: &Path, when: &str, then: &str) -> std::path::PathBuf {
-    let script = format!("#!/bin/sh\ncase \"$*\" in\n  {when}) {then} ;;\nesac\nexec git \"$@\"\n");
-    sb_cli_core::testing::write_program(path, script);
-    path.to_path_buf()
+    common::stand_in(
+        path,
+        &format!("case \"$*\" in\n  {when}) {then} ;;\nesac\nexec git \"$@\"\n"),
+    )
 }
 
 /// git failing at any step after the ref is known is git's failure, its

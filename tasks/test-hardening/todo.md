@@ -25,7 +25,7 @@ invented; no test reads the host's data.
 - [x] 1.4: `sb logs` tests are root-gated, and isolation.rs catches the
       next one.
 - [x] 1.5: the systemd hangup test runs in `check.sh full` (Q2).
-- [ ] 1.6: sb-repo's tests ignore an inherited `GIT_DIR` and the host's
+- [x] 1.6: sb-repo's tests ignore an inherited `GIT_DIR` and the host's
       git configuration (B1 and B2).
 - [ ] 1.7: "nothing reaches the shell" reads what the shell would read.
 - [ ] 1.8a: check.sh's skip lines and ci.yml's base for a push.

@@ -1121,10 +1121,10 @@ mutation_pass() {
   # copy_tree.rs; https://doc.rust-lang.org/std/env/fn.temp_dir.html).
   # Every process still running from them is killed after the pass, or
   # when check.sh exits during it (mutation_sweep). A new directory under
-  # the system's temp directory, never inside a repository: the tests
-  # inherit TMPDIR, and sb-repo's expect git to find no repository above
-  # their temp directories. The physical path, since a process's
-  # executable is named by it.
+  # the system's temp directory (the tests inherit TMPDIR; sb-repo's tests
+  # end their git's search there, GIT_CEILING_DIRECTORIES, so a
+  # repository around it changes nothing). The physical path, since a
+  # process's executable is named by it.
   mutation_tmp=$(mktemp -d "${TMPDIR:-/tmp}/sb-mutants-$n.XXXXXX")
   mutation_tmp=$(cd "$mutation_tmp" && pwd -P)
   # mktemp makes the directory 0700. sb's relaunch tests run a stand-in

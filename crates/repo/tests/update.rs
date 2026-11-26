@@ -3,6 +3,8 @@
 //! and a single-branch clone of it, the shape setup makes. Nothing here
 //! touches a Saltbox checkout or the network (`file://` remotes only).
 
+mod common;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -11,9 +13,10 @@ use sb_repo::{Answer, Choice, Repo, RepoError, branch_choice, branch_notices};
 use sb_term_ui::{Labels, Options, Runner, Step, Target};
 use tokio_util::sync::CancellationToken;
 
-/// `git <args>` in `dir`, which must succeed; its stdout.
+/// `git <args>` in `dir`, which must succeed; its stdout. None of the
+/// caller's repository variables (`common::isolate`).
 fn git(dir: &Path, args: &[&str]) -> String {
-    let out = Command::new("git")
+    let out = common::isolate(&mut Command::new("git"))
         // None of the host's git settings: its global and system config
         // files (commit signing, credential helpers, rewrites) and its
         // per-user ignore and attributes files stay out, so a commit here
@@ -55,6 +58,8 @@ struct Fixture {
     dir: tempfile::TempDir,
     work: PathBuf,
     checkout: PathBuf,
+    /// The git `Repo` runs here (`common::isolated_git`).
+    git: PathBuf,
 }
 
 impl Fixture {
@@ -104,15 +109,21 @@ impl Fixture {
                 checkout.to_str().expect("utf-8"),
             ],
         );
+        let bin = dir.path().join("bin");
+        std::fs::create_dir(&bin).expect("bin");
+        let git = common::isolated_git(&bin);
         Self {
             dir,
             work,
             checkout,
+            git,
         }
     }
 
     fn repo(&self) -> Repo {
-        Repo::open("Sandbox", &self.checkout).expect("open")
+        Repo::open("Sandbox", &self.checkout)
+            .expect("open")
+            .with_git(&self.git)
     }
 
     /// A new commit on `branch` in the remote.
@@ -224,10 +235,10 @@ static SPAWNS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 /// children through `GIT_CONFIG_PARAMETERS`).
 fn recording_git(dir: &Path) -> PathBuf {
     let path = dir.join("git");
-    sb_cli_core::testing::write_program(
+    common::stand_in(
         &path,
-        format!(
-            "#!/bin/sh\nprintf '%s %s\\n' \"$LC_ALL\" \"$GIT_TERMINAL_PROMPT\" >> '{}'\n\
+        &format!(
+            "printf '%s %s\\n' \"$LC_ALL\" \"$GIT_TERMINAL_PROMPT\" >> '{}'\n\
              exec git -c protocol.file.allow=always \"$@\"\n",
             dir.join("env.log").display()
         ),
@@ -239,10 +250,10 @@ fn recording_git(dir: &Path) -> PathBuf {
 /// the real git allowing `file://` submodules, as [`recording_git`].
 fn arguments_git(dir: &Path) -> PathBuf {
     let path = dir.join("git");
-    sb_cli_core::testing::write_program(
+    common::stand_in(
         &path,
-        format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\n\
+        &format!(
+            "printf '%s\\n' \"$*\" >> '{}'\n\
              exec git -c protocol.file.allow=always \"$@\"\n",
             dir.join("args.log").display()
         ),
@@ -302,7 +313,10 @@ async fn the_current_branch_and_a_detached_head() {
 #[tokio::test]
 async fn the_current_branch_outside_a_repository_is_sb_gos_error() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let repo = Repo::open("Sandbox", dir.path()).expect("open");
+    let bin = tempfile::tempdir().expect("bin");
+    let repo = Repo::open("Sandbox", dir.path())
+        .expect("open")
+        .with_git(common::isolated_git(bin.path()));
     let error = repo.current_branch(&token()).await.expect_err("not a repo");
     let text = error.to_string();
     assert!(text.starts_with("failed to get current branch: "), "{text}");
@@ -341,9 +355,9 @@ async fn a_failed_refspec_read_adds_nothing() {
     let fixture = Fixture::new();
     let bin = tempfile::tempdir().expect("bin");
     let path = bin.path().join("git-bad-config");
-    sb_cli_core::testing::write_program(
+    common::stand_in(
         &path,
-        "#!/bin/sh\nif [ \"$1 $2\" = 'config --get-all' ]; then echo 'fatal: bad config line 1' >&2; exit 3; fi\n\
+        "if [ \"$1 $2\" = 'config --get-all' ]; then echo 'fatal: bad config line 1' >&2; exit 3; fi\n\
          exec git \"$@\"\n",
     );
     let repo = fixture.repo().with_git(path);
@@ -436,7 +450,10 @@ async fn an_unset_refspec_is_added() {
 #[tokio::test]
 async fn the_refspec_outside_a_repository_is_sb_gos_error() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let repo = Repo::open("Sandbox", dir.path()).expect("open");
+    let bin = tempfile::tempdir().expect("bin");
+    let repo = Repo::open("Sandbox", dir.path())
+        .expect("open")
+        .with_git(common::isolated_git(bin.path()));
     let error = repo
         .ensure_fetch_all_branches(&token())
         .await
@@ -813,10 +830,10 @@ const ASKED: &str =
 fn flaky_git(dir: &Path, first: &str, retry: &str) -> PathBuf {
     let path = dir.join("git");
     let log = dir.join("calls.log");
-    sb_cli_core::testing::write_program(
+    common::stand_in(
         &path,
-        format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{log}'\n\
+        &format!(
+            "printf '%s\\n' \"$*\" >> '{log}'\n\
              if [ \"$1\" = fetch ]; then echo \"{first}\" >&2; exit 128; fi\n\
              if [ \"$1 $2 $3\" = '-c http.version=HTTP/1.1 fetch' ]; then {retry}; fi\n\
              exec git \"$@\"\n",
@@ -1076,7 +1093,10 @@ fn assert_head_error(error: &RepoError) {
 async fn head_in_an_unborn_repository_is_sb_gos_error() {
     let dir = tempfile::tempdir().expect("tempdir");
     git(dir.path(), &["init", "--quiet"]);
-    let repo = Repo::open("Sandbox", dir.path()).expect("open");
+    let bin = tempfile::tempdir().expect("bin");
+    let repo = Repo::open("Sandbox", dir.path())
+        .expect("open")
+        .with_git(common::isolated_git(bin.path()));
     let error = repo.head(&token()).await.expect_err("unborn");
     assert_head_error(&error);
     assert!(
@@ -1088,7 +1108,10 @@ async fn head_in_an_unborn_repository_is_sb_gos_error() {
 #[tokio::test]
 async fn head_outside_a_repository_is_sb_gos_error() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let repo = Repo::open("Sandbox", dir.path()).expect("open");
+    let bin = tempfile::tempdir().expect("bin");
+    let repo = Repo::open("Sandbox", dir.path())
+        .expect("open")
+        .with_git(common::isolated_git(bin.path()));
     let error = repo.head(&token()).await.expect_err("not a repo");
     assert_head_error(&error);
     assert!(
@@ -1106,17 +1129,15 @@ async fn head_without_a_git_program_is_sb_gos_error() {
     assert_head_error(&error);
 }
 
-/// `Repo::clone` under a runner, with `program` as git; the repository
-/// it returned, if any, and what the run left.
-/// The host's git (`git`) goes through `Repo::clone` itself.
+/// `Repo::clone_with_git` under a runner, with `program` as git; the
+/// repository it returned, if any, and what the run left. The real git
+/// goes through the fixture's isolating stand-in (`common::isolated_git`),
+/// so `Repo::clone`, which runs the git on `PATH` with the caller's
+/// environment, isn't run here.
 async fn clone(program: &Path, path: &Path, url: &str, branch: &str) -> (Option<Repo>, Ran) {
     let mut cloned = None;
     let ran = in_step(async |step| {
-        cloned = Some(if program == Path::new("git") {
-            Repo::clone("Sandbox", path, url, branch, step).await?
-        } else {
-            Repo::clone_with_git(program, "Sandbox", path, url, branch, step).await?
-        });
+        cloned = Some(Repo::clone_with_git(program, "Sandbox", path, url, branch, step).await?);
         Ok(())
     })
     .await;
@@ -1127,7 +1148,7 @@ async fn clone(program: &Path, path: &Path, url: &str, branch: &str) -> (Option<
 async fn clone_into_a_missing_directory_is_a_shallow_checkout_of_the_branch() {
     let fixture = Fixture::new();
     let path = fixture.dir.path().join("new/sandbox");
-    let (repo, ran) = clone(Path::new("git"), &path, &fixture.url(), "develop").await;
+    let (repo, ran) = clone(&fixture.git, &path, &fixture.url(), "develop").await;
     assert_eq!(ran.error, None, "{}", ran.screen);
     let repo = repo.expect("cloned");
     assert_eq!((repo.name(), repo.path()), ("Sandbox", path.as_path()));
@@ -1172,13 +1193,7 @@ async fn clone_initialises_the_submodules() {
 #[tokio::test]
 async fn clone_refuses_a_destination_that_is_there() {
     let fixture = Fixture::new();
-    let (repo, ran) = clone(
-        Path::new("git"),
-        &fixture.checkout,
-        &fixture.url(),
-        "master",
-    )
-    .await;
+    let (repo, ran) = clone(&fixture.git, &fixture.checkout, &fixture.url(), "master").await;
     assert!(repo.is_none());
     let refused = format!(
         "destination path '{}' already exists",
@@ -1196,7 +1211,7 @@ async fn clone_refuses_a_destination_that_is_there() {
 async fn a_failed_clone_leaves_no_directory() {
     let fixture = Fixture::new();
     let path = fixture.dir.path().join("sandbox");
-    let (repo, ran) = clone(Path::new("git"), &path, &fixture.url(), "missing").await;
+    let (repo, ran) = clone(&fixture.git, &path, &fixture.url(), "missing").await;
     assert!(repo.is_none());
     let failed = format!(
         "failed to clone Sandbox repository '{}' (branch: 'missing') to '{}'",
@@ -1217,7 +1232,7 @@ async fn clone_checks_the_branch_name_before_git_runs() {
     let fixture = Fixture::new();
     let path = fixture.dir.path().join("sandbox");
     for name in ["-x", "a..b"] {
-        let (repo, ran) = clone(Path::new("git"), &path, &fixture.url(), name).await;
+        let (repo, ran) = clone(&fixture.git, &path, &fixture.url(), name).await;
         assert!(repo.is_none());
         let refused = format!("'{name}' is not a valid branch name");
         assert!(ran.screen.contains(&refused), "{}", ran.screen);
@@ -1258,7 +1273,9 @@ async fn init_from_remote_over_a_directory_keeps_its_ignored_files() {
     let root = fixture.dir.path().join("saltbox");
     std::fs::create_dir(&root).expect("mkdir");
     std::fs::write(root.join("accounts.yml"), "user: kept\n").expect("write");
-    let repo = Repo::open("Saltbox", &root).expect("open");
+    let repo = Repo::open("Saltbox", &root)
+        .expect("open")
+        .with_git(&fixture.git);
     let ran = init(&repo, &fixture.url(), "develop").await;
     assert_eq!(ran.error, None, "{}", ran.screen);
     let develop = git(&fixture.work, &["rev-parse", "develop"]);
@@ -1315,7 +1332,9 @@ async fn a_failed_init_fetch_leaves_the_git_directory_it_made() {
     let fixture = Fixture::new();
     let root = fixture.dir.path().join("saltbox");
     std::fs::create_dir(&root).expect("mkdir");
-    let repo = Repo::open("Saltbox", &root).expect("open");
+    let repo = Repo::open("Saltbox", &root)
+        .expect("open")
+        .with_git(&fixture.git);
     let url = "file:///nonexistent/sb-rust-7fcd24d1.git";
     let ran = init(&repo, url, "master").await;
     assert!(ran.error.is_some());
@@ -1336,7 +1355,9 @@ async fn init_from_remote_names_a_branch_missing_on_the_remote() {
     let fixture = Fixture::new();
     let root = fixture.dir.path().join("saltbox");
     std::fs::create_dir(&root).expect("mkdir");
-    let repo = Repo::open("Saltbox", &root).expect("open");
+    let repo = Repo::open("Saltbox", &root)
+        .expect("open")
+        .with_git(&fixture.git);
     let ran = init(&repo, &fixture.url(), "missing").await;
     assert!(ran.error.is_some());
     assert!(
@@ -1353,7 +1374,9 @@ async fn init_from_remote_checks_the_branch_name_first() {
     let fixture = Fixture::new();
     let root = fixture.dir.path().join("saltbox");
     std::fs::create_dir(&root).expect("mkdir");
-    let repo = Repo::open("Saltbox", &root).expect("open");
+    let repo = Repo::open("Saltbox", &root)
+        .expect("open")
+        .with_git(&fixture.git);
     let ran = init(&repo, &fixture.url(), "-x").await;
     assert!(
         ran.screen.contains("'-x' is not a valid branch name"),
@@ -1366,7 +1389,7 @@ async fn init_from_remote_checks_the_branch_name_first() {
 #[tokio::test]
 async fn clone_names_a_destination_it_cannot_use() {
     let fixture = Fixture::new();
-    let (repo, ran) = clone(Path::new("git"), Path::new(""), &fixture.url(), "master").await;
+    let (repo, ran) = clone(&fixture.git, Path::new(""), &fixture.url(), "master").await;
     assert!(repo.is_none());
     assert!(
         ran.screen.contains("inspect required directory : "),
@@ -1374,7 +1397,7 @@ async fn clone_names_a_destination_it_cannot_use() {
         ran.screen
     );
     let under_a_file = fixture.checkout.join("tracked.txt/sandbox");
-    let (repo, ran) = clone(Path::new("git"), &under_a_file, &fixture.url(), "master").await;
+    let (repo, ran) = clone(&fixture.git, &under_a_file, &fixture.url(), "master").await;
     assert!(repo.is_none());
     let refused = format!(
         "inspect required directory {}: Not a directory (os error 20)",
@@ -1385,7 +1408,7 @@ async fn clone_names_a_destination_it_cannot_use() {
         .dir
         .path()
         .join(<std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(b"sb\xff"));
-    let (repo, ran) = clone(Path::new("git"), &not_utf8, &fixture.url(), "master").await;
+    let (repo, ran) = clone(&fixture.git, &not_utf8, &fixture.url(), "master").await;
     assert!(repo.is_none());
     assert!(
         ran.screen.contains("the path isn't UTF-8"),
@@ -1399,10 +1422,10 @@ async fn clone_names_a_destination_it_cannot_use() {
 /// and which runs the real git otherwise.
 fn failing_git(dir: &Path, subcommand: &str) -> PathBuf {
     let path = dir.join("git");
-    sb_cli_core::testing::write_program(
+    common::stand_in(
         &path,
-        format!(
-            "#!/bin/sh\nif [ \"$1\" = {subcommand} ]; then echo 'fatal: refused' >&2; exit 1; fi\n\
+        &format!(
+            "if [ \"$1\" = {subcommand} ]; then echo 'fatal: refused' >&2; exit 1; fi\n\
              exec git \"$@\"\n"
         ),
     );
@@ -1461,10 +1484,10 @@ async fn a_clone_asked_for_credentials_is_retried_with_its_values() {
     let bin = tempfile::tempdir().expect("bin");
     let program = bin.path().join("git");
     let log = bin.path().join("calls.log");
-    sb_cli_core::testing::write_program(
+    common::stand_in(
         &program,
-        format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{log}'\n\
+        &format!(
+            "printf '%s\\n' \"$*\" >> '{log}'\n\
              if [ \"$1\" = clone ]; then echo \"{ASKED}\" >&2; exit 128; fi\n\
              exec git \"$@\"\n",
             log = log.display(),
@@ -1635,7 +1658,10 @@ async fn a_detached_heads_own_commits_are_counted() {
 #[tokio::test]
 async fn outside_a_repository_the_reads_are_gits_errors() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let repo = Repo::open("Sandbox", dir.path()).expect("open");
+    let bin = tempfile::tempdir().expect("bin");
+    let repo = Repo::open("Sandbox", dir.path())
+        .expect("open")
+        .with_git(common::isolated_git(bin.path()));
     let err = repo
         .local_changes(&token())
         .await
