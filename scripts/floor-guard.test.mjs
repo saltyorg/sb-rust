@@ -1033,6 +1033,81 @@ test('a deleted src file that held tests is flagged, one without tests is clean'
   clean(outOfLine, { [RUN]: null });
 });
 
+// 2d. A test that discards a child's stdout or stderr (the maintainer,
+// 2026-11-25).
+const SPAWN = 'crates/sb/tests/spawn.rs';
+const spawnRs = {
+  [SPAWN]: `use std::process::{Command, Stdio};
+
+#[test]
+fn runs() {
+    let mut child = Command::new("true")
+        .arg("x")
+        .stdin(Stdio::null())
+        .spawn()
+        .unwrap();
+    assert!(child.wait().unwrap().success());
+}
+`,
+};
+const discarded = 'output-discarded ' + SPAWN;
+const STDIN = '        .stdin(Stdio::null())\n';
+
+test('a test: a child\'s stdout or stderr discarded is flagged; with its reason beside it, clean', () => {
+  for (const step of ['        .stdout(Stdio::null())', '        .stderr(std::process::Stdio::null())',
+    '        .stderr( Stdio::null( ) )']) {
+    flags(spawnRs, edit(spawnRs, SPAWN, STDIN, STDIN + step + '\n'), discarded);
+    // The reason on its line, or in the comment just above it.
+    clean(spawnRs, edit(spawnRs, SPAWN, STDIN, STDIN + step + ' // a banner, nothing else\n'));
+    clean(spawnRs, edit(spawnRs, SPAWN, STDIN, '        // Its banner can\'t matter.\n' + step + '\n' + STDIN));
+  }
+  // One comment above the child's stdio steps covers them all.
+  clean(spawnRs, edit(spawnRs, SPAWN, STDIN, '        // Its banner can\'t matter.\n' + STDIN
+    + '        .stdout(Stdio::null())\n        .stderr(Stdio::piped())\n        .stderr(Stdio::null())\n'));
+  // Two discards with no comment: one finding each.
+  flags(spawnRs, edit(spawnRs, SPAWN, STDIN, STDIN + '        .stdout(Stdio::null())\n        .stderr(Stdio::null())\n'),
+    [discarded, discarded]);
+  // stdin, a pipe or a file is no discard.
+  clean(spawnRs, edit(spawnRs, SPAWN, STDIN, STDIN + '        .stdout(Stdio::piped())\n        .stderr(output.stderr())\n'));
+});
+
+test('a test: a comment with no words, or above other code, is no reason', () => {
+  flags(spawnRs, edit(spawnRs, SPAWN, STDIN, '        //\n        .stdout(Stdio::null())\n' + STDIN), discarded);
+  flags(spawnRs, edit(spawnRs, SPAWN, '        .arg("x")\n', '        // Quiet.\n        .arg("x")\n        .stdout(Stdio::null())\n'),
+    discarded);
+  // A comment after the call on the line before isn't this line's.
+  flags(spawnRs, edit(spawnRs, SPAWN, '        .arg("x")\n', '        .arg("x") // the argument\n        .stdout(Stdio::null())\n'),
+    discarded);
+});
+
+test('a test: a discard in a test module, a tests.rs or a new test file is flagged; in code outside them, clean', () => {
+  const inTests = edit(libRs, LIB, '        assert_eq!(add(1, 2), 3);\n',
+    '        let _ = std::process::Command::new("true").stdout(std::process::Stdio::null()).status();\n'
+    + '        assert_eq!(add(1, 2), 3);\n');
+  flags(libRs, inTests, 'output-discarded ' + LIB);
+  // Production code above the test module.
+  clean(libRs, edit(libRs, LIB, '    a + b\n',
+    '    let _ = std::process::Command::new("true").stderr(std::process::Stdio::null()).status();\n    a + b\n'));
+  clean(runRs, edit(runRs, RUN, '        .stdout(Stdio::piped())\n', '        .stdout(Stdio::null())\n'));
+  // A `#[cfg(test)]` on something else than a module doesn't make the rest test code.
+  const cfgUse = { [RUN]: '#[cfg(test)]\nuse std::fmt::Debug;\n\n' + runRs[RUN] };
+  clean(cfgUse, edit(cfgUse, RUN, '        .stdout(Stdio::piped())\n', '        .stdout(Stdio::null())\n'));
+  // Nor does an out-of-line test module's declaration, nor the code after
+  // an inline test module's closing brace.
+  const outOfLine = { [RUN]: '#[cfg(test)]\nmod testing;\n\n' + runRs[RUN] };
+  clean(outOfLine, edit(outOfLine, RUN, '        .stdout(Stdio::piped())\n', '        .stdout(Stdio::null())\n'));
+  const before = { [RUN]: '#[cfg(test)]\nmod tests {\n    #[test]\n    fn t() {}\n}\n\n' + runRs[RUN] };
+  clean(before, edit(before, RUN, '        .stdout(Stdio::piped())\n', '        .stdout(Stdio::null())\n'));
+  flags(before, edit(before, RUN, '    fn t() {}\n', '    fn t() {\n        let _ = Command::new("true").stdout(Stdio::null()).status();\n    }\n'),
+    'output-discarded ' + RUN);
+  const TESTS_RS = 'crates/tui/src/source/tests.rs';
+  flags({ [TESTS_RS]: spawnRs[SPAWN] }, edit({ [TESTS_RS]: spawnRs[SPAWN] }, TESTS_RS, STDIN, STDIN + '        .stderr(Stdio::null())\n'),
+    'output-discarded ' + TESTS_RS);
+  const NEW = 'crates/sb/tests/new.rs';
+  flags({}, { [NEW]: spawnRs[SPAWN].replace(STDIN, STDIN + '        .stdout(Stdio::null())\n') }, 'output-discarded ' + NEW);
+  flags(spawnRs, edit(spawnRs, SPAWN, STDIN, STDIN + '        .stdout(Stdio::null())\n'), discarded, { commit: true });
+});
+
 const CONS = 'CONSTRAINTS.md';
 const constraintsMd = {
   [CONS]: `# Constraints

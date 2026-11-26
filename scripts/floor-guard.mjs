@@ -9,8 +9,9 @@
 //   default base: HEAD (uncommitted and untracked work). Before handing back
 //   committed work, pass the commit the task started from.
 // Two kinds of finding (ADR-029):
-// - blocking: the gate's configuration, its thresholds and the suppressions
-//   (every rule but the four below). One passes only with the maintainer's
+// - blocking: the gate's configuration, its thresholds and the suppressions,
+//   and a test's child output discarded without its reason (every rule but
+//   the four below). One passes only with the maintainer's
 //   approval, a `Floor-approved:` line (rule 7).
 // - reported: a removed assertion, a removed or deleted test, and a removed
 //   or changed line of a gate script. They are printed for the code
@@ -62,12 +63,17 @@ const untracked = untrackedFiles.split('\n').filter(Boolean).map((f) => {
 }).join('\n');
 const diff = tracked + '\n' + untracked;
 
+// Each added line keeps its line number in the work tree's file, from
+// its hunk's header (`@@ -a,b +c,d @@`, the new side's first line c).
 const added = [], removed = [], deleted = [];
 const pathOf = (s) => s.replace(/^[ab]\//, '');
-let file = '', oldFile = '', inHeader = false;
+let file = '', oldFile = '', inHeader = false, newLine = 0;
 for (const line of diff.split('\n')) {
   if (line.startsWith('diff ')) inHeader = true;
-  else if (line.startsWith('@@')) inHeader = false;
+  else if (line.startsWith('@@')) {
+    inHeader = false;
+    newLine = Number(/^@@ -\d+(?:,\d+)? \+(\d+)/.exec(line)?.[1] ?? 0);
+  }
   else if (inHeader) {
     if (line.startsWith('--- ')) oldFile = pathOf(line.slice(4));
     else if (line.startsWith('+++ ')) {
@@ -76,7 +82,7 @@ for (const line of diff.split('\n')) {
       if (newFile === '/dev/null') deleted.push(file);
     }
   }
-  else if (line.startsWith('+')) added.push({ file, text: line.slice(1) });
+  else if (line.startsWith('+')) added.push({ file, text: line.slice(1), line: newLine++ });
   else if (line.startsWith('-')) removed.push({ file, text: line.slice(1) });
 }
 
@@ -214,6 +220,63 @@ for (const r of removedRules) {
     if (!verdict && dir && was.length && now.slice(was.length).some(looser)) verdict = 'threshold-loosened';
   }
   if (verdict) flag(verdict, r.file, r.text + '  ->  ' + a.text);
+}
+
+// 2d. A test that discards a child's stdout or stderr (the maintainer,
+// 2026-11-25): an added `.stdout(Stdio::null())` or `.stderr(..)` in test
+// code, unless a comment says why, on its line after the call or on the
+// comment line just above it, or above the child's other stdio steps
+// (`.stdin(..)`, `.stdout(..)`, `.stderr(..)` with a `Stdio`) next to it;
+// a comment needs a word, and any word passes: the reviewer judges it.
+// Test code: a file under tests/, a `_test.rs` or a `tests.rs`, or a line
+// inside a `#[cfg(test)] mod name { .. }` (to its closing brace at the
+// `mod` line's indentation). Unseen: a discard through a variable (`let
+// null = Stdio::null()`) or split over lines (rustfmt keeps it on one), an
+// out-of-line test module's own file (`#[cfg(test)] mod x;`) and the
+// `testing` features' support files, and a reason removed from beside a
+// discard that stays.
+const DISCARDS = /\.(stdout|stderr)\s*\(\s*(?:\w+::)*Stdio::null\s*\(\s*\)\s*\)/;
+const STDIO_STEP = /^\s*\.(stdin|stdout|stderr)\s*\(\s*(?:\w+::)*Stdio::\w+\s*\(\s*\)\s*\)\s*;?\s*$/;
+const REASON_LINE = /^\s*\/\/+\s*\S/;
+const REASON_AFTER = /\)\s*;?\s*\/\/+\s*\S/;
+const TEST_MODULE = /^\s*#\[\s*cfg\s*\(\s*test\s*\)\s*\]\s*$/;
+const INLINE_MODULE = /^(\s*)(?:pub(?:\([^)]*\))?\s+)?mod\s+\w+\s*\{\s*$/;
+const isTestFile = (f) => isTest(f) || /(^|\/)tests\.rs$/.test(f);
+// The line-number ranges (1-based, exclusive) of `f`'s inline test
+// modules: from a `#[cfg(test)]` whose next code line opens `mod name {`
+// to the `}` at that line's indentation.
+const testModules = new Map();
+const inTestModule = (f, lines, n) => {
+  if (!testModules.has(f)) {
+    const ranges = [];
+    for (let i = 0; i < lines.length; i++) {
+      if (!TEST_MODULE.test(lines[i])) continue;
+      let j = i + 1;
+      while (j < lines.length && (lines[j].trim() === '' || /^\s*#\[/.test(lines[j]))) j++;
+      const m = INLINE_MODULE.exec(lines[j] ?? '');
+      if (!m) continue;
+      let k = j + 1;
+      while (k < lines.length && lines[k].trimEnd() !== m[1] + '}') k++;
+      ranges.push([j + 1, k + 1]);
+    }
+    testModules.set(f, ranges);
+  }
+  return testModules.get(f).some(([from, to]) => n > from && n < to);
+};
+const workLines = new Map();
+for (const { file, text, line } of added) {
+  if (!isRust(file) || !DISCARDS.test(text) || REASON_AFTER.test(text)) continue;
+  if (!workLines.has(file)) {
+    let content = null;
+    try { content = readFileSync(file, 'utf8'); } catch (e) { if (e.code !== 'ENOENT') bail('could not read ' + file); }
+    workLines.set(file, content === null ? [] : content.split('\n'));
+  }
+  const lines = workLines.get(file);
+  if (!isTestFile(file) && !inTestModule(file, lines, line)) continue;
+  let above = line - 2;
+  while (above >= 0 && STDIO_STEP.test(lines[above])) above--;
+  if (above >= 0 && REASON_LINE.test(lines[above])) continue;
+  flag('output-discarded', file, text);
 }
 
 // 5. The gate files: the files outside Rust and CONSTRAINTS.md that hold
