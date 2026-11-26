@@ -152,9 +152,13 @@ jobs:
           echo "$RUNNER_TEMP/bin" >>"$GITHUB_PATH"
           rustup component add llvm-tools
       # GITHUB_ACTIONS through sudo too: check.sh full skips its CI
-      # rehearsal here, where ci.yml runs itself.
+      # rehearsal here, where ci.yml runs itself. The root tests asked
+      # for explicitly, as in ci.yml: check.sh refuses the ask in a run
+      # that isn't root.
       - name: check.sh full
-        run: sudo --preserve-env=PATH,HOME,CARGO_HOME,RUSTUP_HOME,GITHUB_ACTIONS env "PATH=$PATH" scripts/check.sh full
+        env:
+          SB_TEST_ROOT: "1"
+        run: sudo --preserve-env=PATH,HOME,CARGO_HOME,RUSTUP_HOME,GITHUB_ACTIONS,SB_TEST_ROOT env "PATH=$PATH" scripts/check.sh full
 
   # The test suite on arm64, natively (its full gate's x86_64-only steps
   # ran above).
@@ -201,8 +205,11 @@ jobs:
           scripts/install-check-jsonschema.sh "$RUNNER_TEMP/check-jsonschema" "$RUNNER_TEMP/bin"
           echo "$RUNNER_TEMP/bin" >>"$GITHUB_PATH"
           rustup component add llvm-tools
+      # The root tests asked for explicitly, as in ci.yml.
       - name: check.sh task
-        run: sudo --preserve-env=PATH,HOME,CARGO_HOME,RUSTUP_HOME env "PATH=$PATH" scripts/check.sh task
+        env:
+          SB_TEST_ROOT: "1"
+        run: sudo --preserve-env=PATH,HOME,CARGO_HOME,RUSTUP_HOME,SB_TEST_ROOT env "PATH=$PATH" scripts/check.sh task
 
   # The suites CONSTRAINTS.md and the specs run by hand at each checkpoint:
   # the completion shells, the journal matrix and, once a stable release

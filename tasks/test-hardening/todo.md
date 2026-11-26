@@ -18,7 +18,7 @@ invented; no test reads the host's data.
 ## Batch 1: fix first
 
 - [x] 1.1: one skip mechanism, and the gate's report of skips.
-- [ ] 1.2: the gate refuses a root run it asked for and didn't get.
+- [x] 1.2: the gate refuses a root run it asked for and didn't get.
 - [ ] 1.3a: every other skip goes through the helper.
 - [ ] 1.3b: the floor guard reports a new hand-rolled skip; the
       CONSTRAINTS.md bullet.

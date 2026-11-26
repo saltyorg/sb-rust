@@ -706,7 +706,7 @@ boundaries that callers match on.
   block on stderr rather than plain on stdout.
 - Tests that need root run only with `SB_TEST_ROOT=1` and fail, never
   skip, when asked without root; `scripts/check.sh` asks when it runs as
-  root.
+  root, and refuses an ask (CI's) in a run that isn't root.
 - `--color` reaches clap's help and errors through a pre-pass of the
   same command (`--help` and `help` made plain) that sets anstream's
   global choice before the real parse. A pre-pass that parses is final.

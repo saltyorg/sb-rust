@@ -26,7 +26,9 @@
 # Every tool a stage runs is checked against the CONSTRAINTS.md Tools table
 # before the stage starts.
 # Exit: 0 all passed, 1 a check failed, 2 a check could not run (a tool
-# missing, or not the version the Tools table asks for).
+# missing, or not the version the Tools table asks for) or was asked
+# for in a way it refuses (the root tests without root, a malformed
+# setting).
 set -euo pipefail
 shopt -s inherit_errexit
 
@@ -36,9 +38,29 @@ cd "$root"
 # reach the host's /var/log/sb. Tests set their own directories too.
 export SB_LOG_DIR="$root/target/test-logs"
 # Run the tests that need root (namespaces, switching users) when we are
-# root; they never touch the host (cli-core spec, Testing strategy).
+# root; they never touch the host (cli-core spec, Testing strategy). A
+# caller that asks for them (ci.yml and release.yml set SB_TEST_ROOT=1
+# and keep it through sudo) in a run that isn't root is refused before
+# any stage (any value but 1 too, as the tests' testing::root_tests
+# refuses one): a run that lost its root would otherwise skip every root
+# test and pass. The line printed says which, so a log shows the ask
+# arriving.
 if [[ "$(id -u)" == 0 ]]; then
+  if [[ ${SB_TEST_ROOT-} == 1 ]]; then
+    echo "check: the root tests run: asked for (SB_TEST_ROOT=1), and this run is root"
+  else
+    echo "check: the root tests run: this run is root"
+  fi
   export SB_TEST_ROOT=1
+elif [[ -n ${SB_TEST_ROOT+set} ]]; then
+  if [[ $SB_TEST_ROOT == 1 ]]; then
+    echo "check: SB_TEST_ROOT=1 asks for the root tests, but this run isn't root" >&2
+  else
+    echo "check: SB_TEST_ROOT must be 1 or unset, got '$SB_TEST_ROOT'" >&2
+  fi
+  exit 2
+else
+  echo "check: the root tests don't run: this run isn't root (each is listed as skipped)"
 fi
 # Test the build under test, and never the host's Docker daemon: a
 # leftover override of the sb binary or the live opt-in would change what

@@ -24,8 +24,11 @@ const guard = join(dirname(fileURLToPath(import.meta.url)), 'floor-guard.mjs');
 // caller's (a hook exports GIT_DIR and friends); HOME and XDG_CONFIG_HOME
 // are each run's scratch directory.
 // Nor does a FLOOR_APPROVED the caller set for its own uncommitted work
-// (ADR-029): the `approved` option sets it where a case needs it.
-const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('GIT_') && k !== 'FLOOR_APPROVED'));
+// (ADR-029): the `approved` option sets it where a case needs it. Nor the
+// gate's SB_TEST_ROOT: a scratch check.sh sets its own as root, and the
+// cases that ask for the root tests set it themselves.
+const env = Object.fromEntries(Object.entries(process.env)
+  .filter(([k]) => !k.startsWith('GIT_') && k !== 'FLOOR_APPROVED' && k !== 'SB_TEST_ROOT'));
 env.GIT_CONFIG_GLOBAL = '/dev/null';
 env.GIT_CONFIG_SYSTEM = '/dev/null';
 
@@ -1608,6 +1611,9 @@ const stubs = (versions, arch) => {
     + '  echo "$MUTANTS_LISTED" >"$out/mutants.out/outcomes.json"\n'
     + '  exit 0\n'
     + 'fi\n';
+  // The SB_TEST_ROOT each test run (the coverage run, the doc tests, the
+  // release-build run) is given, `unset` when there is none.
+  out.cargo += 'case "$1" in llvm-cov | test | nextest) printf \'%s %s\\n\' "$1" "${SB_TEST_ROOT-unset}" >>"$STUB_LOG.root" ;; esac\n';
   // With RUN_FAILS_AT set (`llvm-cov` or `nextest`), that test run fails
   // as a failing test makes cargo fail, with status 101.
   out.cargo += 'if [ -n "${RUN_FAILS_AT:-}" ] && [ "$1" = "$RUN_FAILS_AT" ]; then exit 101; fi\n';
@@ -1678,6 +1684,11 @@ const checkRun = (stage, { files = {}, work = {}, commits = [], base = 'HEAD', v
     const sys = join(dir, 'sys-bin');
     mkdirSync(sys);
     for (const t of SYSTEM_TOOLS) symlinkSync(execFileSync('bash', ['-c', 'command -v ' + t], { encoding: 'utf8' }).trim(), join(sys, t));
+    // `id -u` answers STUB_UID when it is set, as a run that isn't root
+    // sees; anything else is the system's id. Not logged: no case counts
+    // its calls.
+    writeFileSync(join(bin, 'id'), '#!/bin/sh\nif [ -n "${STUB_UID:-}" ] && [ "$*" = -u ]; then echo "$STUB_UID"; exit 0; fi\n'
+      + 'exec "' + join(sys, 'id') + '" "$@"\n', { mode: 0o755 });
     writeFileSync(logFile, '');
     // TMPDIR is the run's own, unless a test names one: check.sh sweeps
     // the pass directories it finds there, and a stubbed pass makes its
@@ -1724,7 +1735,7 @@ const checkRun = (stage, { files = {}, work = {}, commits = [], base = 'HEAD', v
     return {
       status: r.status, signal: r.signal, output: r.stdout + r.stderr, calls, root: repo,
       gitleaksInput: read(logFile + '.gitleaks'), changesDiff: read(join(repo, 'target/changes.diff')),
-      crossOpts: read(logFile + '.cross-opts'), nextestEnv: read(logFile + '.nextest-env'),
+      crossOpts: read(logFile + '.cross-opts'), nextestEnv: read(logFile + '.nextest-env'), rootTests: read(logFile + '.root'),
     };
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -2701,6 +2712,43 @@ test('check.sh task: each test run lists the tests it skipped, each once, with t
   const failed = checkRun('task', { work, env: { STUB_SKIPS: 'a', RUN_FAILS_AT: 'llvm-cov' } });
   assert.equal(failed.status, 101, failed.output);
   assert.ok(stepOutput(failed.output, TEST_RUNS[0][0]).includes('\nskipped: 1\nskipped: llvm-cov::a (crates/foo/tests/t.rs): needs root\n'), failed.output);
+});
+
+// A run asked for the root tests (ci.yml sets SB_TEST_ROOT=1 and keeps it
+// through sudo) that isn't root is refused before any stage: a CI run
+// that lost its root fails, never skipping the root tests green. A run
+// that isn't root and didn't ask runs, and lists what it skipped.
+test('check.sh: a run that asks for the root tests without root exits 2, before any stage; one that does not ask runs', () => {
+  for (const value of ['1', 'yes']) {
+    const r = checkRun('task', { env: { STUB_UID: '1000', SB_TEST_ROOT: value } });
+    refuses(r, 2, value === '1'
+      ? /check: SB_TEST_ROOT=1 asks for the root tests, but this run isn't root/
+      : /check: SB_TEST_ROOT must be 1 or unset, got 'yes'/);
+    assert.deepEqual(r.calls, [], r.output);
+    assert.doesNotMatch(r.output, /== /, r.output);
+  }
+  const work = { 'crates/foo/src/lib.rs': 'pub fn f() {}\n' };
+  const r = checkRun('task', { work, env: { STUB_UID: '1000', STUB_SKIPS: 'a_root_test' } });
+  passes(r, 'task');
+  assert.match(r.output, /check: the root tests don't run: this run isn't root/, r.output);
+  assert.match(r.output, /not root: the tests run without the sandbox/, r.output);
+  assert.equal(r.rootTests, 'llvm-cov unset\ntest unset\nnextest unset\n', r.output);
+  assert.ok(stepOutput(r.output, TEST_RUNS[0][0]).includes('\nskipped: 1\nskipped: llvm-cov::a_root_test (crates/foo/tests/t.rs): needs root\n'),
+    r.output);
+});
+
+// As root, every test run gets SB_TEST_ROOT=1, asked for or not, and the
+// log says whether the caller asked.
+test('check.sh: a root run gives each test run SB_TEST_ROOT=1, and says whether the caller asked', (t) => {
+  if (process.getuid() !== 0) { t.skip('needs root'); return; }
+  const work = { 'crates/foo/src/lib.rs': 'pub fn f() {}\n' };
+  for (const [ask, line] of [[{ SB_TEST_ROOT: '1' }, /check: the root tests run: asked for \(SB_TEST_ROOT=1\), and this run is root/],
+    [{}, /check: the root tests run: this run is root\n/]]) {
+    const r = checkRun('task', { work, env: ask });
+    passes(r, 'task');
+    assert.match(r.output, line, r.output);
+    assert.equal(r.rootTests, 'llvm-cov 1\ntest 1\nnextest 1\n', r.output);
+  }
 });
 
 // insta removes a stale pending snapshot when a test runs, which fails in

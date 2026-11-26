@@ -116,16 +116,19 @@ jobs:
       # A pull request is checked against what it merges into; a push to
       # main with no base checks everything (check.sh: nothing changed
       # since the base runs every step). As root, as check.sh runs its
-      # sandbox.
+      # sandbox. The root tests are asked for explicitly, SB_TEST_ROOT=1
+      # kept through sudo: check.sh refuses the ask in a run that isn't
+      # root, so a run that lost its root fails instead of skipping them.
       - name: check.sh task
         env:
           BASE_REF: ${{ github.base_ref }}
+          SB_TEST_ROOT: "1"
         run: |
           base=HEAD
           if [[ -n ${BASE_REF} ]]; then
             base=$(git merge-base "origin/${BASE_REF}" HEAD)
           fi
-          sudo --preserve-env=PATH,HOME,CARGO_HOME,RUSTUP_HOME env "PATH=$PATH" \
+          sudo --preserve-env=PATH,HOME,CARGO_HOME,RUSTUP_HOME,SB_TEST_ROOT env "PATH=$PATH" \
             scripts/check.sh task "$base"
       # The root run leaves root-owned files where rust-cache's post step,
       # as the runner user, saves from.
