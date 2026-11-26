@@ -631,12 +631,28 @@ fn a_closed_reader_ends_the_stream_with_141() {
     world.write_journal();
     let out = world.dir.path().join("out.txt");
     let status = world.dir.path().join("status");
-    let script = r#"{ "$0" logs; echo $? > "$2"; } | head -n 2 > "$1""#;
-    let args = [out.display().to_string(), status.display().to_string()];
-    let mut pty = Pty::spawn_shell(script, &[&args[0], &args[1]], world.envs());
+    let gone = world.dir.path().join("reader-gone");
+    // The reader's side marks `gone` once head has exited and its own
+    // stdin is closed: then nothing holds the pipe's read end. head's
+    // lines in out.txt don't say that: it writes them before it exits,
+    // and a line sb writes before the read end closes goes into the pipe,
+    // leaving sb to meet the closed pipe only at a later line.
+    let script =
+        r#"{ "$0" logs; echo $? > "$2"; } | { head -n 2 > "$1"; exec <&-; echo gone > "$3"; }"#;
+    let args = [
+        out.display().to_string(),
+        status.display().to_string(),
+        gone.display().to_string(),
+    ];
+    let mut pty = Pty::spawn_shell(script, &[&args[0], &args[1], &args[2]], world.envs());
     assert!(pty.showing("Services (3)"), "{}", pty.contents());
     pty.send(b"jj\r");
-    logs_pty::file_holding(&out, "hello from app");
+    logs_pty::file_holding(&gone, "gone");
+    assert!(
+        std::fs::read_to_string(&out)
+            .expect("head's output")
+            .contains("hello from app")
+    );
     // head has gone after two lines; the next one written meets the
     // closed pipe.
     world.append();
