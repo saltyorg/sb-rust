@@ -69,9 +69,12 @@ fn lock_of(dir: &Path) -> PathBuf {
 /// Remove from `logs` what test processes that have ended left: a
 /// directory whose lock can be taken, with its lock, and anything else no
 /// held lock speaks for (an earlier layout's `sb.log` and `run-lock-*`, a
-/// lock whose directory is gone). Called under `.setup.lock`.
+/// lock whose directory is gone). Called under `.setup.lock`. An ended
+/// process's [`none_dir`] that a run of sb made fails the test that
+/// finds it, once: the directory is removed first.
 fn remove_ended(logs: &Path) {
     let free = |lock: &Path| File::open(lock).is_ok_and(|lock| lock.try_lock().is_ok());
+    let mut made = Vec::new();
     for entry in std::fs::read_dir(logs).expect("test logs").flatten() {
         let path = entry.path();
         if entry.file_name() == ".setup.lock" {
@@ -86,6 +89,11 @@ fn remove_ended(logs: &Path) {
         let lock = lock_of(&path);
         if !lock.exists() || free(&lock) {
             if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                for inner in std::fs::read_dir(&path).into_iter().flatten().flatten() {
+                    if inner.file_name().to_string_lossy().starts_with("none-") {
+                        made.extend(under(&inner.path()));
+                    }
+                }
                 let _ = std::fs::remove_dir_all(&path);
             } else {
                 let _ = std::fs::remove_file(&path);
@@ -93,6 +101,12 @@ fn remove_ended(logs: &Path) {
             let _ = std::fs::remove_file(&lock);
         }
     }
+    made.sort();
+    assert!(
+        made.is_empty(),
+        "a run of sb in an ended test process made apply_sb_env's `no-*` paths, which must stay \
+         missing: {made:?}; a test whose sb writes one points it at its own"
+    );
 }
 
 /// A run lock directory no other run of sb uses: a count, in this test
@@ -136,43 +150,42 @@ pub fn sb() -> std::process::Command {
 /// every test starting sb by its path calls this.
 pub fn apply_sb_env(cmd: &mut std::process::Command) {
     cmd.env("SB_LOG_DIR", test_log_dir());
+    // The `no-*` paths below are this call's own, in a directory nothing
+    // makes ([`none_dir`]): no run of sb shares them with another test's,
+    // and one that writes there fails the next call in this process, or
+    // the next test process.
+    let none = none_dir();
     // Help wraps at the width COLUMNS gives when stdout isn't a terminal
     // (cli-core spec, Help): none of the developer's; tests that want one
     // set it.
     cmd.env_remove("COLUMNS");
     // No test reads a real /opt/sb/config.toml; tests that want one set it.
-    cmd.env("SB_CONFIG", test_log_dir().join("no-such-config.toml"));
+    cmd.env("SB_CONFIG", none.join("no-such-config.toml"));
     // Nor the real Saltbox checkout: a root with no Saltbox files; tests
     // that want some point it at their own. (Without an inventory the
     // theme file would be `/opt/sb/config.toml`: `SB_CONFIG` above keeps
     // it off the host, not this.)
-    cmd.env("SB_SALTBOX_DIR", test_log_dir().join("no-saltbox"));
+    cmd.env("SB_SALTBOX_DIR", none.join("no-saltbox"));
     // Nor the host's backups: motd.yml's migration copies the original
     // under the test's directory; tests that read the copy set their own.
     cmd.env("SB_BACKUPS_DIR", test_log_dir().join("backups"));
     // Nor the host's venv, wrappers, uv or apt: the test build's python-env
     // layout (its `testing` feature) under an empty root; tests that want
     // a stand-in tree point it at their own.
-    cmd.env(
-        "SB_TEST_PYTHON_ENV_ROOT",
-        test_log_dir().join("no-python-env"),
-    );
+    cmd.env("SB_TEST_PYTHON_ENV_ROOT", none.join("no-python-env"));
     // No test reaches the host's Docker daemon: a socket that doesn't
     // exist unless a test points DOCKER_HOST at its fake, and none of the
     // developer's Docker settings.
     cmd.env(
         "DOCKER_HOST",
-        format!("unix://{}", test_log_dir().join("no-docker.sock").display()),
+        format!("unix://{}", none.join("no-docker.sock").display()),
     );
     // Nor the host's journal: a directory that doesn't exist, unless a
     // test points `SB_JOURNAL_DIR` at its own crafted files.
-    cmd.env("SB_JOURNAL_DIR", test_log_dir().join("no-journal"));
+    cmd.env("SB_JOURNAL_DIR", none.join("no-journal"));
     // Nor Ansible: a playbook program that doesn't exist, unless a test
     // points it at its fake.
-    cmd.env(
-        "SB_ANSIBLE_PLAYBOOK",
-        test_log_dir().join("no-ansible-playbook"),
-    );
+    cmd.env("SB_ANSIBLE_PLAYBOOK", none.join("no-ansible-playbook"));
     // Nor the developer's colour profile (an `ascii` one would turn colour
     // off on a terminal), nor their colour switches: `NO_COLOR` takes
     // colour away, `CLICOLOR=0` too on a terminal, and `CLICOLOR_FORCE`
@@ -202,10 +215,7 @@ pub fn apply_sb_env(cmd: &mut std::process::Command) {
     // Nor the host's shell directories: `sb completion install` writes its
     // files under a root of the test's (the test build's
     // `SB_TEST_COMPLETION_ROOT`); tests that check them set their own.
-    cmd.env(
-        "SB_TEST_COMPLETION_ROOT",
-        test_log_dir().join("no-completion-root"),
-    );
+    cmd.env("SB_TEST_COMPLETION_ROOT", none.join("no-completion-root"));
     // Nor the host's run lock (`/run/sb`): a lock directory of this run's
     // own, so tests running at once never wait for each other; the lock's
     // tests share one between their runs.
@@ -223,7 +233,7 @@ pub fn apply_sb_env(cmd: &mut std::process::Command) {
     cmd.env("SB_DOCKER_CONTROLLER_URL", refused);
     cmd.env(
         "SB_DOCKER_CONTROLLER_UNIT",
-        test_log_dir().join("no-controller.service"),
+        none.join("no-controller.service"),
     );
     for name in [
         "HTTP_PROXY",
@@ -237,6 +247,60 @@ pub fn apply_sb_env(cmd: &mut std::process::Command) {
         cmd.env_remove(name);
         cmd.env_remove(name.to_lowercase());
     }
+}
+
+/// A directory for one [`apply_sb_env`] call's `no-*` paths, which must
+/// stay missing: a count in this test process's [`test_log_dir`], never
+/// made.
+///
+/// So no run of sb shares them with another test's run, and one that
+/// writes there (making the directory) fails the next [`apply_sb_env`]
+/// call in this process, naming the test that was given it, or else the
+/// next test process ([`remove_ended`]). Custom, as [`run_lock_dir`]: a
+/// `TempDir` would make the directory.
+fn none_dir() -> PathBuf {
+    static CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    static GIVEN: std::sync::Mutex<Vec<(PathBuf, String)>> = std::sync::Mutex::new(Vec::new());
+    let call = CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = test_log_dir().join(format!("none-{call}"));
+    let mut given = GIVEN
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    // Each found once: dropped from the list as it is reported.
+    let (made, kept): (Vec<_>, Vec<_>) = given
+        .drain(..)
+        .partition(|(earlier, _)| earlier.symlink_metadata().is_ok());
+    *given = kept;
+    // libtest's thread for each test is named after it (nextest runs one
+    // test a process, under the same name). UNVERIFIED: libtest's
+    // internals, no documented contract; checked against Rust 1.100.0's
+    // library/test/src/lib.rs, `run_test`. Wrong, only the message loses
+    // the name.
+    let test = std::thread::current().name().unwrap_or("a test").to_owned();
+    given.push((dir.clone(), test));
+    drop(given);
+    if let Some((earlier, test)) = made.first() {
+        panic!(
+            "a run of sb in {test} made {}, under apply_sb_env's `no-*` paths, which must stay \
+             missing: {:?}; a test whose sb writes one points it at its own",
+            earlier.display(),
+            under(earlier)
+        );
+    }
+    dir
+}
+
+/// `dir` and everything under it, links not followed.
+fn under(dir: &Path) -> Vec<String> {
+    let mut found: Vec<String> = walkdir::WalkDir::new(dir)
+        .follow_links(false)
+        .follow_root_links(false)
+        .into_iter()
+        .flatten()
+        .map(|entry| entry.path().display().to_string())
+        .collect();
+    found.sort();
+    found
 }
 
 /// A loopback URL nothing listens on, the same for the whole test binary:

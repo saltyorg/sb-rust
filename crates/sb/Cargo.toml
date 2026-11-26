@@ -73,6 +73,9 @@ console.workspace = true
 rustix.workspace = true
 assert_cmd.workspace = true
 predicates.workspace = true
+# What a run of sb left under apply_sb_env's never-made `no-*` paths,
+# listed without following links (tests/common).
+walkdir.workspace = true
 tempfile.workspace = true
 # The fake release's digest (self-update's tests).
 sha2.workspace = true
