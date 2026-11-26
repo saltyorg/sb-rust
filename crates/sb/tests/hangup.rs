@@ -307,7 +307,7 @@ fn a_session_scope_stop_takes_the_grace() {
     // (scripts/check.sh, sandbox_argv, the only place that sets
     // SB_TEST_NO_SYSTEMD), and every test run of the gate is in it. This
     // test runs on a systemd of its own instead, in a container:
-    // crates/sb/tests/hangup-systemd.sh, by hand.
+    // crates/sb/tests/hangup-systemd.sh, which check.sh full runs.
     // Set anywhere systemd runs, it fails rather than skips:
     // /run/systemd/system is sd_booted(3)'s check,
     // https://www.freedesktop.org/software/systemd/man/latest/sd_booted.html

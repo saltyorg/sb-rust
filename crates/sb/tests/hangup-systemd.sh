@@ -3,8 +3,9 @@
 # `a_session_scope_stop_takes_the_grace`) on a systemd of its own: the one
 # test that needs systemd to start and stop a scope, which the gate's
 # sandbox hides (its /run is empty; scripts/check.sh, sandbox_argv), so the
-# gate's test runs skip it (SB_TEST_NO_SYSTEMD=1) and it runs here, by hand,
-# as the container matrices do.
+# gate's test runs skip it (SB_TEST_NO_SYSTEMD=1) and it runs here (from
+# check.sh full, when a file under crates/ or scripts/ changed, or by
+# hand), as the container matrices do.
 #
 #   [SBH_PREFIX=name] [SBH_IMAGE=image] [SBH_DOCKER_OPTS=options] \
 #     crates/sb/tests/hangup-systemd.sh
@@ -29,7 +30,9 @@
 # it: it gets `--cpus 2 --memory 2g` with no swap and a pids limit;
 # SBH_DOCKER_OPTS adds `docker run` options, such as `--cpuset-cpus`.
 # Inside, apt fetches systemd and D-Bus. The container is removed on exit;
-# the last line is the result. Root on the host (nsenter, docker).
+# the last line is the result. Root on the host (nsenter, docker). Exit: 0
+# passed, 1 the test failed, 2 it could not run (a tool missing, Docker
+# could not start the container, apt, the remount or systemd failed).
 set -euo pipefail
 cd "$(dirname "$0")/../../.."
 root=$PWD
@@ -66,7 +69,10 @@ docker run -d --rm --name "$name" --cgroupns private \
     apt-get update -qq >/dev/null && apt-get install -y -qq systemd dbus >/dev/null 2>&1 || exit 1
     : >/run/sb-installed
     while [ ! -e /run/sb-remounted ]; do sleep 0.2; done
-    exec /lib/systemd/systemd' >/dev/null
+    exec /lib/systemd/systemd' >/dev/null || {
+  echo "hangup-systemd.sh: docker could not start $name" >&2
+  exit 2
+}
 cleanup() { docker rm -f "$name" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 
@@ -77,7 +83,10 @@ for _ in $(seq 1 300); do
 done
 docker exec "$name" test -e /run/sb-installed || { echo "hangup-systemd.sh: apt didn't finish in $name" >&2; exit 2; }
 pid=$(docker inspect -f '{{.State.Pid}}' "$name")
-nsenter -t "$pid" -m mount -o remount,rw /sys/fs/cgroup
+nsenter -t "$pid" -m mount -o remount,rw /sys/fs/cgroup || {
+  echo "hangup-systemd.sh: could not make $name's cgroup tree writable" >&2
+  exit 2
+}
 docker exec "$name" touch /run/sb-remounted
 
 # Until systemd is up (degraded counts: a container lacks some units).

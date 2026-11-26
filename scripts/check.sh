@@ -143,6 +143,8 @@ RUNTIME_RELEASES=(22.04 24.04 26.04)
 #   this gate), a crate's tests (crates/*/tests/), .config/ (nextest's
 #   profiles), rust-toolchain.toml, or CONSTRAINTS.md (the Tools table
 #   read above).
+# - hangup_changed: the same, for a file under crates/ or scripts/ (sb, or
+#   the gate that runs hangup's systemd test, at full).
 mapfile -d '' -t changed_files < <(
   # --no-renames: a file moved into docs/ is listed under its old path
   # too, so a moved test fixture or script isn't taken for a document.
@@ -154,11 +156,13 @@ scripts_changed=0
 release_changed=0
 github_changed=0
 rehearsal_changed=0
+hangup_changed=0
 if ((${#changed_files[@]} == 0)); then
   scripts_changed=1
   release_changed=1
   github_changed=1
   rehearsal_changed=1
+  hangup_changed=1
 else
   documents_only=1
   for f in "${changed_files[@]}"; do
@@ -169,6 +173,7 @@ else
     case $f in scripts/*) scripts_changed=1 ;; esac
     case $f in scripts/* | .github/*) release_changed=1 ;; esac
     case $f in .github/*) github_changed=1 ;; esac
+    case $f in crates/* | scripts/*) hangup_changed=1 ;; esac
     case $f in
     .github/* | scripts/* | crates/*/tests/* | .config/* | rust-toolchain.toml | CONSTRAINTS.md) rehearsal_changed=1 ;;
     esac
@@ -717,8 +722,8 @@ trap on_exit EXIT
 #   mount; no test does. SB_TEST_NO_SYSTEMD=1 tells the one test that needs
 #   systemd (sb's hangup test of a session scope's stop) so: it skips here
 #   and runs on a systemd of its own in a container,
-#   crates/sb/tests/hangup-systemd.sh, by hand (the maintainer,
-#   2026-11-17).
+#   crates/sb/tests/hangup-systemd.sh, which check.sh full runs (the
+#   maintainer, 2026-11-17 and 2026-11-26).
 # It guards against mistakes, not a hostile test: root keeps
 # CAP_SYS_ADMIN in it and could mount again (ADR-021).
 # unshare(1), mount(8) and ip(8):
@@ -1275,7 +1280,7 @@ task() {
   # Every test run in the sandbox (sandbox_argv), which hides systemd: the
   # one test that needs it is the container script's.
   if [[ $(id -u) == 0 ]]; then
-    echo "in the sandbox; hangup's a_session_scope_stop_takes_the_grace skips (no systemd): run crates/sb/tests/hangup-systemd.sh"
+    echo "in the sandbox; hangup's a_session_scope_stop_takes_the_grace skips (no systemd): check.sh full runs it in crates/sb/tests/hangup-systemd.sh's container"
   fi
   tests_in_sandbox cargo llvm-cov --locked --quiet "${pkg_args[@]}" --lcov --output-path target/lcov.info
   step "tests (doc tests)"
@@ -1489,6 +1494,31 @@ full() {
       exit 1
     fi
     echo "aarch64 (QEMU): ${out%%$'\n'*}"
+  fi
+  # hangup's session-scope test needs systemd, which the test steps'
+  # sandbox hides (sandbox_argv): it runs on a systemd of its own, in the
+  # container crates/sb/tests/hangup-systemd.sh starts (capped there:
+  # --cpus 2 --memory 2g), when a file under crates/ or scripts/ changed
+  # (the maintainer, 2026-11-26), in GitHub Actions too (release.yml's
+  # gate). Docker is the stage's tool already; the script needs root
+  # (nsenter), so a run that isn't root says it skips it; the script's
+  # own exit 2 (a tool missing, a container Docker couldn't start, apt or
+  # systemd that didn't come up) is no verdict.
+  step "hangup's session-scope test on systemd (crates/sb/tests/hangup-systemd.sh)"
+  if [[ $arch != x86_64 ]]; then
+    skip "the systemd hangup test runs on an x86_64 host, as the gate's other container checks, and this host is $arch"
+  elif ((hangup_changed == 0)); then
+    skip "nothing under crates/ or scripts/ changed since $base"
+  elif [[ $(id -u) != 0 ]]; then
+    skip "the systemd hangup test needs root (nsenter), and this run isn't root"
+  else
+    local hangup=0
+    crates/sb/tests/hangup-systemd.sh || hangup=$?
+    if ((hangup == 2)); then
+      echo "check: the systemd hangup test could not run" >&2
+      exit 2
+    fi
+    ((hangup == 0))
   fi
   # The CI rehearsal (CONSTRAINTS.md, "CI rehearsal"): ci.yml's task job,
   # read from ci.yml and run as a runner runs it, on each of its amd64

@@ -1353,6 +1353,14 @@ const REHEARSAL = {
   'scripts/ci-rehearsal.sh': '#!/bin/sh\nprintf \'%s|%s|%s|%s|%s\\n\' ci-rehearsal - - - "$*" >>"$STUB_LOG"\n'
     + 'exit "${REHEARSAL_STATUS:-0}"\n',
 };
+// hangup's systemd test check.sh full runs: a stub logging its call as the
+// stubbed tools do, its last line a result, its status HANGUP_STATUS (0
+// by default). Its own content runs its container, by hand or in a real
+// check.sh full.
+const HANGUP = {
+  'crates/sb/tests/hangup-systemd.sh': '#!/bin/sh\nprintf \'%s|%s|%s|%s|%s\\n\' hangup-systemd - - - "$*" >>"$STUB_LOG"\n'
+    + 'echo "RESULT: a_session_scope_stop_takes_the_grace stubbed"\nexit "${HANGUP_STATUS:-0}"\n',
+};
 // A workflow and an action, for the workflow linters to be run on.
 const WORKFLOWS = { '.github/workflows/ci.yml': 'on: push\n', '.github/actions/a/action.yml': 'runs:\n  using: composite\n' };
 const VERSIONS = {
@@ -1745,7 +1753,7 @@ const checkRun = (stage, { files = {}, work = {}, commits = [], base = 'HEAD', v
       'scripts/check.sh': readFileSync(join(SCRIPTS, 'check.sh'), 'utf8'),
       'build/qemu.Dockerfile': readFileSync(join(SCRIPTS, '../build/qemu.Dockerfile'), 'utf8'),
       'scripts/check-commit-messages.sh': readFileSync(join(SCRIPTS, 'check-commit-messages.sh'), 'utf8'),
-      ...RELEASE_TESTS, ...REHEARSAL, ...WORKFLOWS,
+      ...RELEASE_TESTS, ...REHEARSAL, ...HANGUP, ...WORKFLOWS,
       'CONSTRAINTS.md': TOOLS_MD, '.gitignore': '/target/\n', ...CRATES, ...files,
     }, 0o755);
     const commit = (message) => git('-c', 'user.name=test', '-c', 'user.email=test', 'commit', '-q', '--allow-empty', '-m', message);
@@ -2749,6 +2757,40 @@ test('check.sh task: each test run lists the tests it skipped, each once, with t
   const failed = checkRun('task', { work, env: { STUB_SKIPS: 'a', RUN_FAILS_AT: 'llvm-cov' } });
   assert.equal(failed.status, 101, failed.output);
   assert.ok(stepOutput(failed.output, TEST_RUNS[0][0]).includes('\nskipped: 1\nskipped: llvm-cov::a (crates/foo/tests/t.rs): needs root\n'), failed.output);
+});
+
+// hangup's session-scope test needs systemd, which the sandbox hides: full
+// runs it in its container when a file under crates/ or scripts/ changed,
+// in GitHub Actions too; its failure fails the gate and its own exit 2 is
+// no verdict; task never runs it, nor does another architecture or a run
+// that isn't root.
+const hangupRuns = (r) => r.calls.filter((c) => c.tool === 'hangup-systemd').length;
+test('check.sh full: hangup\'s systemd test runs when crates/ or scripts/ changed, and its failure fails the gate', () => {
+  for (const f of ['crates/foo/src/lib.rs', 'scripts/x.sh']) {
+    const r = checkRun('full', { work: { [f]: '// changed\n' } });
+    passes(r, 'full');
+    assert.equal(hangupRuns(r), 1, f + ':\n' + r.output);
+    assert.match(stepOutput(r.output, "hangup's session-scope test"), /RESULT: a_session_scope_stop_takes_the_grace stubbed/, r.output);
+  }
+  // A clean tree runs every step, in GitHub Actions too (release.yml's gate).
+  assert.equal(hangupRuns(checkRun('full')), 1);
+  assert.equal(hangupRuns(checkRun('full', { env: { GITHUB_ACTIONS: 'true' } })), 1);
+  const notRoot = checkRun('full', { work: { 'crates/foo/src/lib.rs': '// changed\n' }, env: { STUB_UID: '1000' } });
+  passes(notRoot, 'full');
+  assert.equal(hangupRuns(notRoot), 0, notRoot.output);
+  assert.match(notRoot.output, /skipped: the systemd hangup test needs root/, notRoot.output);
+  const other = checkRun('full', { work: { '.github/workflows/ci.yml': 'on: push\n# changed\n' } });
+  passes(other, 'full');
+  assert.equal(hangupRuns(other), 0, other.output);
+  assert.match(other.output, /skipped: nothing under crates\/ or scripts\/ changed since HEAD/, other.output);
+  const work = { 'crates/foo/src/lib.rs': '// changed\n' };
+  assert.equal(hangupRuns(checkRun('task', { work })), 0);
+  const arm = checkRun('full', { work, arch: 'aarch64', versions: { cross: null, docker: null } });
+  passes(arm, 'full');
+  assert.equal(hangupRuns(arm), 0, arm.output);
+  assert.match(arm.output, /skipped: the systemd hangup test runs on an x86_64 host/, arm.output);
+  refuses(checkRun('full', { work, env: { HANGUP_STATUS: '1' } }), 1, /RESULT: a_session_scope_stop_takes_the_grace stubbed/);
+  refuses(checkRun('full', { work, env: { HANGUP_STATUS: '2' } }), 2, /check: the systemd hangup test could not run/);
 });
 
 // A run asked for the root tests (ci.yml sets SB_TEST_ROOT=1 and keeps it

@@ -298,7 +298,9 @@ and sb-host's tests) under this profile:
     maintainer):* every test run of the gate is in the sandbox now
     (`sandbox_argv`), so the Tests step skips it too, and it runs by hand
     on a systemd of its own in a container,
-    `crates/sb/tests/hangup-systemd.sh`.
+    `crates/sb/tests/hangup-systemd.sh`. *Amended 2026-11-26 (the
+    maintainer):* `check.sh full` runs that container when a file under
+    `crates/` or `scripts/` changed.
 
   The working directory is entered again by its path inside, since it
   still names the mount it was entered through. Each step that fails, and

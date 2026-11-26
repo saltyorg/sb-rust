@@ -626,9 +626,10 @@ boundaries that callers match on.
   run under `nohup` shows a hangup then doesn't cancel. The one that stops
   a session scope (`a_session_scope_stop_takes_the_grace`) needs systemd,
   which the gate's sandbox hides: it skips in the gate's test runs and
-  runs by hand on a systemd of its own, in a container
-  (`crates/sb/tests/hangup-systemd.sh`, with the container matrices).
-  *Amended 2026-11-17.*
+  runs on a systemd of its own, in a container
+  (`crates/sb/tests/hangup-systemd.sh`, with the container matrices),
+  which `check.sh full` starts when a file under `crates/` or `scripts/`
+  changed. *Amended 2026-11-17 and 2026-11-26 (the maintainer).*
 - Tests that need root or a real `/var/log/sb` run only when asked (an
   environment variable), never by default.
 - Each new test is confirmed by breaking the code it covers. Coverage and
