@@ -31,7 +31,7 @@ invented; no test reads the host's data.
 - [x] 1.8a: check.sh's skip lines and ci.yml's base for a push.
 - [x] 1.8b: the rehearsal's base and `job.py`.
 - [x] 1.9: the gate's tests run the real `node`.
-- [ ] 1.10: the floor guard's rules are tested against the real check.sh
+- [x] 1.10: the floor guard's rules are tested against the real check.sh
       and CONSTRAINTS.md.
 - [ ] Checkpoint: the rehearsal, `full <batch start>`, Q3's measurement
       recorded and its outcome applied.

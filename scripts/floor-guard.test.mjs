@@ -3168,3 +3168,223 @@ test('check.sh: a test that writes /etc fails the run', () => {
     rmSync(etc, { force: true });
   }
 });
+
+// The guard's rules against the gate's own files, not hand-written copies
+// of them: in a scratch repository holding the real file, each threshold,
+// mutation scope, numbered rule, deny.toml setting and workspace lint
+// level is loosened in turn, and the guard must flag it, and a tightening
+// beside each stays clean. Every line of what they read is accounted for,
+// so one the cases can't read (a threshold reshaped into an array, a
+// table or key of another shape) fails here.
+const REAL = join(SCRIPTS, '..');
+const realFile = (f) => readFileSync(join(REAL, f), 'utf8');
+// Blocks: the change gives a blocking finding of `rule` (a name, or a
+// pattern of names), and the run fails.
+const blocks = (base, change, rule) => {
+  const r = run(base, change);
+  assert.equal(r.status, 1, r.output);
+  const is = (f) => (rule instanceof RegExp ? rule.test(f.split(' ')[0]) : f.startsWith(rule + ' '));
+  assert.ok(r.found.some(is), rule + ':\n' + r.output);
+};
+// `text` with `from` (found at `index`) replaced by `to`, by position.
+const splice = (text, index, from, to) => text.slice(0, index) + to + text.slice(index + from.length);
+const looser = (value, dir) => String(dir === 'MIN' ? Number(value) / 2 : Number(value) * 2 + 1);
+const stricter = (value, dir) => String(dir === 'MIN' ? Number(value) * 2 : Number(value) / 2);
+// A constant whose name has MIN or MAX as a part, as the guard reads one.
+const BOUND = /(?:^|_)(MIN|MAX)(?:_|$)/;
+// A shell line without its comment (a `#` opening the line or after a
+// space; `${#x}` and `$#` stay).
+const shellCode = (line) => line.replace(/(^|\s)#.*$/, '');
+// check.sh's plain thresholds, `NAME=number` opening a line (a readonly,
+// export, local or declare before it, as the guard reads it), each with
+// its index in the text.
+const plainThresholds = (text) => [...text.matchAll(
+  /^(?:(?:readonly|export|local|declare(?:\s+-\w+)*)\s+)?([A-Z0-9_]+)=(\d+(?:\.\d+)?)(?=[ \t]|$)/gm)]
+  .filter((m) => BOUND.test(m[1]));
+
+test('the real check.sh: each *_MIN and *_MAX threshold loosened is flagged, tightened is clean, and each is a plain number', () => {
+  const text = realFile(CHECK);
+  const plain = plainThresholds(text);
+  // Every MIN or MAX name the script's code holds, anywhere: each must
+  // have its one plain assignment, the shape the guard compares.
+  const named = new Set(text.split('\n').flatMap((l) => shellCode(l).match(/\b[A-Z0-9_]+\b/g) ?? []).filter((n) => BOUND.test(n)));
+  const counts = new Map();
+  for (const m of plain) counts.set(m[1], (counts.get(m[1]) ?? 0) + 1);
+  for (const name of named) {
+    assert.equal(counts.get(name), 1,
+      name + ': a threshold check.sh sets other than once as NAME=number, which this test (and the guard) can\'t loosen');
+  }
+  assert.ok(plain.length >= 9, plain.map((m) => m[1]).join(' '));
+  for (const m of plain) {
+    const [line, name, value] = m;
+    const dir = BOUND.exec(name)[1];
+    const to = (v) => splice(text, m.index, line, line.replace(name + '=' + value, name + '=' + v));
+    blocks({ [CHECK]: text }, { [CHECK]: to(looser(value, dir)) }, 'threshold-loosened');
+    clean({ [CHECK]: text }, { [CHECK]: to(stricter(value, dir)) });
+  }
+});
+
+test('the real check.sh: each MUTATION_TESTERS entry narrowed, or a new one, is flagged, a tester added is clean', () => {
+  const text = realFile(CHECK);
+  const entries = [...text.matchAll(/^MUTATION_TESTERS\[([\w-]+)\]="([^"]*)"$/gm)];
+  // Every line of code that sets it, in any shape, but its empty
+  // declaration: each is an entry read here.
+  const sets = text.split('\n').map(shellCode).filter((l) => /(^|\s)(declare\s+-\w+\s+)?MUTATION_TESTERS(\[|\+?=)/.test(l)
+    && !/^declare -A MUTATION_TESTERS=\(\)\s*$/.test(l));
+  assert.equal(entries.length, sets.length, 'an entry this test can\'t read: ' + sets.join(' | '));
+  assert.ok(entries.length >= 1);
+  for (const m of entries) {
+    const [line, key, testers] = m;
+    const fewer = testers.split(' ').slice(0, -1).join(' ');
+    blocks({ [CHECK]: text }, { [CHECK]: splice(text, m.index, line, 'MUTATION_TESTERS[' + key + ']="' + fewer + '"') },
+      'mutation-scope-narrowed');
+    // A tester added widens the scope: only the changed gate line is
+    // reported, for the reviewer.
+    reports({ [CHECK]: text }, { [CHECK]: splice(text, m.index, line, 'MUTATION_TESTERS[' + key + ']="' + testers + ' sb-more"') },
+      'gate-line-removed ' + CHECK);
+  }
+  const [first] = entries;
+  blocks({ [CHECK]: text }, { [CHECK]: splice(text, first.index, first[0], first[0] + '\nMUTATION_TESTERS[sb-not-a-crate]="sb"') },
+    'mutation-scope-narrowed');
+});
+
+// The rows of CONSTRAINTS.md's "Enforced with numbers" table, each with its
+// index in the text.
+const enforcedRows = (text) => {
+  const from = text.indexOf('## Enforced with numbers');
+  const to = text.indexOf('\n## ', from + 1);
+  return [...text.slice(from, to).matchAll(/^\|.*$/gm)].filter((m) => !/^\|\s*(Dimension|---)/.test(m[0]))
+    .map((m) => ({ row: m[0], index: from + m.index }));
+};
+// The row of each check.sh threshold, by its Dimension (the "keep in step"
+// of check.sh's thresholds): a new threshold needs its row named here.
+const THRESHOLD_ROWS = {
+  COVERAGE_MIN: 'Coverage', MUTATION_MIN: 'Mutation', STARTUP_MAX_MS: 'Startup', SIZE_MAX_BYTES: 'Binary size',
+  PROJECT_LINES_MIN: 'Project coverage', PROJECT_FUNCTIONS_MIN: 'Project coverage', PROJECT_COVERAGE_TOLERANCE_MAX: 'Project coverage',
+  SIZE_RATCHET_MAX_BYTES: 'Production binary size', SIZE_TOLERANCE_MAX_PCT: 'Production binary size',
+};
+
+test('the real CONSTRAINTS.md: each check.sh threshold\'s number in its row loosened is flagged, tightened is clean', () => {
+  const text = realFile(CONS);
+  const rows = enforcedRows(text);
+  const plain = plainThresholds(realFile(CHECK));
+  assert.deepEqual(plain.map((m) => m[1]).sort(), Object.keys(THRESHOLD_ROWS).sort(), 'a threshold whose row this test doesn\'t name');
+  for (const [, name, value] of plain) {
+    const dimension = THRESHOLD_ROWS[name];
+    const at = rows.find((r) => r.row.split('|')[1].trim().replace(/ \(.*\)$/, '') === dimension);
+    assert.ok(at, dimension + ' row');
+    // The number as the row writes it: digits grouped with commas or not.
+    const spelled = new RegExp('(?<![\\d.,])' + value.replace(/\B(?=(\d{3})+(?!\d))/g, ',?').replace('.', '\\.') + '(?![\\d,]*\\d|\\.\\d)');
+    const m = spelled.exec(at.row);
+    assert.ok(m, name + '=' + value + ' in the ' + dimension + ' row: ' + at.row.slice(0, 80));
+    // Written as the row writes it. The guard reads digits grouped with
+    // commas as a number each, the direction word beside the first alone,
+    // so it flags any change of a grouped number (threshold-changed),
+    // a tightening too: loosened, it blocks either way.
+    const dir = BOUND.exec(name)[1];
+    const change = (v) => ({ [CONS]: splice(text, at.index, at.row, splice(at.row, m.index, m[0], v)) });
+    if (m[0].includes(',')) {
+      blocks({ [CONS]: text }, change(Number(looser(value, dir)).toLocaleString('en-US')), /^threshold-(loosened|changed)$/);
+      continue;
+    }
+    blocks({ [CONS]: text }, change(looser(value, dir)), 'threshold-loosened');
+    clean({ [CONS]: text }, change(stricter(value, dir)));
+  }
+});
+
+test('the real CONSTRAINTS.md: each number of each Enforced row changed one way or the other is flagged', () => {
+  const text = realFile(CONS);
+  const rows = enforcedRows(text);
+  assert.ok(rows.length >= 15, rows.length + ' rows');
+  let numbers = 0;
+  for (const { row, index } of rows) {
+    for (const m of row.matchAll(/\d+(?:\.\d+)?/g)) {
+      numbers += 1;
+      const flagged = [String(Number(m[0]) / 2), String(Number(m[0]) * 2 + 1)].some((to) => {
+        const r = run({ [CONS]: text }, { [CONS]: splice(text, index, row, splice(row, m.index, m[0], to)) });
+        return r.status === 1 && r.found.some((f) => /^threshold-/.test(f));
+      });
+      assert.ok(flagged, 'no change to ' + m[0] + ' is flagged in: ' + row.slice(0, 80));
+    }
+  }
+  assert.ok(numbers >= 50, numbers + ' numbers');
+});
+
+test('the real deny.toml: each setting and list member changed, each list widened and each architecture entry widened is flagged', () => {
+  const text = realFile(DENY);
+  const lines = text.split('\n');
+  let table = '', list = null, settings = 0, offset = 0;
+  const unread = [];
+  const at = (i) => lines.slice(0, i).reduce((n, l) => n + l.length + 1, 0);
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const header = /^\[([\w.-]+)\]\s*$/.exec(line);
+    if (header) { table = header[1]; list = null; continue; }
+    if (!/^(advisories|licenses|bans|sources)(\.|$)/.test(table) || /^\s*(#.*)?$/.test(line)) continue;
+    const change = (to) => ({ [DENY]: splice(text, at(i), line, to) });
+    if (list) {
+      if (/^\]/.test(line)) { list = null; continue; }
+      // The members of a list the guard holds as settings (a feature ban):
+      // each changed is flagged; the architecture entries are below; the
+      // lists that loosen with a new member were widened at their start.
+      if (list.rule === 'setting') {
+        settings += 1;
+        blocks({ [DENY]: text }, change(line.replace(/\[[^\]]*\]/, '[]')), 'deny-setting-changed');
+      } else if (list.rule === 'architecture' && !/wrappers\s*=/.test(line)) {
+        unread.push(line);
+      }
+      continue;
+    }
+    const m = /^([\w-]+)\s*=\s*(.*)$/.exec(line);
+    if (!m) { unread.push(line); continue; }
+    const [, key, value] = m;
+    if (value.startsWith('[')) {
+      const listRule = { 'advisories.ignore': 'advisory-ignored', 'licenses.allow': 'licence-added' }[table + '.' + key];
+      list = { rule: listRule ?? (table === 'bans' && key === 'deny' ? 'architecture' : 'setting') };
+      if (listRule) {
+        const member = listRule === 'advisory-ignored' ? '    { id = "RUSTSEC-2099-0001", reason = "test" },' : '    "WTFPL",';
+        blocks({ [DENY]: text }, change(line + '\n' + member), listRule);
+      }
+      if (value.endsWith(']')) list = null;
+      continue;
+    }
+    settings += 1;
+    const other = value.startsWith('"') ? (value === '"allow"' ? '"warn"' : '"allow"')
+      : value === 'true' ? 'false' : value === 'false' ? 'true' : String(Number(value) / 2);
+    blocks({ [DENY]: text }, change(key + ' = ' + other), 'deny-setting-changed');
+  }
+  assert.deepEqual(unread, [], 'deny.toml lines this test can\'t read');
+  assert.ok(settings >= 7, settings + ' settings');
+  const entries = [...text.matchAll(/^(\s*\{ crate = "[\w-]+", wrappers = \[)/gm)];
+  assert.equal(entries.length, [...text.matchAll(/wrappers\s*=/g)].length, 'an architecture entry this test can\'t read');
+  for (const m of entries) {
+    blocks({ [DENY]: text }, { [DENY]: splice(text, m.index, m[1], m[1] + '"sb-widened", ') }, 'wrappers-widened');
+  }
+  // A tightening beside them: an architecture entry narrowed.
+  const [first] = entries;
+  const narrowed = text.slice(first.index).replace(/^(\s*\{ crate = "[\w-]+", wrappers = \[)"[\w-]+", /, '$1');
+  assert.notEqual(narrowed, text.slice(first.index));
+  clean({ [DENY]: text }, { [DENY]: text.slice(0, first.index) + narrowed });
+});
+
+test('the real Cargo.toml: each workspace lint set to allow is flagged, one raised to forbid is clean', () => {
+  const text = realFile(ROOT);
+  const lines = text.split('\n');
+  let table = '', lints = 0;
+  const at = (i) => lines.slice(0, i).reduce((n, l) => n + l.length + 1, 0);
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const header = /^\[([\w.-]+)\]\s*$/.exec(line);
+    if (header) { table = header[1]; continue; }
+    if (!table.startsWith('workspace.lints') || /^\s*(#.*)?$/.test(line)) continue;
+    // Any key the guard reads: bare, quoted or dotted, indented or not.
+    const m = /^\s*((?:[\w-]+|"[^"]*")(?:\.(?:[\w-]+|"[^"]*"))*)\s*=\s*(.*)$/.exec(line);
+    assert.ok(m, 'a workspace lint line this test can\'t read: ' + line);
+    lints += 1;
+    const allowed = m[2].replace(/"(warn|deny|forbid)"/, '"allow"');
+    assert.notEqual(allowed, m[2], 'a lint level this test can\'t read (one opted out needs its own case): ' + line);
+    blocks({ [ROOT]: text }, { [ROOT]: splice(text, at(i), line, m[1] + ' = ' + allowed) }, 'lint-weakened');
+    clean({ [ROOT]: text }, { [ROOT]: splice(text, at(i), line, m[1] + ' = ' + m[2].replace(/"(warn|deny)"/, '"forbid"')) });
+  }
+  assert.ok(lints >= 9, lints + ' lints');
+});
