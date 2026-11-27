@@ -31,8 +31,11 @@
 #   NEW's journalctl (decision 10's bisect, Difference 18).
 #
 # Containers (sbj-compat-..., or $SBJ_PREFIX-compat-...) are removed on
-# exit; their files stay in target/journal-compat. Two runs in one tree
-# must not overlap: they share both. Needs Docker, and cross unless
+# exit; their files stay in target/journal-compat. Stage 1's root writes
+# them and hands them back to the caller, so a caller that isn't root (a
+# CI runner) can remove them, as the next run does; the run fails if any
+# is left that the caller can't remove. Two runs in one tree must not
+# overlap: they share both. Needs Docker, and cross unless
 # SBJ_BIN is set (example.sh builds the example in sb's build image); the
 # host runs the example, so it needs 22.04's glibc or newer.
 set -euo pipefail
@@ -56,6 +59,7 @@ new=("$@")
 [ ${#new[@]} -gt 0 ] || mapfile -t new < <("$bin" releases | cut -d' ' -f1)
 checks=$PWD/crates/journal/tests/checks.sh
 work=$PWD/target/journal-compat
+owner=$(id -u):$(id -g)
 
 containers=()
 # shellcheck disable=SC2317 # called by the EXIT trap
@@ -284,13 +288,24 @@ for o in "${old[@]}"; do
   [[ $o =~ ^[0-9]+\.[0-9]+$ ]] || { echo "$o: not a release"; exit 2; }
 done
 
+# Paths under DIR not handed back to its caller: not its own, or a
+# directory it can't write to, and find's errors on any it can't read.
+# A root caller can remove anything, so only a caller that isn't root
+# finds one.
+not_removable() { # dir
+  find "$1" \( ! -user "$(id -u)" -o -type d ! -writable \) -print 2>&1 || true
+}
+
 status=0
 for o in "${old[@]}"; do
   rm -rf "${work:?}/$o"
   mkdir -p "$work/$o"
   gen_exports "$work/$o/gen"
   mounts=(-v "$work/$o:/out")
-  run "${SBJ_PREFIX:-sbj}-compat-${o/./}" "$o" produce "$o" || status=1
+  c=${SBJ_PREFIX:-sbj}-compat-${o/./}
+  run "$c" "$o" produce "$o" || status=1
+  # Whatever produce's result: the container's root wrote the files.
+  docker exec "$c" chown -R "$owner" /out || { echo "$o: files not handed back to $owner"; status=1; }
 done
 for o in "${old[@]}"; do
   [ -f "$work/$o/machine-id" ] || continue
@@ -306,5 +321,9 @@ for o in "${old[@]}"; do
     mounts=(-v "$work/$o:/old:ro")
     run "${SBJ_PREFIX:-sbj}-compat-${o/./}-on-${image/./}" "$image" upgrade "$o" "$rel" "$image" "$want" || status=1
   done
+done
+for o in "${old[@]}"; do
+  left=$(not_removable "$work/$o")
+  [ -z "$left" ] || { printf '%s: not removable by %s:\n%s\n' "$o" "$owner" "$left"; status=1; }
 done
 exit $status

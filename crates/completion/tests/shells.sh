@@ -31,8 +31,10 @@
 # and SBC_DOCKER_OPTS adds `docker run` options, such as `--cpuset-cpus`
 # to pin its cores. It needs the network for apt only; the host's trees
 # are never mounted but for sb itself, read-only. Results go to
-# target/completion-shells/<release>/; the last line per release is its
-# result.
+# target/completion-shells/<release>/, handed back to the caller by the
+# container's root (a caller that isn't root, such as a CI runner, can
+# then remove them, as the next run does); the last line per release is
+# its result.
 set -euo pipefail
 cd "$(dirname "$0")/../../.."
 bin=${SB_BIN:-target/debug/sb}
@@ -48,10 +50,18 @@ for rel in "${releases[@]}"; do
   [[ $rel =~ ^[0-9]{2}\.[0-9]{2}$ ]] || { echo "shells.sh: $rel is not a release like 24.04" >&2; exit 2; }
 done
 here=$PWD/crates/completion/tests
+owner=$(id -u):$(id -g)
 container=""
 # shellcheck disable=SC2317 # called by the EXIT trap
 cleanup() { [ -z "$container" ] || docker rm -fv "$container" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
+# Paths under DIR not handed back to its caller: not its own, or a
+# directory it can't write to, and find's errors on any it can't read.
+# A root caller can remove anything, so only a caller that isn't root
+# finds one.
+not_removable() { # dir
+  find "$1" \( ! -user "$(id -u)" -o -type d ! -writable \) -print 2>&1 || true
+}
 # The newest glibc version the binary's dynamic symbols need; a file
 # objdump can't read them from is refused.
 if ! symbols=$(objdump -T "$bin" 2>&1); then
@@ -93,8 +103,11 @@ for rel in "${releases[@]}"; do
     -v "$here/fixtures/sb-go:/check/sb-go:ro" \
     -v "$out:/out" \
     ${SBC_DOCKER_OPTS:-} \
-    "ubuntu:$rel" bash /check/inside.sh "$rel" >"$out/run.log" 2>&1 || status=1
+    "ubuntu:$rel" bash -c 'bash /check/inside.sh "$1"; s=$?; chown -R "$2" /out || s=1; exit "$s"' \
+    _ "$rel" "$owner" >"$out/run.log" 2>&1 || status=1
   container=""
+  left=$(not_removable "$out")
+  [ -z "$left" ] || { printf 'shells.sh: %s: not removable by %s:\n%s\n' "$rel" "$owner" "$left"; status=1; }
   grep -E '^(PASS|FAIL|NOTE):' "$out/run.log" || true
   tail -n 1 "$out/run.log"
 done

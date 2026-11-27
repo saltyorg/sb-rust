@@ -41,8 +41,10 @@
 # the svm proxy, GitHub (sb-go's releases, the Saltbox repository, uv,
 # Python and saltbox.fact) and PyPI; the host's own trees are never
 # mounted, and the script never runs on the host. Logs go to
-# target/install-tests/<release>/; the last line per release is its
-# result.
+# target/install-tests/<release>/, handed back to the caller by the
+# container's root (a caller that isn't root, such as a CI runner, can
+# then remove them, as the next run does); the last line per release is
+# its result.
 set -euo pipefail
 [ -x "${SBI_SB:-}" ] || { echo "containers.sh: SBI_SB must name an executable" >&2; exit 2; }
 sb=$(realpath "$SBI_SB")
@@ -55,11 +57,19 @@ for rel in "${releases[@]}"; do
   [[ $rel =~ ^[0-9]{2}\.[0-9]{2}$ ]] || { echo "containers.sh: $rel is not a release like 24.04" >&2; exit 2; }
 done
 out=$PWD/target/install-tests
+owner=$(id -u):$(id -g)
 
 container=""
 # shellcheck disable=SC2317 # called by the EXIT trap
 cleanup() { [ -z "$container" ] || docker rm -fv "$container" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
+# Paths under DIR not handed back to its caller: not its own, or a
+# directory it can't write to, and find's errors on any it can't read.
+# A root caller can remove anything, so only a caller that isn't root
+# finds one.
+not_removable() { # dir
+  find "$1" \( ! -user "$(id -u)" -o -type d ! -writable \) -print 2>&1 || true
+}
 
 # Runs inside the container, as root, from /sbtest/out/inner.sh with no
 # stdin: $1 the release. The script is /sbtest/install/install.sh, the sb
@@ -189,8 +199,12 @@ for rel in "${releases[@]}"; do
   # An hour at most: a hung download ends the run, not only the 3 h sleep.
   timeout 3600 docker exec "$container" bash /sbtest/out/inner.sh "$rel" </dev/null 2>&1 \
     | tee "$out/$rel/summary.log" || status=$?
+  # Whatever the run's result: the container's root wrote the logs.
+  docker exec "$container" chown -R "$owner" /sbtest/out || status=1
   docker rm -fv "$container" >/dev/null 2>&1 || true
   container=""
+  left=$(not_removable "$out/$rel")
+  [ -z "$left" ] || { printf 'containers.sh: %s: not removable by %s:\n%s\n' "$rel" "$owner" "$left" >&2; exit 1; }
   [ "$status" = 0 ] || { echo "containers.sh: $rel failed; logs in $out/$rel" >&2; exit 1; }
   grep -q "^RESULT: $rel .*: passed;" "$out/$rel/summary.log" \
     || { echo "containers.sh: $rel ended without its result line; logs in $out/$rel" >&2; exit 1; }

@@ -57,8 +57,9 @@
 # limit; SBU_DOCKER_OPTS adds options such as `--cpuset-cpus`. Inside it
 # reaches Ubuntu's mirrors, GitHub and PyPI; the host's own trees are
 # never mounted but install/ (read-only) and the run's output directory,
-# target/upgrade-tests/<release>/, where the logs go; the last line is
-# the result.
+# target/upgrade-tests/<release>/, where the logs go, handed back to the
+# caller by the container's root (a caller that isn't root can then
+# remove them, as the next run does); the last line is the result.
 set -euo pipefail
 for var in SBU_SB SBU_SB_BETA SBU_SB_NEXT SBU_SB_NEXT_BETA; do
   [ -x "${!var:-}" ] || { echo "upgrade.sh: $var must name an executable" >&2; exit 2; }
@@ -70,6 +71,7 @@ rel=${1:-24.04}
 [[ $rel =~ ^(24|26)\.04$ ]] || { echo "upgrade.sh: $rel is not a release setup supports (24.04, 26.04)" >&2; exit 2; }
 prefix=${SBU_PREFIX:-sbupgrade}
 out=$PWD/target/upgrade-tests/$rel
+owner=$(id -u):$(id -g)
 rm -rf "$out"
 mkdir -p "$out/assets/1.0.0" "$out/assets/1.0.1"
 cp "$SBU_SB" "$out/assets/1.0.0/sb_linux_amd64"
@@ -82,6 +84,13 @@ container=""
 # shellcheck disable=SC2317 # called by the EXIT trap
 cleanup() { [ -z "$container" ] || docker rm -fv "$container" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
+# Paths under DIR not handed back to its caller: not its own, or a
+# directory it can't write to, and find's errors on any it can't read.
+# A root caller can remove anything, so only a caller that isn't root
+# finds one.
+not_removable() { # dir
+  find "$1" \( ! -user "$(id -u)" -o -type d ! -writable \) -print 2>&1 || true
+}
 
 cat >"$out/inner.sh" <<'EOS'
 set -eEuo pipefail
@@ -292,8 +301,12 @@ status=0
 # An hour at most; --foreground, so a Ctrl-C reaches docker exec too.
 timeout --foreground 3600 docker exec -e SBU_UPDATE_ARGS="${SBU_UPDATE_ARGS:-}" "$container" \
   bash /sbtest/out/inner.sh "$rel" </dev/null 2>&1 | tee "$out/summary.log" || status=$?
+# Whatever the run's result: the container's root wrote the logs.
+docker exec "$container" chown -R "$owner" /sbtest/out || status=1
 docker rm -fv "$container" >/dev/null 2>&1 || true
 container=""
+left=$(not_removable "$out")
+[ -z "$left" ] || { printf 'upgrade.sh: not removable by %s:\n%s\n' "$owner" "$left" >&2; exit 1; }
 [ "$status" = 0 ] || { echo "upgrade.sh: $rel failed; logs in $out" >&2; exit 1; }
 grep -q "^RESULT: $rel .*: passed;" "$out/summary.log" \
   || { echo "upgrade.sh: $rel ended without its result line; logs in $out" >&2; exit 1; }
