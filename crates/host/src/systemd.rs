@@ -1044,40 +1044,115 @@ esac"#
         assert_eq!(found, []);
     }
 
+    /// The two listings run at once, and so do `show` and `list-timers`
+    /// after them (`tokio::join!` twice): each call of a pair marks that
+    /// it started and answers only once its partner has started too, so
+    /// calls made one after another fail. A listing that fails fails the
+    /// call; a `show` or `list-timers` that fails leaves the times or the
+    /// timer's next run out. Each checks for its partner 400 times, 10 ms
+    /// apart (about 4 s, more on a loaded host), under the 10 s call
+    /// timeout, so the stand-in's own failure names the missing partner.
+    #[tokio::test]
+    async fn the_listings_and_then_show_and_list_timers_run_at_once() {
+        let _spawns = SPAWNS.lock().await;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let f = fixtures("26.04");
+        let (f, d) = (f.display(), dir.path().display());
+        let program = stand_in(
+            dir.path(),
+            "systemctl",
+            &format!(
+                r#"partner() {{
+  : > '{d}/'"$1"
+  i=0
+  while [ ! -e '{d}/'"$2" ]; do
+    i=$((i + 1))
+    [ "$i" -le 400 ] || {{ echo "$1: $2 never started" >&2; exit 9; }}
+    sleep 0.01
+  done
+}}
+case "$1" in
+  list-units) partner units files; cat '{f}/list-units.json' ;;
+  list-unit-files) partner files units; cat '{f}/list-unit-files.json' ;;
+  show) partner show timers; cat '{f}/show.txt' ;;
+  list-timers) partner timers show; cat '{f}/list-timers.json' ;;
+  *) echo "unexpected: $*" >&2; exit 9 ;;
+esac"#
+            ),
+        );
+        let timeout = Duration::from_secs(10);
+        let start = Instant::now();
+        let found = Systemd::new()
+            .with_program(&program)
+            .with_timeout(timeout)
+            .services(&default_filters(), &CancellationToken::new())
+            .await
+            .expect("both listings answered: they ran at once");
+        let took = start.elapsed();
+        assert_eq!(found.len(), 7);
+        assert!(
+            found.iter().any(|s| s.active_enter.is_some()),
+            "show answered, so it ran beside list-timers: {found:?}"
+        );
+        let job = found
+            .iter()
+            .find(|s| s.name == "saltbox_managed_job")
+            .expect("the job");
+        assert_eq!(
+            job.timer.as_ref().and_then(|timer| timer.next),
+            Some(at("2026-01-16T00:00:00Z")),
+            "list-timers answered, so it ran beside show"
+        );
+        // Loose: calls at once take milliseconds.
+        assert!(took < timeout, "{took:?}");
+    }
+
+    /// A hung `show` and `list-timers` end at the call timeout, killed,
+    /// and at once (they run together), so the call takes at most two
+    /// timeouts with the listings; it still lists the services, with no
+    /// times and no next run.
     #[tokio::test]
     async fn the_listings_run_at_once_so_the_call_takes_at_most_two_timeouts() {
         let _spawns = SPAWNS.lock().await;
         let dir = tempfile::tempdir().expect("tempdir");
-        let f = fixtures("22.04");
+        let f = fixtures("26.04");
         let f = f.display();
-        // list-units and list-unit-files answer after most of a timeout;
-        // show and list-timers (the job has a timer) never end.
         let program = stand_in(
             dir.path(),
             "systemctl",
             &format!(
                 r#"case "$1" in
-  list-units) sleep 1.2; cat '{f}/list-units.json' ;;
-  list-unit-files) sleep 1.2; cat '{f}/list-unit-files.json' ;;
-  *) exec sleep 60 ;;
+  list-units) cat '{f}/list-units.json' ;;
+  list-unit-files) cat '{f}/list-unit-files.json' ;;
+  show|list-timers) exec sleep 60 ;;
+  *) echo "unexpected: $*" >&2; exit 9 ;;
 esac"#
             ),
         );
+        let timeout = Duration::from_secs(3);
         let start = Instant::now();
         let found = Systemd::new()
             .with_program(&program)
-            .with_timeout(Duration::from_secs(2))
+            .with_timeout(timeout)
             .services(&default_filters(), &CancellationToken::new())
             .await
-            .expect("list");
+            .expect("listed despite the hung calls");
         let took = start.elapsed();
         assert_eq!(found.len(), 7);
-        assert!(found.iter().all(|s| s.active_enter.is_none()));
-        // The listings at once, then one timeout for show and list-timers
-        // at once (3.2 s), and the kills; one after another the calls
-        // would take 1.2 + 1.2 + 2 + 2 s.
-        assert!(took >= Duration::from_millis(3200), "{took:?}");
-        assert!(took < Duration::from_millis(5800), "{took:?}");
+        assert!(
+            found
+                .iter()
+                .all(|s| (s.active_enter, s.state_change) == (None, None)),
+            "{found:?}"
+        );
+        let job = found
+            .iter()
+            .find(|s| s.name == "saltbox_managed_job")
+            .expect("the job");
+        assert_eq!(job.timer.as_ref().and_then(|timer| timer.next), None);
+        // The hung calls ended at their timeout, not at their 60 s.
+        assert!(took >= timeout, "{took:?}");
+        assert!(took < 2 * timeout, "{took:?}");
     }
 
     #[tokio::test]
