@@ -204,10 +204,18 @@ jobs:
   # The suites CONSTRAINTS.md and the specs run by hand at each checkpoint:
   # the completion shells, the journal matrix and, once a stable release
   # exists for its live --repair cases, the install-script containers.
+  #
+  # The suites run sb as it ships (ADR-020): the production build through
+  # cross, in the oldest release's image (Cross.toml), as the build job and
+  # check.sh's production build make it, so it needs 22.04's glibc at most
+  # and runs in every release's container. A build on the runner would
+  # need the runner's glibc (24.04's 2.39), which 22.04's lacks.
   containers:
     name: container suites
     runs-on: ubuntu-24.04
     timeout-minutes: 120
+    env:
+      SB_SHIPPED: target/cross-gnu/x86_64-unknown-linux-gnu/production/sb
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -218,10 +226,22 @@ jobs:
         with:
           tool: cross@0.2.5
           fallback: none
+      # Built with the release variables, which the install-script
+      # containers check (`sb version` against the tag and the release
+      # channel); Cross.toml passes them into cross's container.
+      - name: sb, built as it ships
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          SB_VERSION=$TAG SB_GIT_COMMIT=${GITHUB_SHA::7} SB_CHANNEL=release CARGO_TARGET_DIR=$PWD/target/cross-gnu \
+            cross build --locked -p sb --profile production --target x86_64-unknown-linux-gnu
+          ls -l "$SB_SHIPPED"
+      # shells.sh refuses a binary that needs a newer glibc than a
+      # release's; shells.test.sh tests that refusal first.
       - name: Completion shells
         run: |
-          cargo build --locked -p sb
-          crates/completion/tests/shells.sh
+          crates/completion/tests/shells.test.sh
+          SB_BIN=$SB_SHIPPED crates/completion/tests/shells.sh
       - name: Journal matrix
         run: |
           bin=$(crates/journal/tests/example.sh)
@@ -245,12 +265,7 @@ jobs:
           fi
       - name: Install-script containers
         if: steps.released.outputs.exists == 'true'
-        env:
-          TAG: ${{ github.ref_name }}
-        run: |
-          SB_VERSION=$TAG SB_GIT_COMMIT=${GITHUB_SHA::7} SB_CHANNEL=release \
-            cargo build --locked --release -p sb
-          SBI_SB=$PWD/target/release/sb install/tests/containers.sh
+        run: SBI_SB=$SB_SHIPPED install/tests/containers.sh
 
   build:
     name: "build / ${{ matrix.asset.arch }} ${{ matrix.asset.channel }}"
