@@ -70,7 +70,7 @@ invented; no test reads the host's data.
       cli-core's log refusals.
 - [x] 3.9: the 150 ms drain is checked by the child's own clock.
 - [ ] 3.10: tests that pass whichever way the race goes decide the race (exec's done; hangup's and update's open).
-- [ ] 3.11: weak assertions in sb's and completion's tests.
+- [x] 3.11: weak assertions in sb's and completion's tests.
 - [ ] 3.12: tests that restate the code (Q6: kept as change detectors).
 - [x] 3.13: the docker fakes surface their own failures.
 - [x] 3.14: the shipped binary runs the tests that need no seam.

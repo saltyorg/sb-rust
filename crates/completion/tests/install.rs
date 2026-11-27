@@ -367,6 +367,28 @@ fn probes_run_clean() {
         assert!(env.contains(&var), "{var}: {env:?}");
     }
     assert!(!env.iter().any(|line| line.starts_with("USER=")), "{env:?}");
+    // Exactly those, plus what sb-exec gives every child (git's and
+    // ssh's prompts off) and what dash, Ubuntu's sh, sets itself (PWD):
+    // nothing of sb's own environment. Names in the probe's record, not a
+    // read of the test's own environment.
+    let names: Vec<&str> = env
+        .iter()
+        .filter_map(|line| line.split_once('=').map(|(name, _)| name))
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "GIT_TERMINAL_PROMPT",
+            "HOME", // the probe's own name, set to /
+            "LANG",
+            "LC_ALL",
+            "PATH",
+            "PWD",
+            "SSH_ASKPASS",
+            "SSH_ASKPASS_REQUIRE"
+        ],
+        "{env:?}"
+    );
 }
 
 /// Names: the executable's own, and each symlink to it in the bin

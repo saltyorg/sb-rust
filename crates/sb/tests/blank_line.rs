@@ -118,9 +118,13 @@ fn with_stderr_not_a_terminal_nothing_is_added() {
     let log = dir.path().join("stderr");
     let shown = on_a_terminal(&format!("version 2>'{}'", log.display()), &[]);
     let text = String::from_utf8_lossy(&shown);
+    // The version's own lines, as a pipe gets them, and nothing after:
+    // the terminal turns each newline into \r\n.
+    let version = String::from_utf8(piped(&["version"]).stdout).expect("utf-8");
+    assert!(!version.is_empty(), "no version text");
     assert!(
-        text.ends_with(")\r\n") || text.ends_with("\r\n"),
-        "{text:?}"
+        text.ends_with(&version.replace('\n', "\r\n")),
+        "{text:?}\n{version:?}"
     );
     assert!(!text.ends_with("\r\n\r\n"), "{text:?}");
     assert_eq!(std::fs::read(&log).expect("stderr"), b"");

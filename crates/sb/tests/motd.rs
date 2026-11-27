@@ -136,8 +136,10 @@ fn system_sections_show_in_order_plain_unless_forced() {
     assert!(processes.matches("\x1b[").count() >= 4, "{processes:?}");
 }
 
-/// Disk Usage: a line per file system and its bar, or sb-go's text for
-/// none; plain when piped.
+/// Disk Usage, plain when piped: the section's frame. Its rows read the
+/// mounts of wherever the test runs, so their layout (a line per file
+/// system and its bar, or sb-go's text for none) is pinned on invented
+/// rows by sb-motd's own test (`each_row_is_sb_gos_line_and_its_bar`).
 #[test]
 fn disk_usage_shows_in_sb_gos_layout() {
     if !root_gate::requested() {
@@ -149,12 +151,6 @@ fn disk_usage_shows_in_sb_gos_layout() {
     let stdout = text(&out.stdout);
     assert!(stdout.starts_with("Disk Usage:  "), "{stdout:?}");
     assert!(!out.stdout.contains(&0x1b), "{stdout:?}");
-    assert!(
-        stdout.contains("No valid disk partitions found")
-            || (stdout.contains("% used out of ")
-                && (stdout.contains('█') || stdout.contains('░'))),
-        "{stdout:?}"
-    );
     assert!(stdout.ends_with("\n\n"), "{stdout:?}");
 }
 

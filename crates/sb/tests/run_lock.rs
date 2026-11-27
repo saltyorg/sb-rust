@@ -232,12 +232,19 @@ fn a_read_only_command_is_never_blocked() {
     let world = World::new();
     let holder = world.install("first", "hold");
     wait_for("the holder's playbook", || world.ran("first"));
-    for args in [&["validate-config"][..], &["version"], &["diag"]] {
-        let (_, stdout, stderr) = world.start_reader(args).end();
+    // validate-config fails, as the world has no Saltbox configuration
+    // (1); version and diag succeed (0): none of them waits.
+    for (args, code) in [
+        (&["validate-config"][..], 1),
+        (&["version"], 0),
+        (&["diag"], 0),
+    ] {
+        let (status, stdout, stderr) = world.start_reader(args).end();
         assert!(
             !stderr.contains("another sb command is running"),
             "{args:?}: {stdout}\n{stderr}"
         );
+        assert_eq!(status.code(), Some(code), "{args:?}: {stdout}\n{stderr}");
     }
     world.release();
     let (status, _, stderr) = holder.end();
@@ -426,12 +433,19 @@ fn a_read_only_command_doesnt_wait_for_a_backup() {
     }
     let world = World::new();
     let _backup = Backup::new(&world, Duration::from_secs(60), true);
-    for args in [&["validate-config"][..], &["version"], &["diag"]] {
-        let (_, stdout, stderr) = world.start_reader(args).end();
+    // validate-config fails, as the world has no Saltbox configuration
+    // (1); version and diag succeed (0): none of them waits.
+    for (args, code) in [
+        (&["validate-config"][..], 1),
+        (&["version"], 0),
+        (&["diag"], 0),
+    ] {
+        let (status, stdout, stderr) = world.start_reader(args).end();
         assert!(
             !stderr.contains("Saltbox backup"),
             "{args:?}: {stdout}\n{stderr}"
         );
+        assert_eq!(status.code(), Some(code), "{args:?}: {stdout}\n{stderr}");
     }
 }
 

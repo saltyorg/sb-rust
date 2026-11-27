@@ -31,6 +31,10 @@ fn a_theme_override_changes_the_colours() {
 fn the_theme_file_can_choose_the_profile() {
     let stderr = run_with_config("[theme]\ncolor_profile = \"ascii\"\n", None);
     assert!(!stderr.contains('\x1b'), "{stderr:?}");
+    assert!(
+        stderr.starts_with("✗ No space left on device (os error 28)"),
+        "{stderr:?}"
+    );
 }
 
 /// The environment wins over the file's profile (ADR-002).
@@ -73,6 +77,12 @@ fn no_file_is_quiet() {
         .expect("run sb");
     let stderr = String::from_utf8(out.stderr).expect("utf-8");
     assert!(!stderr.contains("warning:"), "{stderr:?}");
+    // The built-in theme's error colour on the block's mark.
+    assert!(stderr.starts_with("\x1b[38;2;255;110;122m✗"), "{stderr:?}");
+    assert!(
+        stderr.contains("No space left on device (os error 28)"),
+        "{stderr:?}"
+    );
 }
 
 /// The config path is shown escaped too (it may hold anything).

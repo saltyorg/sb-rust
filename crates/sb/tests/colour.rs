@@ -202,7 +202,12 @@ fn never_wins_over_the_profile() {
         .env("SB_COLOR_PROFILE", "truecolor")
         .output()
         .expect("run sb");
-    assert!(!has_escape(&out.stderr));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!has_escape(&out.stderr), "{stderr:?}");
+    assert!(
+        stderr.starts_with("✗ No space left on device (os error 28)"),
+        "{stderr:?}"
+    );
 }
 
 /// `ascii` means no colour anywhere, parse errors and help included (drawn

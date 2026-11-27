@@ -276,6 +276,8 @@ fn the_fallback_list_is_tried_in_order() {
     assert_eq!(first(&world), "editor");
     world.stub("sensible-editor");
     assert_eq!(first(&world), "sensible-editor");
+    let path = world.root().join("settings.yml").display().to_string();
+    assert_eq!(world.argv()[1..], [path]);
 
     // One that is found and executable but doesn't start is the error,
     // as sb-go's run of what `exec.LookPath` found would be.
@@ -291,8 +293,6 @@ fn the_fallback_list_is_tried_in_order() {
         stderr(&output)
     );
     assert!(!broken.ran());
-    let path = world.root().join("settings.yml").display().to_string();
-    assert_eq!(world.argv()[1..], [path]);
 
     let none = World::new();
     let output = none.sb("settings").output().expect("run sb");

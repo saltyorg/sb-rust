@@ -959,15 +959,16 @@ fn the_run_log_never_holds_the_value() {
         return;
     }
     let world = World::new();
-    for args in [
-        &["get", "komodo", "komodo", "database_password"][..],
-        &["get", "komodo", "database_password", "--json"],
-        &["get", "komodo", "komodo", "nope"],
-        &["list"],
-        &["list", "komodo", "--json"],
+    // Found, as JSON, missed (a missing key is 1), listed.
+    for (args, code) in [
+        (&["get", "komodo", "komodo", "database_password"][..], 0),
+        (&["get", "komodo", "database_password", "--json"], 0),
+        (&["get", "komodo", "komodo", "nope"], 1),
+        (&["list"], 0),
+        (&["list", "komodo", "--json"], 0),
     ] {
         let output = run(&world, args);
-        assert!(output.status.code().is_some(), "{args:?}: {output:?}");
+        assert_eq!(output.status.code(), Some(code), "{args:?}: {output:?}");
     }
     let log = world.log();
     for text in [
