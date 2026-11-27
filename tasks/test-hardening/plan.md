@@ -19,8 +19,9 @@ batches, plus two decided changes:
 - **The closed-reader redesign.** Piped `sb logs` now ends with the quiet 141 as soon as its reader goes away, with no new line needed.
 - **Go leaves the gate.** gitleaks comes from its release binary instead of `go install`.
 
-Each batch ends at a checkpoint: one amd64 CI rehearsal and one
-`check.sh full` based on the batch's start commit (Q8, Q9).
+Each batch ends at a checkpoint: one `check.sh task` and one
+`check.sh full` based on the batch's start commit, the full one with
+the amd64 CI rehearsal (Q8, Q9).
 
 Finding ids are the review's letter plus a number, as in the reports: A1 to A13, B1 to B12,
 C1 to C12 (the reports' F1 to F12), and D1 to D16.
@@ -106,7 +107,7 @@ they are not open questions. Each one is weighed in its task.
   - The body has a `Library-check:` line when Rust changes and a `Review:` line when anything outside `docs/` and `tasks/` changes.
   - Each removed assertion or test, and each changed gate-script line, has its reason in the body (the floor guard reports them for the reviewer).
 - **Reviews (CLAUDE.md tiers).**
-  - Every task outside `docs/` and `tasks/` gets one `agent-skills:code-reviewer` run on its diff, in parallel with `scripts/check.sh task` (Q8).
+  - Every task outside `docs/` and `tasks/` gets one `agent-skills:code-reviewer` run on its diff, in parallel with `scripts/check.sh fast` (Q8).
   - Tasks touching terminal, UI, input, process or I/O code also get the `library-reviewer`. That includes the test harnesses for PTYs, pipes and child processes, in sb, exec, cli-core, term-ui, tui, docker, host, motd and release.
   - Task 2.9 (a downloaded binary in the gate) also gets `agent-skills:security-auditor`.
   - Each brief gives the range and the goal, says to edit nothing, says to run sb only with `SB_LOG_DIR` in a scratch directory, and carries the Public repository rules.
@@ -134,15 +135,17 @@ S=<a scratch directory outside the repository>
 # Focused tests while iterating (as root, the gate's way):
 $CAP env SB_LOG_DIR=$S/sb-logs SB_TEST_ROOT=1 cargo test -p <crate> --test <binary> [<filter>]
 # Before each commit (Q8):
-$CAP scripts/check.sh task <task base>
-# At each batch's end (Q8, Q9), with the rehearsal:
+$CAP scripts/check.sh fast
+# At each batch's end (Q8, Q9), once each, the full one with the rehearsal:
+$CAP scripts/check.sh task <batch start>
 $CAP scripts/check.sh full <batch start>
 ```
 
 ### Checkpoint at the end of each batch
 
 - **The rehearsal:** `$CAP scripts/ci-rehearsal.sh --arch amd64`, once, on the batch's last commit (all three amd64 releases).
-- **The gate:** `$CAP scripts/check.sh full <batch start>`, once. It passes only if its log ends `check full: all passed`.
+- **The gate:** `$CAP scripts/check.sh task <batch start>`, then `$CAP scripts/check.sh full <batch start>`, once each. Each passes only if its log ends `check task: all passed` or `check full: all passed`.
+  - A failure is traced to the commit that caused it and fixed in a new commit, with no history rewritten; the fix says which commit it was (Q8).
   - Its base is the batch's start commit, so the batch's whole diff is judged once: with base HEAD on a clean tree, changed-line coverage, mutation and the commit-message check would have nothing to check (D1's own finding; Q9).
 - **The journal matrix and fuzz harness**, by hand and capped, after a batch that changed `crates/journal/`: batches 3 (Task 3.8) and 4 (Task 4.9).
 - **Before saying "done":** walk the standing agreements. Clean up worktrees and images, read every added fixture and snapshot against the Public repository rules, and stop any orphaned processes.
@@ -2174,10 +2177,17 @@ alternative weighed are kept.
   binary through the new `scripts/install-gitleaks.sh` (Task 2.9), in the
   directory of today's `command -v gitleaks`, in place of the
   `go install` build. Go stays on the host.
-- **Q8. Commit cadence:** `check.sh task` before each commit, and one
-  `check.sh full` plus the amd64 rehearsal at each batch's end. At `full`
-  the gate rehearses whenever `crates/*/tests/` or `scripts/` changed,
-  which is nearly every task here; this rehearses once per batch.
+- **Q8. Commit cadence** (the maintainer, 2026-11-27, replacing
+  2026-11-26's `task` before each commit): `check.sh fast` before each
+  commit, beside each task's own focused proofs (test-first, or a
+  regression planted and never committed); at each batch's end, once,
+  `check.sh task` then `check.sh full` based on the batch's start
+  commit, the full one with the amd64 rehearsal, then the
+  commit-message check. A batch-end failure is traced to the commit that
+  caused it and fixed in a new commit, without rewriting history. At
+  `full` the gate rehearses whenever `crates/*/tests/` or `scripts/`
+  changed, which is nearly every task here; this rehearses once per
+  batch.
   - *Not chosen:* `full` before each commit. Each commit's own diff is then gated at `full`, at a rehearsal per task.
 - **Q9. The base of the batch-end `full`:** the batch's start commit, so
   the batch's whole diff is judged once. `full HEAD` on a clean tree would

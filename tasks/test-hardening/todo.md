@@ -3,9 +3,10 @@
 Plan: [tasks/test-hardening/plan.md](plan.md) (decisions MD1-MD4 and
 Q1-Q9, each task's findings, acceptance and files). Every task follows
 CLAUDE.md and the plan's conventions: tests first where behaviour
-changes, `scripts/check.sh fast` after edits, `task` before each commit,
-one `full` based on the batch's start commit plus the amd64 rehearsal at
-each batch's end (Q8, Q9), signed Conventional Commits with
+changes, `scripts/check.sh fast` after edits and before each commit,
+one `task` and one `full` based on the batch's start commit, the full
+one with the amd64 rehearsal, at each batch's end (Q8, Q9), signed
+Conventional Commits with
 `Library-check:` and `Review:` lines. sb runs as root only with
 `SB_LOG_DIR` in `target/` or a temporary directory. Test data is
 invented; no test reads the host's data.
@@ -48,7 +49,7 @@ invented; no test reads the host's data.
 - [ ] 2.10: no test depends on the host's data, and the gate says so.
 - [x] 2.7: no shared `no-*` paths between tests in one process.
 - [x] 2.8: the rehearsal runs for what changes a runner's verdict (Q5).
-- [ ] 2.9a: `scripts/install-gitleaks.sh`, its test, check.sh and the
+- [x] 2.9a: `scripts/install-gitleaks.sh`, its test, check.sh and the
       floor-guard stubs.
 - [ ] 2.9b: the workflows, Renovate, CONSTRAINTS.md and the comments; the
       gate host's gitleaks from the release binary, Go kept (Q7).

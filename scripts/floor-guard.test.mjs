@@ -1328,8 +1328,7 @@ const TOOLS_MD = `# Constraints
 | cargo-nextest | 0.9.151 | exact | cargo |
 | cargo-deny | 0.20.2 | exact | cargo |
 | hyperfine | 2.0.0 | exact | cargo |
-| gitleaks | 8.30.1 | exact | go install |
-| Go | 1.27 | minimum | system package |
+| gitleaks | 8.30.1 | exact | release binary |
 | node | 24 | major | system package |
 | script (util-linux) | 2.39 | minimum | system package |
 | cross | 0.2.5 | exact | cargo |
@@ -1342,10 +1341,11 @@ const TOOLS_MD = `# Constraints
 ## Exceptions
 `;
 // The release scripts' tests check.sh's fast stage runs (when scripts/ or
-// .github/ changed, or nothing did), and the workflow schemas' tests (when
+// .github/ changed, or nothing did), the gitleaks installer's (when
+// scripts/ changed, or nothing did), and the workflow schemas' tests (when
 // .github/ changed, or nothing did, or at full), as empty scripts: their
 // own content is tested by running them, not here.
-const RELEASE_TESTS = Object.fromEntries(['scripts/release.test.sh', 'scripts/workflow-schemas.test.sh']
+const RELEASE_TESTS = Object.fromEntries(['scripts/release.test.sh', 'scripts/install-gitleaks.test.sh', 'scripts/workflow-schemas.test.sh']
   .map((f) => [f, '#!/bin/sh\n']));
 // The CI rehearsal check.sh full runs: a stub logging its call as the
 // stubbed tools do, its status REHEARSAL_STATUS (0 by default). Its own
@@ -1366,7 +1366,7 @@ const HANGUP = {
 const WORKFLOWS = { '.github/workflows/ci.yml': 'on: push\n', '.github/actions/a/action.yml': 'runs:\n  using: composite\n' };
 const VERSIONS = {
   'cargo-llvm-cov': '0.9.1', 'diff-cover': '9.7.2', 'cargo-mutants': '27.1.0', 'cargo-nextest': '0.9.151',
-  'cargo-deny': '0.20.2', hyperfine: '2.0.0', gitleaks: '8.30.1', go: '1.27.3', node: '24.20.0', script: '2.39.3', cross: '0.2.5',
+  'cargo-deny': '0.20.2', hyperfine: '2.0.0', gitleaks: '8.30.1', node: '24.20.0', script: '2.39.3', cross: '0.2.5',
   docker: '29.7.2',
   jq: '1.7.1', python3: '3.12.3',
   'check-jsonschema': '0.39.0', zizmor: '1.32.0',
@@ -1385,8 +1385,8 @@ const CRATES = {
     + '    { crate = "sb-tui", wrappers = ["sb"] },\n]\n',
 };
 // The system tools check.sh, check-commit-messages.sh and the stubs run.
-const SYSTEM_TOOLS = ['awk', 'basename', 'bash', 'cat', 'chmod', 'dirname', 'env', 'find', 'getconf', 'git', 'grep', 'id', 'mkdir',
-  'ip', 'mktemp', 'mount', 'rm', 'sed', 'setsid', 'sha256sum', 'sleep', 'sort', 'stat', 'truncate', 'unshare', 'xargs'];
+const SYSTEM_TOOLS = ['awk', 'basename', 'bash', 'cat', 'chmod', 'curl', 'dirname', 'env', 'find', 'getconf', 'git', 'grep', 'id',
+  'mkdir', 'ip', 'mktemp', 'mount', 'rm', 'sed', 'setsid', 'sha256sum', 'sleep', 'sort', 'stat', 'tar', 'truncate', 'unshare', 'xargs'];
 const stubs = (versions, arch) => {
   const log = 'printf \'%s|%s|%s|%s|%s\\n\' "$(basename "$0")" "${CARGO_TARGET_DIR-unset}"'
     + ' "${CARGO_BUILD_TARGET_DIR-unset}" "${CARGO_LLVM_COV_TARGET_DIR-unset}" "$*" >>"$STUB_LOG"\n';
@@ -1447,10 +1447,11 @@ const stubs = (versions, arch) => {
       + 'if [ "${WORKFLOW_FINDING:-}" = check-jsonschema ]; then echo "Schema validation errors were encountered."; exit 1; fi\n',
     zizmor: version('zizmor ' + versions.zizmor)
       + 'if [ "${WORKFLOW_FINDING:-}" = zizmor ]; then echo "error[unpinned-uses]: unpinned action reference"; exit 14; fi\n',
-    go: 'if [ "$1 $2" = "version -m" ]; then printf \'%s: go1.27.3\\n\\tpath\\tgithub.com/zricethezav/gitleaks/v8\\n'
-      + '\\tmod\\tgithub.com/zricethezav/gitleaks/v8\\tv' + versions.gitleaks + '\\th1:x=\\n\' "$3"; exit 0; fi\n'
-      + 'echo "go version go' + versions.go + ' linux/amd64"\n',
-    gitleaks: 'cat >"$STUB_LOG.gitleaks"\n',
+    // gitleaks' release build prints its bare version; `go-build` is a
+    // `go install` build, which prints none.
+    gitleaks: 'if [ "$1" = version ]; then echo "'
+      + (versions.gitleaks === 'go-build' ? 'version is set by build process' : versions.gitleaks) + '"; exit 0; fi\n'
+      + 'cat >"$STUB_LOG.gitleaks"\n',
     uname: 'echo ' + arch + '\n',
     // The host's CPUs: 64, or STUB_NPROC.
     nproc: 'echo "${STUB_NPROC:-64}"\n',
@@ -1862,7 +1863,7 @@ test('check.sh: a tool version that differs from the Tools table exits 2 naming 
   const r = checkRun('task', { versions: { 'cargo-mutants': '27.0.0' } });
   refuses(r, 2, /cargo-mutants.*27\.0\.0.*27\.1\.0/);
   assert.ok(r.calls.filter((c) => c.tool === 'cargo').every((c) => c.args === 'install --list'), r.output);
-  refuses(checkRun('fast', { versions: { gitleaks: '8.30.0' } }), 2, /gitleaks/);
+  refuses(checkRun('fast', { versions: { gitleaks: '8.30.0' } }), 2, /gitleaks is 8\.30\.0; .*8\.30\.1/);
   refuses(checkRun('task', { versions: { 'diff-cover': '9.7.3' } }), 2, /diff-cover/);
   refuses(checkRun('full', { versions: { cross: '0.2.4' } }), 2, /cross/);
   refuses(checkRun('full', { versions: { 'cargo-deny': '0.20.1' } }), 2, /cargo-deny/);
@@ -1870,7 +1871,9 @@ test('check.sh: a tool version that differs from the Tools table exits 2 naming 
 
 test('check.sh: a tool cargo did not install, or one missing, exits 2 naming it', () => {
   refuses(checkRun('task', { versions: { hyperfine: null } }), 2, /hyperfine not installed/);
-  refuses(checkRun('fast', { versions: { go: null } }), 2, /go not installed/);
+  refuses(checkRun('fast', { versions: { gitleaks: null } }), 2, /gitleaks not installed/);
+  // A `go install` build, which prints no version of its own.
+  refuses(checkRun('fast', { versions: { gitleaks: 'go-build' } }), 2, /could not read the version of gitleaks/);
   refuses(checkRun('fast', { versions: { node: null } }), 2, /node not installed/);
   refuses(checkRun('full', { versions: { docker: null } }), 2, /docker not installed/);
   // On PATH, not in `cargo install --list`, and printing no version of its own.
@@ -1911,7 +1914,7 @@ test('check.sh: a cargo tool cargo has a record of is read from the record, not 
     /could not read the version of cargo-nextest/);
 });
 
-test('check.sh: node is held to its major version, script, Docker and Go to a minimum', () => {
+test('check.sh: node is held to its major version, script and Docker to a minimum', () => {
   refuses(checkRun('fast', { versions: { node: '22.11.0' } }), 2, /\bnode\b/);
   refuses(checkRun('fast', { versions: { node: '25.0.0' } }), 2, /\bnode\b/);
   passes(checkRun('fast', { versions: { node: '24.99.1' } }), 'fast');
@@ -1919,10 +1922,11 @@ test('check.sh: node is held to its major version, script, Docker and Go to a mi
   passes(checkRun('task', { versions: { script: '2.41' } }), 'task');
   refuses(checkRun('full', { versions: { docker: '28.5.2' } }), 2, /\bdocker\b/);
   passes(checkRun('full', { versions: { docker: '30.0.1' } }), 'full');
-  refuses(checkRun('fast', { versions: { go: '1.26.9' } }), 2, /\bgo\b/);
-  // A pre-release isn't the release the row names, nor later than it.
-  refuses(checkRun('fast', { versions: { go: '1.27rc1' } }), 2, /\bgo is 1\.27rc1/);
-  passes(checkRun('fast', { versions: { go: '1.30.0' } }), 'fast');
+  // A pre-release isn't the release a major or minimum rule names, nor
+  // later than it (a cargo tool's record can hold one).
+  const minimum = { 'CONSTRAINTS.md': TOOLS_MD.replace('| hyperfine | 2.0.0 | exact |', '| hyperfine | 2.0.0 | minimum |') };
+  refuses(checkRun('task', { files: minimum, versions: { hyperfine: '2.1.0-rc.1' } }), 2, /hyperfine is 2\.1\.0-rc\.1, not a release/);
+  passes(checkRun('task', { files: minimum, versions: { hyperfine: '2.1.0' } }), 'task');
 });
 
 test('check.sh: a Tools row without a known rule, or a tool without a row, exits 2', () => {
@@ -2660,7 +2664,8 @@ test('check.sh task and full: a change under docs/ and tasks/ only ends after th
     assert.deepEqual(cargoSubs(r), ['fmt', 'clippy', 'clippy'], r.output);
     // check.sh asks each tool for its version before the stage starts.
     for (const tool of ['hyperfine', 'diff-cover', 'cross']) assert.ok(!r.calls.some((c) => c.tool === tool && c.args !== '--version'), tool + '\n' + r.output);
-    assert.ok(r.calls.some((c) => c.tool === 'gitleaks'), r.output);
+    // The secrets step's scan, not the version check before the stage.
+    assert.ok(r.calls.some((c) => c.tool === 'gitleaks' && c.args !== 'version'), r.output);
   }
 });
 

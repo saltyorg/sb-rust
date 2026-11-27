@@ -4,8 +4,9 @@
 #
 #   scripts/check.sh fast [base]   after edits: each crate's deny.toml entry
 #                                  and lints, fmt, clippy, floor guard (and
-#                                  the guard's own tests when scripts/ changed,
-#                                  the release scripts' when scripts/ or
+#                                  the guard's own tests and the gitleaks
+#                                  installer's when scripts/ changed, the
+#                                  release scripts' when scripts/ or
 #                                  .github/ did), the workflows' linters
 #                                  (when .github/ changed), secrets
 #   scripts/check.sh task [base]   before handing work back: fast + tests
@@ -235,12 +236,10 @@ need() { command -v "$1" >/dev/null || { echo "check: $1 not installed (see CONS
 #   with strace at the Tools table's versions). cross is never
 #   run for it (`cross --version` syncs a toolchain), so without cargo's
 #   record it can't be read.
-# - gitleaks, from Go's build information: a `go install` build prints no
-#   version of its own ("version is set by build process"), and
-#   `go version -m` prints its module line `mod <path> vX.Y.Z <sum>`:
-#   https://pkg.go.dev/cmd/go#hdr-Print_Go_version
-# - go, from `go version` ("go version go1.27.3 linux/amd64"), whole: a
-#   pre-release (go1.27rc1) is no version number, and fails every rule.
+# - gitleaks, from `gitleaks version`, whole: its release build
+#   (scripts/install-gitleaks.sh) prints the bare version, "8.30.1"; a
+#   `go install` build prints "version is set by build process", no
+#   version, and is refused.
 # - The rest, from the first version number `--version` prints on stdout
 #   (a warning on stderr can hold a number too):
 #   "diff-cover 9.7.2", "v24.20.0" (node), "script from util-linux 2.39.3",
@@ -261,11 +260,7 @@ tool_version() {
       out=$(cargo "${1#cargo-}" --version 2>/dev/null | awk 'NR == 1 { print $2 }') || out=''
     fi
     ;;
-  gitleaks)
-    out=$(go version -m "$(command -v gitleaks)" |
-      awk '$1 == "mod" && $2 == "github.com/zricethezav/gitleaks/v8" { sub(/^v/, "", $3); print $3 }') || out=''
-    ;;
-  go) out=$(go version | sed -nE '1s/^go version go([^ ]+) .*/\1/p') || out='' ;;
+  gitleaks) out=$(gitleaks version 2>/dev/null | sed -nE '1s/^v?([0-9]+(\.[0-9]+)*)$/\1/p') || out='' ;;
   *) out=$("$1" --version 2>/dev/null | sed -nE '1s/^[^0-9]*([0-9]+(\.[0-9]+)*).*/\1/p') || out='' ;;
   esac
   printf '%s\n' "$out"
@@ -445,6 +440,18 @@ fast() {
     in_sandbox scripts/release.test.sh
   else
     skip "nothing under scripts/ or .github/ changed since $base"
+  fi
+  # The gitleaks installer (scripts/install-gitleaks.sh): an invented
+  # release served from a file:// URL, no network. In the sandbox, as the
+  # release scripts' tests run.
+  step "gitleaks installer's tests"
+  if ((scripts_changed)); then
+    # Checked here, not with the stage's tools: only this step runs them.
+    need curl
+    need tar
+    in_sandbox scripts/install-gitleaks.test.sh
+  else
+    skip "nothing under scripts/ changed since $base"
   fi
   # The workflows and their actions (CONSTRAINTS.md, Workflows), which
   # only GitHub can run: check-jsonschema against the GitHub workflow and
@@ -1633,7 +1640,7 @@ full() {
 
 # The tools each stage runs: fast's, then task's, then full's (cross and
 # Docker only where the production build runs).
-tools=(node go gitleaks)
+tools=(node gitleaks)
 if [[ $stage != fast ]]; then tools+=(script cargo-llvm-cov diff-cover cargo-mutants cargo-nextest hyperfine); fi
 if [[ $stage == full ]]; then tools+=(cargo-deny); fi
 if [[ $stage == full && $arch == x86_64 ]]; then tools+=(cross docker); fi
