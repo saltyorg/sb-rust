@@ -1549,26 +1549,57 @@ Region               Saxony"
         assert!(facts.disk.is_some());
     }
 
-    /// Mounts that take longer than any test's limit to list (a hung
-    /// FUSE mount, briefly).
-    const HUNG: fn() -> Option<Vec<Mounted>> = || {
-        std::thread::sleep(Duration::from_millis(300));
-        Some(vec![mounted(Some(1), "ext4", 1, 0)])
-    };
+    /// The releases of [`hung`] listings, one slot a test: the receiving
+    /// end of the test's channel, taken by its listing, which waits on it.
+    /// A slot of its own, so a listing whose thread starts late (after its
+    /// test ended) can't take another test's.
+    static RELEASE: [std::sync::Mutex<Option<std::sync::mpsc::Receiver<()>>>; 2] =
+        [const { std::sync::Mutex::new(None) }; 2];
+
+    /// A channel for `SLOT`'s [`hung`] listing, whose receiver it waits on
+    /// until the returned sender drops (`Receiver::recv`'s disconnection,
+    /// <https://doc.rust-lang.org/std/sync/mpsc/struct.Receiver.html#method.recv>).
+    /// A test drops it before it returns: tokio's runtime waits for its
+    /// blocking threads when it shuts down.
+    fn hang<const SLOT: usize>() -> std::sync::mpsc::Sender<()> {
+        let (release, released) = std::sync::mpsc::channel();
+        *RELEASE[SLOT]
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(released);
+        release
+    }
+
+    /// Mounts that list only once the test lets them (a hung FUSE mount,
+    /// until [`hang`]'s sender for `SLOT` drops), whatever the scheduler
+    /// does; a `()` sent instead makes them unreadable (`None`), which no
+    /// test here needs.
+    fn hung<const SLOT: usize>() -> Option<Vec<Mounted>> {
+        let released = RELEASE[SLOT]
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+            .expect("the test's hang() for this slot");
+        match released.recv() {
+            Ok(()) => None,
+            Err(std::sync::mpsc::RecvError) => Some(vec![mounted(Some(1), "ext4", 1, 0)]),
+        }
+    }
 
     #[tokio::test]
     async fn mounts_not_listed_in_time_leave_total_disk_blank() {
         let _spawns = crate::bench::SPAWNS.lock().await;
         let dir = tempfile::tempdir().expect("dir");
         let sources = Sources {
-            disks: HUNG,
+            disks: hung::<0>,
             disks_limit: Duration::from_millis(20),
             ..sources(dir.path())
         };
+        let release = hang::<0>();
         let facts = gather(&sources, None, &CancellationToken::new())
             .await
             .expect("gather");
         assert_eq!(facts.disk, None);
+        drop(release);
         // Mounts that can't be read leave it blank too, not short.
         let sources = Sources {
             disks: || None,
@@ -1585,18 +1616,21 @@ Region               Saxony"
         let _spawns = crate::bench::SPAWNS.lock().await;
         let dir = tempfile::tempdir().expect("dir");
         let sources = Sources {
-            disks: HUNG,
+            disks: hung::<1>,
             disks_limit: Duration::from_secs(60),
             ..sources(dir.path())
         };
         let token = CancellationToken::new();
         token.cancel();
-        let started = std::time::Instant::now();
-        let err = gather(&sources, None, &token)
+        let release = hang::<1>();
+        // The mounts list only after the sender drops, below: a gather
+        // that waited for them would never end, and fails at the bound.
+        let err = tokio::time::timeout(Duration::from_secs(5), gather(&sources, None, &token))
             .await
+            .expect("the gather ended without waiting for the mounts")
             .expect_err("interrupted");
         assert_eq!(err.to_string(), "interrupted");
-        assert!(started.elapsed() < Duration::from_secs(30));
+        drop(release);
     }
 
     #[test]

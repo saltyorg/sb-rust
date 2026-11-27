@@ -65,7 +65,7 @@ invented; no test reads the host's data.
 - [x] 3.4: the end-to-end closed-reader test owns its pipe.
 - [x] 3.5: the systemd parallelism test sees half-serial calls.
 - [x] 3.6: "no poll after the interrupt" can fail.
-- [ ] 3.7: bench's cancelled gather and the hung mounts, on a channel.
+- [x] 3.7: bench's cancelled gather and the hung mounts, on a channel.
 - [ ] 3.8: errors are asserted by kind: journal corruption and
       cli-core's log refusals.
 - [ ] 3.9: the 150 ms drain is checked by the child's own clock.
