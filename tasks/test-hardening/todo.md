@@ -74,7 +74,7 @@ invented; no test reads the host's data.
 - [x] 3.12: tests that restate the code (Q6: kept as change detectors).
 - [x] 3.13: the docker fakes surface their own failures.
 - [x] 3.14: the shipped binary runs the tests that need no seam.
-- [ ] 3.15: nextest's LEAK status is shown in the release-build run.
+- [x] 3.15: nextest's LEAK status is shown in the release-build run.
 - [ ] Checkpoint: the rehearsal, `full <batch start>`, the journal matrix
       and fuzz harness, piped `sb logs` in the maintainer's terminal.
 
