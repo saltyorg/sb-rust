@@ -89,6 +89,9 @@ impl World {
         Repo::saltbox(&self.root())
     }
 
+    /// sb's own git on the checkout, as sb runs it: in the test process's
+    /// environment, which the gate's test runs give no host git
+    /// configuration (check.sh's `no_git_config`).
     fn checkout(&self) -> sb_repo::Repo {
         sb_repo::Repo::open("Saltbox", self.root()).expect("checkout")
     }

@@ -46,7 +46,7 @@ invented; no test reads the host's data.
 - [x] 2.4: the configparser reference is frozen, from Saltbox's pinned
       Python.
 - [ ] 2.5: the disk log test uses invented filesystem figures.
-- [ ] 2.10: no test depends on the host's data, and the gate says so.
+- [x] 2.10: no test depends on the host's data, and the gate says so.
 - [x] 2.7: no shared `no-*` paths between tests in one process.
 - [x] 2.8: the rehearsal runs for what changes a runner's verdict (Q5).
 - [x] 2.9a: `scripts/install-gitleaks.sh`, its test, check.sh and the

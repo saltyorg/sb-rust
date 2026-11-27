@@ -339,6 +339,9 @@ mod tests {
         assert_eq!(usage.free, 2);
     }
 
+    // The fsid, read-once and walk-up tests resolve real paths: `/` and
+    // `/proc`, which every Linux host has, and names under them no host
+    // has; they read no figure of the host's (statvfs is the test's).
     #[test]
     fn each_filesystem_is_checked_once_by_fsid() {
         // `/proc` shares `/`'s fsid here, so only `/` is checked: a full
@@ -421,6 +424,9 @@ mod tests {
         );
     }
 
+    /// The real call's smoke test, on the host's `/` on purpose: any
+    /// host's has blocks and a fragment size; the figures' handling has
+    /// the invented cases above.
     #[test]
     fn the_system_statvfs_reads_the_root() {
         let stats = statvfs(Path::new("/")).expect("statvfs");

@@ -1039,7 +1039,8 @@ fn a_detached_head_is_another_branch() {
 
 #[test]
 fn the_notices_are_sb_gos_info_lines() {
-    let repo = Repo::open("Sandbox", std::env::temp_dir()).expect("open");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let repo = Repo::open("Sandbox", dir.path()).expect("open");
     let same = branch_choice("master", "master", None);
     assert_eq!(
         branch_notices(&repo, "master", "master", &same),

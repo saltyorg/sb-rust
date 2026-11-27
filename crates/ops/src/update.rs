@@ -1360,7 +1360,9 @@ mod tests {
 
     /// `plan` for the clean checkout at `path` on master, with
     /// `--discard-local` and what the up-front check read (`read`): the
-    /// notices planned.
+    /// notices planned. sb's own git, in the test process's environment,
+    /// which the gate's test runs give no host git configuration
+    /// (check.sh's `no_git_config`).
     async fn planned(path: &Path, read: Option<UpFront>) -> Vec<String> {
         let opened = Opened {
             repo: Repo::open("Sandbox", path).expect("open"),

@@ -1125,6 +1125,53 @@ test('a test: a discard in a test module, a tests.rs or a new test file is flagg
   flags(spawnRs, edit(spawnRs, SPAWN, STDIN, STDIN + '        .stdout(Stdio::null())\n'), discarded, { commit: true });
 });
 
+// 2f. A test that reads the host (the maintainer, 2026-11-26): a host
+// path, the home directory or an environment variable named in test
+// code, unless a comment says why.
+const hostRead = 'host-read ' + SPAWN;
+test('a test: a host path, the home directory or an environment variable read is flagged; with its reason, clean', () => {
+  for (const line of ['    let _ = std::fs::read_to_string("/etc/os-release");',
+    '    let _ = std::fs::read_to_string("/proc/self/status");', '    let _ = std::path::Path::new("/proc").exists();',
+    '    let _ = std::fs::read_dir("/sys/class/net");', '    let _ = std::fs::read("/usr/share/misc/pci.ids");',
+    '    let _ = std::path::Path::new("/var/log").exists();', '    let _ = std::path::Path::new("/run/systemd/system").exists();',
+    '    let _ = std::env::var("SB_SOMETHING");', '    let _ = std::env::var_os("TERM");', '    let _ = env::vars().count();',
+    '    let _ = dirs::home_dir();', '    let _ = std::env::var_os("HOME");']) {
+    flags(spawnRs, edit(spawnRs, SPAWN, '#[test]\nfn runs() {\n', '#[test]\nfn runs() {\n' + line + '\n'), hostRead);
+    // The reason on its line, or in the comment just above it.
+    clean(spawnRs, edit(spawnRs, SPAWN, '#[test]\nfn runs() {\n', '#[test]\nfn runs() {\n' + line + ' // its own process\n'));
+    clean(spawnRs, edit(spawnRs, SPAWN, '#[test]\nfn runs() {\n',
+      '#[test]\nfn runs() {\n    // The kernel\'s own file, on any host.\n' + line + '\n'));
+  }
+  // A comment above the statement the line continues covers it.
+  const commented = edit(spawnRs, SPAWN, '    let mut child', '    // Its own status.\n    let mut child');
+  clean(commented, edit(commented, SPAWN, '        .arg("x")\n', '        .arg("/proc/self/status")\n'));
+  // A comment with no words, or above an earlier statement, is no reason.
+  flags(spawnRs, edit(spawnRs, SPAWN, '#[test]\nfn runs() {\n', '#[test]\nfn runs() {\n    //\n    let _ = std::env::var("X");\n'), hostRead);
+  flags(spawnRs, edit(spawnRs, SPAWN, '#[test]\nfn runs() {\n',
+    '#[test]\nfn runs() {\n    // Why.\n    let a = 1;\n    let _ = std::env::var("X");\n'), hostRead);
+  // Nor one above a blank line, an earlier field, or an earlier statement
+  // with its own trailing comment.
+  for (const before of ['    // Why.\n\n', '    // Why.\n    let a = [\n        1,\n', '    // Why.\n    let a = 1; // one\n']) {
+    flags(spawnRs, edit(spawnRs, SPAWN, '#[test]\nfn runs() {\n', '#[test]\nfn runs() {\n' + before + '    let _ = std::env::var("X");\n'),
+      hostRead);
+  }
+  // The home directory's name alone, set for a child.
+  flags(spawnRs, edit(spawnRs, SPAWN, '        .arg("x")\n', '        .arg("x")\n        .env("HOME", "/nowhere")\n'), hostRead);
+  // A test's own files, a temporary path, a device, and a path in a comment are no host read.
+  for (const line of ['    let _ = std::fs::read("tests/fixtures/x");', '    let _ = std::fs::read("/tmp/x");',
+    '    let _ = std::fs::File::create("/dev/full");', '    // Not /etc/os-release, an invented one.', '    let _ = env!("CARGO_MANIFEST_DIR");',
+    '    let _ = "/etcetera";']) {
+    clean(spawnRs, edit(spawnRs, SPAWN, '#[test]\nfn runs() {\n', '#[test]\nfn runs() {\n' + line + '\n'));
+  }
+  // Production code and a test module.
+  clean(libRs, edit(libRs, LIB, '    a + b\n', '    let _ = std::env::var("X");\n    a + b\n'));
+  flags(libRs, edit(libRs, LIB, '        assert_eq!(add(1, 2), 3);\n', '        let _ = std::env::var("X");\n        assert_eq!(add(1, 2), 3);\n'),
+    'host-read ' + LIB);
+  // A new test file's lines are added lines too.
+  const NEW = 'crates/sb/tests/new_read.rs';
+  flags({}, { [NEW]: '#[test]\nfn reads() {\n    let _ = std::fs::read("/etc/hostname");\n}\n' }, 'host-read ' + NEW);
+});
+
 // A skip by hand (2e): an early return on the root ask or the euid, in
 // test code, is reported; the helper's own form, and production code, are
 // clean.
@@ -1133,12 +1180,16 @@ const ADDS = '        assert_eq!(add(1, 2), 3);\n';
 test('a test: an added early return on the root ask or the euid is reported, the helper\'s form is clean', () => {
   const skipped = 'skip-added ' + LIB;
   for (const cond of ['rustix::process::geteuid().as_raw() != 0', '!nix::unistd::Uid::effective().is_root()',
-    'sb_cli_core::root::effective_uid() != 0', 'std::env::var_os("SB_TEST_ROOT").is_none_or(|v| v != "1")']) {
+    'sb_cli_core::root::effective_uid() != 0']) {
     reports(libRs, edit(libRs, LIB, ADDS, handSkip(cond) + ADDS), skipped);
   }
+  // The root ask read from the environment is a host read too (2f), which
+  // blocks without its reason.
+  flags(libRs, edit(libRs, LIB, ADDS, handSkip('std::env::var_os("SB_TEST_ROOT").is_none_or(|v| v != "1")') + ADDS),
+    [skipped, 'host-read ' + LIB]);
   // On one line, as a let-else, and in a tests/ file.
   reports(libRs, edit(libRs, LIB, ADDS, '        if geteuid() != 0 { return; }\n' + ADDS), skipped);
-  reports(libRs, edit(libRs, LIB, ADDS, '        let Some(_) = std::env::var_os("SB_TEST_ROOT") else {\n            return;\n        };\n' + ADDS),
+  reports(libRs, edit(libRs, LIB, ADDS, '        // The root ask.\n        let Some(_) = std::env::var_os("SB_TEST_ROOT") else {\n            return;\n        };\n' + ADDS),
     skipped);
   const NEW = 'crates/sb/tests/new.rs';
   reports({}, { [NEW]: '#[test]\nfn t() {\n' + handSkip('geteuid() != 0') + '}\n' }, 'skip-added ' + NEW);

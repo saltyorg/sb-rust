@@ -494,7 +494,9 @@ mod tests {
 
     /// The client, with the platform's roots it loads, is built at the
     /// first request, not with `Http`: a run whose checks make no request
-    /// builds none. Clones share the one built.
+    /// builds none. Clones share the one built. It reads the host's CA
+    /// store on purpose, as sb's client does on a host; without one the
+    /// build fails, naming it (`without_ca_certificates_the_client_says_so`).
     #[test]
     fn the_client_is_built_at_first_use_and_shared() {
         let http = http();
@@ -533,6 +535,8 @@ mod tests {
         assert!(!shown.contains("hunter2"), "{shown}");
     }
 
+    /// `Proxy::System` reads the host's proxy variables, and the build the
+    /// host's CA store, on purpose: sb builds its client so on a host.
     #[test]
     fn a_client_builds_for_each_proxy_setting() {
         assert!(Http::new(&Proxy::System, TIMEOUT).is_ok());

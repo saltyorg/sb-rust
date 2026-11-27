@@ -10,6 +10,10 @@
 //! runs (`SB_TEST_ROOT=1`): `logs` needs root, and a run that isn't root
 //! would relaunch through sudo (the world's stand-in refuses it); the help
 //! test runs without it, as `--help` and a parse error never relaunch.
+//! sb reads the host's release (its journal rules), the systemd-coredump
+//! user's entry and the local time zone as it does on a host, on purpose:
+//! the entries are the crafted journal's, and the tests compare what any
+//! supported host shows the same (a time's width, not its value).
 
 mod common;
 mod logs_containers;

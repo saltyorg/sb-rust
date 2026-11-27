@@ -492,6 +492,8 @@ mod tests {
     fn the_public_calls_keep_the_current_owner() {
         let dir = tempfile::tempdir().expect("tempdir");
         fs::write(dir.path().join("file"), "x").expect("file");
+        // The test's own user, by its passwd entry, on purpose: the name
+        // sb would be given; a user with none fails here, saying so.
         let me = User::from_uid(nix::unistd::geteuid())
             .expect("lookup")
             .expect("current user");

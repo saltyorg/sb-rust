@@ -45,7 +45,9 @@ fn each_root_gets_one_count_and_no_entry_is_logged() {
     let single = dir.path().join("single");
     fs::write(&single, "x").expect("single");
     // The current user owns the fresh files already, so the counts are 0:
-    // a test can't change ownership without root.
+    // a test can't change ownership without root. Its name comes from its
+    // passwd entry, on purpose (the name sb would be given); a user with
+    // none fails the lookup, saying so.
     let me = User::from_uid(geteuid())
         .expect("lookup")
         .expect("current user");

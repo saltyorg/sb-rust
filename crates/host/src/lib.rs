@@ -336,13 +336,16 @@ mod tests {
     }
 
     /// `ubuntu_release` reads the `VERSION_ID` `check_support` reads: on a
-    /// host `check_support` passes, it is that supported release.
+    /// host `check_support` passes, it is that supported release, and on
+    /// one it refuses, no supported release. The host's os-release, on
+    /// purpose: the two readers agree on the real file, whichever it is;
+    /// the release rules have their invented cases.
     #[test]
     fn ubuntu_release_reads_the_version_id_check_support_reads() {
         let release = ubuntu_release();
-        if check_support().is_ok() {
-            let release = release.expect("a supported host's release");
-            assert!(SUPPORTED_RUNTIME_RELEASES.contains(&release.version_id()));
-        }
+        let supported = release
+            .as_ref()
+            .is_ok_and(|release| SUPPORTED_RUNTIME_RELEASES.contains(&release.version_id()));
+        assert_eq!(check_support().is_ok(), supported, "{release:?}");
     }
 }

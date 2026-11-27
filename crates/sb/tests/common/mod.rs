@@ -148,6 +148,14 @@ pub fn sb() -> std::process::Command {
 /// program that starts it: `script`, `unshare`, `setpriv`); tests that
 /// want other values set them after. `tests/isolation.rs` checks that
 /// every test starting sb by its path calls this.
+///
+/// Left as the test process has them, on purpose: `HOME`, the locale and
+/// `TERM`, which sb reads none of itself (its paths come from the
+/// variables below), and `PATH`, which it searches as on a host (tests
+/// that want stand-ins put them first); and the host's `/etc/os-release`,
+/// which sb's startup check reads with no seam (sb's tests run on the
+/// supported releases, as sb does, and on another one every run fails,
+/// naming it; `host_check.rs` binds an invented one in a namespace).
 pub fn apply_sb_env(cmd: &mut std::process::Command) {
     cmd.env("SB_LOG_DIR", test_log_dir());
     // The `no-*` paths below are this call's own, in a directory nothing
@@ -205,6 +213,48 @@ pub fn apply_sb_env(cmd: &mut std::process::Command) {
     // Nor the developer's editor: `sb edit` tests set a fake one.
     cmd.env_remove("VISUAL");
     cmd.env_remove("EDITOR");
+    // Nor the developer's git: sb's own git (a checkout's, the tag
+    // caches') reads no global or system config file (paths under this
+    // call's never-made directory: git skips a missing one, whichever
+    // user runs it, and one a run made is found), no per-user ignore or attributes file
+    // (their place, under `XDG_CONFIG_HOME`, a directory nothing makes),
+    // no setting or repository from the environment, and no repository
+    // above a test's own temporary directories
+    // (<https://git-scm.com/docs/git#Documentation/git.txt-GITCONFIGGLOBAL>,
+    // <https://git-scm.com/docs/git-config#Documentation/git-config.txt-coreexcludesFile>,
+    // <https://git-scm.com/docs/git#Documentation/git.txt-GITCEILINGDIRECTORIES>).
+    // Each `GIT_*` the test process has is read here to be removed: wider
+    // than git's own list (`git rev-parse --local-env-vars`), which leaves
+    // out `GIT_SSH_COMMAND`, `GIT_EDITOR`, `GIT_TRACE` and the like. Tests
+    // that want a setting set it.
+    for (name, _) in std::env::vars_os() {
+        if name.as_encoded_bytes().starts_with(b"GIT_") {
+            cmd.env_remove(name);
+        }
+    }
+    cmd.env("GIT_CONFIG_GLOBAL", none.join("no-gitconfig"));
+    cmd.env("GIT_CONFIG_SYSTEM", none.join("no-gitconfig"));
+    cmd.env("XDG_CONFIG_HOME", none.join("no-xdg-config"));
+    let ceilings = std::env::join_paths([
+        std::env::temp_dir(),
+        PathBuf::from(env!("CARGO_TARGET_TMPDIR")),
+    ])
+    .expect("ceilings");
+    cmd.env("GIT_CEILING_DIRECTORIES", ceilings);
+    // Nor the developer's overrides of sb's own test seams: the fake
+    // GitHub's and bench's network seams, the machine setup checks, clap's
+    // completion request, and the sudo user `sb gha` reads; tests that
+    // want one set it. (The restore service and motd's Traefik go to the
+    // refused URL, below.)
+    for name in [
+        "SB_RELEASE_TEST_BASES",
+        "SB_BENCH_TEST_NETWORK",
+        "SB_TEST_MACHINE",
+        "SB_COMPLETE",
+        "SUDO_USER",
+    ] {
+        cmd.env_remove(name);
+    }
     for name in [
         "DOCKER_API_VERSION",
         "DOCKER_TLS_VERIFY",
@@ -231,6 +281,9 @@ pub fn apply_sb_env(cmd: &mut std::process::Command) {
     // containers: a refused URL and a unit file that doesn't exist, unless
     // a test points them at its fake and its own file.
     cmd.env("SB_DOCKER_CONTROLLER_URL", refused);
+    // Nor the restore service nor motd's Traefik.
+    cmd.env("SB_RESTORE_URL", refused);
+    cmd.env("SB_MOTD_TRAEFIK_URL", refused);
     cmd.env(
         "SB_DOCKER_CONTROLLER_UNIT",
         none.join("no-controller.service"),

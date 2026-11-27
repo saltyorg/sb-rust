@@ -866,7 +866,9 @@ mod tests {
     }
 
     /// A bench on `dir` with tiny runs and `free_space`, sources of this
-    /// host but a missing systemd-detect-virt.
+    /// host but a missing systemd-detect-virt: its tests check the
+    /// layout, which every host's figures fill; the figures' readers have
+    /// their fixtures' tests.
     fn small(dir: &Path, free_space: fn(&Path) -> Result<u64, DiskError>) -> Bench {
         Bench {
             endpoints: None,

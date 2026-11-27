@@ -10,11 +10,12 @@
 //   committed work, pass the commit the task started from.
 // Two kinds of finding (ADR-029):
 // - blocking: the gate's configuration, its thresholds and the suppressions,
-//   and a test's child output discarded without its reason (every rule but
-//   the four below). One passes only with the maintainer's
-//   approval, a `Floor-approved:` line (rule 7).
-// - reported: a removed assertion, a removed or deleted test, and a removed
-//   or changed line of a gate script. They are printed for the code
+//   a test's child output discarded and a test's read of the host, each
+//   without its reason (every rule but those reported, rule 6). One passes
+//   only with the maintainer's approval, a `Floor-approved:` line (rule 7).
+// - reported: a removed assertion, a removed or deleted test, a removed
+//   or changed line of a gate script, and a hand-rolled root or euid skip
+//   in test code. They are printed for the code
 //   reviewer, who judges each against the commit message, and never fail.
 // Exit: 0 no blocking finding without an approval (the reported ones and
 // the approved ones are printed), 1 a blocking finding, 2 the guard could
@@ -323,6 +324,36 @@ for (const { file, text, line } of added) {
     }
   }
   if (block.some((l) => /\breturn\b/.test(l))) flag('skip-added', file, text);
+}
+
+// 2f. A test that reads the host (the maintainer, 2026-11-26: no test
+// depends on the host's data files, configuration or environment): an
+// added line in test code (as 2d reads it) that names a host path in a
+// string (`"/usr/share/.."`, `"/etc/.."`, `"/proc/.."`, `"/sys/.."`,
+// `"/var/.."`, `"/run/.."`, each directory alone too), the home directory
+// (`"HOME"`, `home_dir(`) or an environment variable it reads
+// (`env::var(`, `env::var_os(`, `env::vars(`), unless a comment says why:
+// after the code on its line, or on the comment line above it or above
+// the statement it continues (the lines before it whose code ends in no
+// `;`, `,`, `{` or `}`); a comment needs a word, and any word passes: the reviewer
+// judges it. sb-cli-core's testing.rs, which reads the gate's own
+// switches (SB_TEST_ROOT, SB_TEST_SKIPS) for every test, is outside it.
+// Not seen: a path built from parts or held in a constant
+// named elsewhere, a read through a helper, the shell and node tests, and
+// a reason removed from beside a read that stays; `std::env::temp_dir()`
+// (TMPDIR: the run's own in the gate); a read in a shell or node test.
+const HOST_READ = /"\/(?:usr\/share|etc|proc|sys|var|run)(?:\/[^"]*)?"|"HOME"|\bhome_dir\s*\(|\benv::vars?(?:_os)?\s*\(/;
+const TRAILING_REASON = /\/\/+\s*\S[^"]*$/;
+const STATEMENT_END = /[;,{}]\s*$/;
+for (const { file, text, line } of added) {
+  if (!isRust(file) || file === SKIP_HELPER || !HOST_READ.test(uncommented(text)) || TRAILING_REASON.test(text)) continue;
+  const lines = workText(file);
+  if (!isTestFile(file) && !inTestModule(file, lines, line)) continue;
+  let above = line - 2;
+  while (above >= 0 && !REASON_LINE.test(lines[above]) && lines[above].trim() !== ''
+    && !STATEMENT_END.test(uncommented(lines[above]))) above--;
+  if (above >= 0 && REASON_LINE.test(lines[above])) continue;
+  flag('host-read', file, text);
 }
 
 // 5. The gate files: the files outside Rust and CONSTRAINTS.md that hold

@@ -1038,7 +1038,11 @@ mod tests {
     }
 
     /// The built sections show, in order; the rest show nothing yet.
-    /// Reboot Status shows only when the host needs a reboot.
+    /// Reboot Status shows only when the host needs a reboot. The sections
+    /// read this host (its /proc, /sys, os-release, uname, loginctl and
+    /// last) on purpose, as a smoke run of the real sources: only each
+    /// section's key and order are compared, which every host gives; the
+    /// values are the fixtures' tests'.
     #[tokio::test]
     async fn the_report_shows_the_built_sections_in_order() {
         // Reboot Status starts a child: no stand-in script may be open

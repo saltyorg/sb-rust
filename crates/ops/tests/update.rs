@@ -17,8 +17,8 @@ use sb_ansible::TagCache;
 use sb_cli_core::build_info::{BuildInfo, Channel};
 use sb_cli_core::cancel::Shutdown;
 use sb_completion::install::Paths;
+use sb_config::http;
 use sb_config::run::Settings;
-use sb_config::{http, validators};
 use sb_host::disk::{Disk, Stats};
 use sb_ops::Checkout;
 use sb_ops::completions::Refresh;
@@ -108,7 +108,9 @@ impl World {
         let (cloudflare_url, dockerhub_url) = self.sb.check_urls();
         Settings {
             root: self.saltbox(),
-            zoneinfo: validators::Saltbox::zoneinfo_places(None),
+            // No zone files, none of the host's: the world's timezone is
+            // `auto`, which reads none.
+            zoneinfo: Vec::new(),
             http: http::Http::new(&http::Proxy::Off, Duration::from_secs(10)).expect("http"),
             cloudflare_url,
             dockerhub_url,

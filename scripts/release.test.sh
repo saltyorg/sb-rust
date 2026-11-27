@@ -23,8 +23,10 @@ fail() {
 }
 
 # The fixture's git ignores the user's and the system's configuration (no
-# signing, no hooks), with a fixed identity and clock.
-export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+# signing, no hooks) and the per-user ignore and attributes files (their
+# place, under XDG_CONFIG_HOME, a directory that doesn't exist), with a
+# fixed identity and clock.
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 XDG_CONFIG_HOME="$fixture/no-xdg-config"
 export GIT_AUTHOR_NAME=fixture GIT_AUTHOR_EMAIL=fixture@example.invalid
 export GIT_COMMITTER_NAME=fixture GIT_COMMITTER_EMAIL=fixture@example.invalid
 clock=1700000000

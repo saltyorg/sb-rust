@@ -289,7 +289,10 @@ async fn an_unwritable_output_is_an_output_error() {
 
 /// The argparse fixture parses as ansible-core does: sb-go's two-element
 /// `--extra-vars -x=1` is refused (argparse's usage error, exit 2), the
-/// one-element form sb sends is taken whole (spec, assumption 6).
+/// one-element form sb sends is taken whole (spec, assumption 6). The
+/// fixture is a Python program, as ansible-playbook is, run by the host's
+/// python3 on purpose: argparse's own refusal is what is checked, and a
+/// host without python3 fails the spawn, naming it.
 #[test]
 fn the_argparse_fixture_refuses_what_ansible_refuses() {
     let fixture = concat!(
