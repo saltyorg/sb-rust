@@ -387,9 +387,9 @@ fn answered_with(
         }
         Err(err) => {
             // A terminal that is gone (a hangup: its reads end or fail
-            // with EIO) is a SIGHUP on its way, which nothing orders
-            // before the read's end: the run is interrupted by it if it
-            // comes within `hangup` ([`HANGUP`]).
+            // with EIO or ENXIO, [`gone`]) is a SIGHUP on its way, which
+            // nothing orders before the read's end: the run is
+            // interrupted by it if it comes within `hangup` ([`HANGUP`]).
             if gone(&err) && signalled_within(shutdown, hangup, POLL) {
                 Err(PromptError::Interrupted)
             } else {
@@ -505,10 +505,18 @@ fn signalled_within(shutdown: &Shutdown, bound: Duration, poll: Duration) -> boo
 /// with EIO, which console's per-key switch meets first (UNVERIFIED as
 /// API, read in Linux 6.8's `drivers/tty/tty_io.c`, `hung_up_tty_read`
 /// and `hung_up_tty_ioctl`; seen as "Input/output error" in
-/// `a_hangup_at_the_question_ends_sb`).
+/// `a_hangup_at_the_question_ends_sb`). A key read that starts after the
+/// hangup fails with ENXIO instead: console opens `/dev/tty` (stdin, if
+/// it was the terminal, no longer passes `isatty`), which the hangup took
+/// from the session (UNVERIFIED as API, read in console 0.16.6's
+/// `Input::unbuffered`,
+/// <https://docs.rs/console/0.16.6/src/console/unix_term.rs.html>, and
+/// Linux 6.8's `tty_signal_session_leader` and `tty_open_current_tty`;
+/// seen as "No such device or address" in the same test).
 fn gone(err: &std::io::Error) -> bool {
     err.kind() == std::io::ErrorKind::UnexpectedEof
         || err.raw_os_error() == Some(rustix::io::Errno::IO.raw_os_error())
+        || err.raw_os_error() == Some(rustix::io::Errno::NXIO.raw_os_error())
 }
 
 /// Block the signals on the calling thread (the question's) that a
@@ -968,6 +976,17 @@ mod tests {
         let err = answered_with(question, Err(eio()), &quiet, Duration::from_millis(10))
             .expect_err("failed");
         assert!(matches!(err, PromptError::Failed { .. }), "{err}");
+        // A key read that began after the hangup: console opens
+        // `/dev/tty`, which the hangup took from the session.
+        assert!(matches!(
+            answered_with(
+                question,
+                Err(std::io::Error::from_raw_os_error(6)),
+                &hung_up,
+                none
+            ),
+            Err(PromptError::Interrupted)
+        ));
         let err = answered_with(
             question,
             Err(std::io::Error::other("other")),
@@ -1063,15 +1082,16 @@ mod tests {
         signal.join().expect("signal");
     }
 
-    /// The end of a read, and EIO, say the terminal is gone; other errors
-    /// don't.
+    /// The end of a read, EIO and ENXIO say the terminal is gone; other
+    /// errors don't.
     #[test]
-    fn eof_and_eio_say_the_terminal_is_gone() {
+    fn eof_eio_and_enxio_say_the_terminal_is_gone() {
         assert!(gone(&std::io::Error::new(
             std::io::ErrorKind::UnexpectedEof,
             "Reached end of file"
         )));
         assert!(gone(&std::io::Error::from_raw_os_error(5)));
+        assert!(gone(&std::io::Error::from_raw_os_error(6)));
         assert!(!gone(&std::io::Error::from_raw_os_error(4)));
         assert!(!gone(&std::io::Error::other("other")));
     }
