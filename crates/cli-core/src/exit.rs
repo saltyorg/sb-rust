@@ -13,6 +13,9 @@ use std::process::Termination;
 use crate::cancel::{self, Shutdown};
 use crate::theme::{self, Role, Theme};
 
+mod reader_gone;
+pub use reader_gone::ReaderGone;
+
 /// End the run with this exit code and print nothing more: a wrapped
 /// child's own code, or an error the command has already shown.
 #[derive(Debug, thiserror::Error)]

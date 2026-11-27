@@ -388,13 +388,16 @@ without writing, as `journalctl -f` and GNU `tail -f` do.
 - **What:** `ReaderGone::stdout()` watches fd 1. Its `wait()` resolves
   once the reader is gone, to cli-core's output error for a broken pipe,
   so the run ends with the quiet 141 as a failed write does.
-- **When:** only when stdout is a pipe, FIFO or socket (`fstat`), as GNU
-  tail does. Then a blocking-pool task (`spawn::blocking`) polls fd 1
-  with no requested events, so only POLLERR, POLLHUP or POLLNVAL wake
-  it: Linux sets POLLERR on a pipe's write end once no reader is left
-  (`fs/pipe.c`), and POLLHUP on a socket whose peer shut down. On a
-  terminal, a regular file or `/dev/null` it never resolves and starts
-  nothing.
+- **When:** only when stdout is a pipe or FIFO (`fstat`), as GNU tail
+  watches it, or a socket, as journalctl watches any stdout. Then a
+  blocking-pool task (`spawn::blocking`) polls fd 1 with no requested
+  events, so only POLLERR, POLLHUP or POLLNVAL wake it: Linux sets
+  POLLERR on a pipe's write end once no reader is left (`fs/pipe.c`),
+  and POLLHUP on a Unix stream socket once its peer closed (not at a
+  half-close). On a terminal, a regular file or `/dev/null` it never
+  resolves and starts nothing. A failed poll (not expected) is logged,
+  and the stream goes on, ended by its next write, as journalctl goes on
+  without its watch.
 - **How it stops:** dropping it signals a stop `eventfd` that the same
   poll waits on, so the task ends at once, as host's `FollowWait` does
   (the same reason not to use tokio's `AsyncFd`, written there).

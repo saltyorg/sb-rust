@@ -23,7 +23,9 @@ signal-hook.workspace = true
 tokio-util.workspace = true
 # The blocking pool, for spawn.rs's helper that carries the caller's span.
 tokio.workspace = true
-rustix.workspace = true
+# `event`: the reader-gone watch's `poll` and stop `eventfd` (exit.rs's
+# `ReaderGone`), sb-host's `FollowWait` pattern.
+rustix = { workspace = true, features = ["event"] }
 # The run lock's ancestor walk (run_lock.rs): each process's parent pid.
 procfs.workspace = true
 tracing.workspace = true
