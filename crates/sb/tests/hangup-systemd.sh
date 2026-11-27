@@ -49,11 +49,19 @@ done
 unset CARGO_TARGET_DIR CARGO_BUILD_TARGET_DIR
 
 # The test binary's path from cargo's JSON messages (`executable` of the
-# `hangup` test target); sb is built with it.
+# `hangup` test target,
+# https://doc.rust-lang.org/cargo/reference/external-tools.html#json-messages);
+# sb is built with it. stdin is read as a Buffer (readFileSync of a file
+# descriptor with no encoding,
+# https://nodejs.org/docs/latest-v24.x/api/fs.html#fsreadfilesyncpath-options),
+# then decoded: node 24.21-24.22.3's readFileSync(fd, "utf8") overruns its
+# heap buffer on a pipe that delivers short reads, as cargo's does, and
+# aborts (https://github.com/nodejs/node/issues/66341;
+# docs/platform-notes/node-readfilesync-pipes.md).
 bin=$(cargo test --locked -p sb --test hangup --no-run --message-format=json 2>/dev/null |
   node -e '
     let out = "";
-    for (const line of require("fs").readFileSync(0, "utf8").split("\n")) {
+    for (const line of require("fs").readFileSync(0).toString("utf8").split("\n")) {
       try { const m = JSON.parse(line); if (m.executable && m.target && m.target.name === "hangup") out = m.executable; } catch {}
     }
     if (!out) { console.error("hangup-systemd.sh: no hangup test binary"); process.exit(2); }
