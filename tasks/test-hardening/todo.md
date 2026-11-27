@@ -51,7 +51,7 @@ invented; no test reads the host's data.
 - [x] 2.8: the rehearsal runs for what changes a runner's verdict (Q5).
 - [x] 2.9a: `scripts/install-gitleaks.sh`, its test, check.sh and the
       floor-guard stubs.
-- [ ] 2.9b: the workflows, Renovate, CONSTRAINTS.md and the comments; the
+- [x] 2.9b: the workflows, Renovate, CONSTRAINTS.md and the comments; the
       gate host's gitleaks from the release binary, Go kept (Q7).
 - [ ] Checkpoint: the rehearsal, `full <batch start>`.
 
