@@ -62,7 +62,7 @@ invented; no test reads the host's data.
 - [x] 3.2: cli-core's reader-gone watch.
 - [x] 3.3: piped `sb logs` ends on the watch; the in-process tests; the
       follow's first-batch case.
-- [ ] 3.4: the end-to-end closed-reader test owns its pipe.
+- [x] 3.4: the end-to-end closed-reader test owns its pipe.
 - [ ] 3.5: the systemd parallelism test sees half-serial calls.
 - [ ] 3.6: "no poll after the interrupt" can fail.
 - [ ] 3.7: bench's cancelled gather and the hung mounts, on a channel.

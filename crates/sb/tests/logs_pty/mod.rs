@@ -10,7 +10,7 @@ use std::sync::{OnceLock, mpsc};
 use std::time::{Duration, Instant};
 
 use portable_pty::{
-    Child, CommandBuilder, ExitStatus, MasterPty, PtySize, SlavePty, native_pty_system,
+    Child, CommandBuilder, ExitStatus, MasterPty, PtyPair, PtySize, SlavePty, native_pty_system,
 };
 use rustix::fs::{Mode, OFlags, open};
 use rustix::termios::{LocalModes, tcgetattr};
@@ -202,19 +202,75 @@ impl Pty {
         Self::spawn_program("/bin/sh".as_ref(), &all, envs)
     }
 
+    /// sb with `args` and `envs`, as [`Pty::spawn`], with the PTY as its
+    /// controlling terminal on stdin and stderr, and stdout a pipe of the
+    /// test's: its read end is returned, so the test owns the close of
+    /// stdout's only reader (pipe(7):
+    /// <https://man7.org/linux/man-pages/man7/pipe.7.html>).
+    ///
+    /// util-linux's `setsid --ctty` makes the PTY sb's terminal: it calls
+    /// `setsid()`, then `TIOCSCTTY` on its stdin, and execs sb in place,
+    /// forking only when it leads a process group already, which a
+    /// `Command` child doesn't (`sys-utils/setsid.c` at 22.04's util-linux,
+    /// <https://github.com/util-linux/util-linux/blob/v2.37.2/sys-utils/setsid.c>),
+    /// so the child's status is sb's own (the maintainer's choice for
+    /// these tests, 2026-11-26). Why not portable-pty's
+    /// `spawn_command`: it closes every descriptor above 2 and puts the
+    /// slave on 0, 1 and 2, so stdout can't be a pipe
+    /// (<https://docs.rs/crate/portable-pty/0.9.0/source/src/unix.rs>). Why
+    /// not std's `CommandExt::setsid`: unstable (`process_setsid`); and
+    /// `pre_exec` is `unsafe`, which the workspace forbids. Why not the
+    /// pty-process crate, which does this in pure Rust: a second PTY crate
+    /// and child type beside portable-pty, for one harness, where the
+    /// helpers already run util-linux's `setsid` ([`World::without_terminal`]).
+    pub fn spawn_with_stdout_pipe(
+        args: &[&str],
+        envs: Vec<(String, Option<String>)>,
+    ) -> (Self, std::io::PipeReader) {
+        let pair = openpty();
+        let tty = pair.master.tty_name().expect("tty name");
+        // The slave by its name, as the terminal's own descriptor, without
+        // making it the test's controlling terminal; close-on-exec, so no
+        // other child inherits it (std's `dup2` onto sb's 0 and 2 clears
+        // the flag there).
+        let slave = open(
+            &tty,
+            OFlags::RDWR | OFlags::NOCTTY | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .expect("the slave");
+        let (reader, writer) = std::io::pipe().expect("a pipe");
+        let mut cmd = std::process::Command::new("setsid");
+        cmd.arg("--ctty")
+            .arg(common::sb().get_program())
+            .args(args)
+            .stdin(std::fs::File::from(
+                slave.try_clone().expect("the slave again"),
+            ))
+            .stderr(std::fs::File::from(slave))
+            .stdout(writer)
+            .env("TERM", "xterm-256color")
+            .env("NO_COLOR", "1");
+        for (k, v) in envs {
+            match v {
+                Some(v) => cmd.env(k, v),
+                None => cmd.env_remove(k),
+            };
+        }
+        let child = cmd.spawn().expect("spawn setsid");
+        // The command's copies of the slave and of the pipe's write end
+        // close with it: sb holds the only writer, the test the only
+        // reader.
+        drop(cmd);
+        (Self::on(pair, tty, Box::new(child)), reader)
+    }
+
     fn spawn_program(
         program: &std::ffi::OsStr,
         args: &[&str],
         envs: Vec<(String, Option<String>)>,
     ) -> Self {
-        let pair = native_pty_system()
-            .openpty(PtySize {
-                rows: 30,
-                cols: 100,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .expect("pty");
+        let pair = openpty();
         let mut cmd = CommandBuilder::new(program);
         cmd.args(args);
         // In the test's working directory, where a std `Command` starts its
@@ -232,6 +288,12 @@ impl Pty {
         }
         let child = pair.slave.spawn_command(cmd).expect("spawn");
         let tty = pair.master.tty_name().expect("tty name");
+        Self::on(pair, tty, child)
+    }
+
+    /// The PTY `pair`, whose slave is `tty`, with `child` on it: its
+    /// output read on a thread of its own as it arrives.
+    fn on(pair: PtyPair, tty: PathBuf, child: Box<dyn Child + Send + Sync>) -> Self {
         let mut reader = pair.master.try_clone_reader().expect("reader");
         let writer = pair.master.take_writer().expect("writer");
         let (tx, output) = mpsc::channel();
@@ -302,6 +364,12 @@ impl Pty {
 
     /// Wait for sb to exit, reading its output meanwhile.
     pub fn exit(&mut self) -> ExitStatus {
+        self.exit_showing(String::new)
+    }
+
+    /// [`Pty::exit`], with what `also` gives (the run log) in the failure
+    /// when sb doesn't exit.
+    pub fn exit_showing(&mut self, also: impl Fn() -> String) -> ExitStatus {
         let deadline = Instant::now() + WAIT;
         loop {
             if let Some(status) = self.child.try_wait().expect("wait") {
@@ -312,8 +380,9 @@ impl Pty {
             }
             assert!(
                 Instant::now() < deadline,
-                "sb didn't exit:\n{}",
-                self.contents()
+                "sb didn't exit:\n{}\n{}",
+                self.contents(),
+                also()
             );
             if let Ok(bytes) = self.output.recv_timeout(Duration::from_millis(10)) {
                 self.parser.process(&bytes);
@@ -342,6 +411,67 @@ impl Drop for Pty {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
+}
+
+/// A PTY of 100×30, the size every test's screen is read at.
+fn openpty() -> PtyPair {
+    native_pty_system()
+        .openpty(PtySize {
+            rows: 30,
+            cols: 100,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .expect("pty")
+}
+
+/// sb's stdout as the test reads it: the pipe's read end, buffered once
+/// for every read, so no line read ahead is lost between reads.
+pub type Stdout = std::io::BufReader<std::io::PipeReader>;
+
+/// The next `n` lines on `stdout` within [`WAIT`], and `stdout` back,
+/// open. A thread reads them (a `PipeReader` has no read timeout, and
+/// rustix's `poll` isn't among sb's dev features), so a stream that writes
+/// too few fails at the deadline, or at its end or a read error, with the
+/// lines it did write and what `also` gives (the screen, the run log).
+pub fn lines_from(stdout: Stdout, n: usize, also: impl Fn() -> String) -> (Stdout, Vec<String>) {
+    use std::io::BufRead as _;
+    let (tx, lines) = mpsc::channel();
+    let reading = std::thread::spawn(move || {
+        let mut stdout = stdout;
+        for _ in 0..n {
+            let mut line = String::new();
+            let read = match stdout.read_line(&mut line) {
+                Ok(0) => Err("the end of stdout".to_owned()),
+                Ok(_) => Ok(line),
+                Err(e) => Err(format!("a read error: {e}")),
+            };
+            let failed = read.is_err();
+            if tx.send(read).is_err() || failed {
+                break;
+            }
+        }
+        stdout
+    });
+    let deadline = Instant::now() + WAIT;
+    let mut got = Vec::new();
+    while got.len() < n {
+        let left = deadline.saturating_duration_since(Instant::now());
+        let why = match lines.recv_timeout(left) {
+            Ok(Ok(line)) => {
+                got.push(line);
+                continue;
+            }
+            Ok(Err(why)) => why,
+            Err(e) => e.to_string(),
+        };
+        panic!(
+            "{} of {n} lines on stdout ({why}): {got:?}\n{}",
+            got.len(),
+            also()
+        );
+    }
+    (reading.join().expect("the reading thread"), got)
 }
 
 /// The soft `RLIMIT_NOFILE` the logs commands raise to under `hard`

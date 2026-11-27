@@ -24,7 +24,7 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use assert_cmd::prelude::*;
-use logs_pty::{Pty, World};
+use logs_pty::{Pty, Stdout, World};
 use sb_docker::testing::{FakeEngine, Options};
 use sb_host::journal::testing::crafted::{
     Crafted, D_ENTRY_ARRAY, D_ENTRY_OFFSET, D_N_ENTRIES, H_ARENA_SIZE, H_ENTRY_ARRAY_OFFSET,
@@ -634,10 +634,12 @@ fn a_service_change_shows_within_six_seconds() {
 }
 
 /// Piped stdout (tui spec, "The inline fallback"): the picker on the
-/// terminal (`/dev/tty`), then the chosen log on stdout, plain, with its
-/// time and origin: the tail, then an appended entry; Ctrl-C, a signal
-/// once the screen is gone, ends it by SIGINT, the terminal restored and
-/// none of the log in the run log.
+/// terminal (`/dev/tty`), then the chosen log on stdout, a pipe the test
+/// owns and keeps open (`Pty::spawn_with_stdout_pipe`), plain, with its
+/// time and origin: the tail, then an appended entry once the follow is
+/// on; Ctrl-C, a signal once the screen is gone, ends it by SIGINT, the
+/// terminal restored and none of the log in the run log. A watched pipe
+/// whose reader stays open keeps the stream going.
 #[test]
 fn piped_stdout_picks_on_the_terminal_and_streams_the_log() {
     if !root_gate::requested() {
@@ -645,78 +647,113 @@ fn piped_stdout_picks_on_the_terminal_and_streams_the_log() {
     }
     let world = World::new(UNITS, UNIT_FILES);
     world.write_journal();
-    let out = world.dir.path().join("out.txt");
-    let out_arg = out.display().to_string();
-    let mut pty = Pty::spawn_shell(r#"exec "$0" logs > "$1""#, &[&out_arg], world.envs());
+    let (mut pty, reader) = Pty::spawn_with_stdout_pipe(&["logs"], world.envs());
     assert!(pty.showing("Services (3)"), "{}", pty.contents());
     assert!(pty.parser.screen().alternate_screen());
     pty.send(b"jj\r");
-    let text = logs_pty::file_holding(&out, "app[42]: ready");
-    let lines: Vec<&str> = text.lines().collect();
-    assert_eq!(lines.len(), 3, "{text:?}");
+    let shown = || format!("{}\nthe run log:\n{}", pty.contents(), world.log());
+    // `write_journal`'s three entries of APP's.
+    let (stdout, tail) = logs_pty::lines_from(Stdout::new(reader), 3, shown);
     for (line, message) in
-        lines
-            .iter()
+        tail.iter()
             .zip(["hello from app", &format!("a line with {MARKER}"), "ready"])
     {
         // `2026-11-13T10:04:05+0000 app[42]: <message>`.
         let (time, rest) = line.split_once(' ').expect("a time");
         assert_eq!(time.len(), 24, "{line}");
-        assert_eq!(rest, format!("app[42]: {message}"));
+        assert_eq!(rest, format!("app[42]: {message}\n"));
     }
-    assert!(!text.contains('\x1b'), "{text:?}");
+    assert!(!tail.concat().contains('\x1b'), "{tail:?}");
+    // The follow's watch is on: the append is seen by its wake, not by
+    // the follow's first batch (sb-tui's journal source tests that).
+    log_holding(&world, "journal follow started");
     world.append();
-    logs_pty::file_holding(&out, "app[42]: appended while following");
+    let shown = || format!("{}\nthe run log:\n{}", pty.contents(), world.log());
+    let (stdout, appended) = logs_pty::lines_from(stdout, 1, shown);
+    assert!(
+        appended[0].ends_with("app[42]: appended while following\n"),
+        "{appended:?}"
+    );
     pty.send(b"\x03");
-    let status = pty.exit();
+    let status = pty.exit_showing(|| format!("the run log:\n{}", world.log()));
     assert_eq!(status.signal(), Some("Interrupt"), "{}", pty.contents());
     pty.assert_restored();
+    drop(stdout);
     let log = world.log();
     assert!(log.contains("stream ended"), "{log}");
     assert!(!log.contains(MARKER), "{log}");
 }
 
-/// A reader that goes away ends the stream with cli-core's quiet 141, at
-/// the next line written.
+/// The run log once it holds `text`, within `logs_pty::WAIT`.
+fn log_holding(world: &World, text: &str) -> String {
+    logs_pty::file_holding(&world.dir.path().join("logs/sb.log"), text)
+}
+
+/// sb's exit after the reader went: the quiet 141, by its own code (no
+/// shell between), the terminal restored and no error block.
+fn assert_quiet_141(pty: &mut Pty, world: &World) {
+    let status = pty.exit_showing(|| format!("the run log:\n{}", world.log()));
+    assert_eq!(
+        (status.exit_code(), status.signal()),
+        (141, None),
+        "{}\nthe run log:\n{}",
+        pty.contents(),
+        world.log()
+    );
+    pty.assert_restored();
+    assert!(!pty.contents().contains('✗'), "{}", pty.contents());
+}
+
+/// The reader gone before the stream (tui spec, "The inline fallback"):
+/// the stream's first write, or the reader-gone watch, ends it with
+/// cli-core's quiet 141. stdout is a pipe the test owns and closes
+/// (bat's and uutils' pattern); the PTY is sb's terminal through
+/// `setsid --ctty` (`Pty::spawn_with_stdout_pipe`).
 #[test]
-fn a_closed_reader_ends_the_stream_with_141() {
+fn a_reader_gone_before_the_stream_ends_it_with_141() {
     if !root_gate::requested() {
         return;
     }
     let world = World::new(UNITS, UNIT_FILES);
     world.write_journal();
-    let out = world.dir.path().join("out.txt");
-    let status = world.dir.path().join("status");
-    let gone = world.dir.path().join("reader-gone");
-    // The reader's side marks `gone` once head has exited and its own
-    // stdin is closed: then nothing holds the pipe's read end. head's
-    // lines in out.txt don't say that: it writes them before it exits,
-    // and a line sb writes before the read end closes goes into the pipe,
-    // leaving sb to meet the closed pipe only at a later line.
-    let script =
-        r#"{ "$0" logs; echo $? > "$2"; } | { head -n 2 > "$1"; exec <&-; echo gone > "$3"; }"#;
-    let args = [
-        out.display().to_string(),
-        status.display().to_string(),
-        gone.display().to_string(),
-    ];
-    let mut pty = Pty::spawn_shell(script, &[&args[0], &args[1], &args[2]], world.envs());
+    let (mut pty, reader) = Pty::spawn_with_stdout_pipe(&["logs"], world.envs());
+    assert!(pty.showing("Services (3)"), "{}", pty.contents());
+    drop(reader);
+    pty.send(b"jj\r");
+    assert_quiet_141(&mut pty, &world);
+}
+
+/// The reader gone after the tail, with nothing new in the journal: sb
+/// sees it go without writing (cli-core's reader-gone watch, as
+/// `journalctl -f` does) and ends with the quiet 141 at once. Each step
+/// waits on a fact: the tail's lines read from the pipe, the follow's
+/// start in the run log, then the close.
+#[test]
+fn a_reader_gone_after_the_tail_ends_the_stream_with_141() {
+    if !root_gate::requested() {
+        return;
+    }
+    let world = World::new(UNITS, UNIT_FILES);
+    world.write_journal();
+    let (mut pty, reader) = Pty::spawn_with_stdout_pipe(&["logs"], world.envs());
     assert!(pty.showing("Services (3)"), "{}", pty.contents());
     pty.send(b"jj\r");
-    logs_pty::file_holding(&gone, "gone");
-    assert!(
-        std::fs::read_to_string(&out)
-            .expect("head's output")
-            .contains("hello from app")
-    );
-    // head has gone after two lines; the next one written meets the
-    // closed pipe.
-    world.append();
-    assert_eq!(logs_pty::file_holding(&status, "\n"), "141\n");
-    assert!(pty.exit().success());
-    pty.assert_restored();
-    // Quiet: no error block.
-    assert!(!pty.contents().contains('✗'), "{}", pty.contents());
+    let shown = || format!("{}\nthe run log:\n{}", pty.contents(), world.log());
+    // `write_journal`'s three entries of APP's, the last one `ready`.
+    let (stdout, tail) = logs_pty::lines_from(Stdout::new(reader), 3, shown);
+    assert!(tail[2].ends_with("app[42]: ready\n"), "{tail:?}");
+    log_holding(&world, "journal follow started");
+    drop(stdout);
+    assert_quiet_141(&mut pty, &world);
+    let log = world.log();
+    let ended = log
+        .lines()
+        .find(|l| l.contains("stream ended"))
+        .unwrap_or_else(|| panic!("no stream ended in the run log:\n{log}"));
+    // The watch's error, `ErrorKind::BrokenPipe` itself, reads `broken
+    // pipe`; a failed write's EPIPE reads `Broken pipe (os error 32)`. So
+    // this says the watch ended the stream, not a write.
+    assert!(ended.contains(r#"Err("broken pipe")"#), "{ended}");
 }
 
 /// The whole-log search on a PTY (tui spec, "Whole-log search, save and
