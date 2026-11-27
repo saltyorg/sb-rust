@@ -185,11 +185,12 @@
             "dependencyDashboardApproval": true
         },
         {
-            "description": "gitleaks: its version and both archives' pinned SHA-256s (scripts/install-gitleaks.sh, CONSTRAINTS.md's Tools row) in one PR, which waits for the maintainer's approval on the dependency dashboard; before merging it, check each new SHA-256 as scripts/install-gitleaks.sh says",
+            "description": "gitleaks: its version and both archives' pinned SHA-256s (scripts/install-gitleaks.sh, CONSTRAINTS.md's Tools row) in one PR, proposed once the release is 7 days old, which waits for the maintainer's approval on the dependency dashboard; before merging it, check each new SHA-256 as scripts/install-gitleaks.sh says",
             "matchPackageNames": [
                 "gitleaks/gitleaks"
             ],
             "groupName": "gitleaks",
+            "minimumReleaseAge": "7 days",
             "dependencyDashboardApproval": true
         },
         {
