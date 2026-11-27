@@ -678,3 +678,96 @@ mod tests {
         let _ = ChildOutput::new(&dir.path().join("no-such-dir"), "sh").stdout();
     }
 }
+
+/// The signals thread's decisions held back until a hold starts
+/// ([`crate::cancel::Shutdown::hold`]), so a test can put a signal at the
+/// point it means: delivered, not yet decided, when code looks at the
+/// token before its hold, and decided as the hold starts. Process-wide,
+/// for a test binary of its own (the signals thread is the process's).
+/// std's `Mutex` and `Condvar`, as sb-journal's `follow_slot` uses them,
+/// waiting with `Condvar::wait_while`, the documented wait on a condition
+/// (<https://doc.rust-lang.org/std/sync/struct.Condvar.html#method.wait_while>).
+/// While the gate is closed, code waiting on the token without reaching a
+/// hold waits with no bound, and a hold that started before the gate
+/// closed waits out its settle. Why not the `fail` crate's pause
+/// points: the gate opens from inside `Shutdown::hold` with its pending
+/// flag, which `fail`'s callbacks can't take, and it is a new dependency.
+pub mod signals {
+    use std::sync::{Condvar, Mutex, PoisonError};
+
+    #[derive(Debug)]
+    struct State {
+        /// The decisions wait for a hold.
+        closed: bool,
+        /// A hold opened the gate with a delivery not yet decided.
+        held_one: bool,
+    }
+
+    static GATE: (Mutex<State>, Condvar) = (
+        Mutex::new(State {
+            closed: false,
+            held_one: false,
+        }),
+        Condvar::new(),
+    );
+
+    fn state() -> std::sync::MutexGuard<'static, State> {
+        GATE.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The gate, closed until a hold starts or this is dropped.
+    #[derive(Debug)]
+    #[must_use = "the gate opens when this is dropped"]
+    pub struct DecidedAtTheHold(());
+
+    /// Hold the signals thread's decisions back until the next hold starts.
+    ///
+    /// # Panics
+    ///
+    /// While another gate is closed: one at a time.
+    pub fn decided_at_the_hold() -> DecidedAtTheHold {
+        let mut state = state();
+        assert!(!state.closed, "one signals gate at a time");
+        state.closed = true;
+        state.held_one = false;
+        DecidedAtTheHold(())
+    }
+
+    impl DecidedAtTheHold {
+        /// Whether a hold opened the gate with a delivery not yet decided:
+        /// the signal was decided as the hold started, as the test meant,
+        /// not before.
+        #[must_use]
+        pub fn held_a_delivery(&self) -> bool {
+            state().held_one
+        }
+    }
+
+    impl Drop for DecidedAtTheHold {
+        fn drop(&mut self) {
+            state().closed = false;
+            GATE.1.notify_all();
+        }
+    }
+
+    /// The signals thread, before it decides a delivery: waits while the
+    /// gate is closed.
+    pub(crate) fn before_a_decision() {
+        drop(
+            GATE.1
+                .wait_while(state(), |state| state.closed)
+                .unwrap_or_else(PoisonError::into_inner),
+        );
+    }
+
+    /// A hold starts, `pending` whether a delivery is not yet decided: the
+    /// gate opens, noting it.
+    pub(crate) fn a_hold_starts(pending: bool) {
+        let mut state = state();
+        if state.closed {
+            state.held_one = pending;
+            state.closed = false;
+            GATE.1.notify_all();
+        }
+    }
+}

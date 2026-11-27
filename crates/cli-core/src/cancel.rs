@@ -481,6 +481,10 @@ impl Shutdown {
     /// thread is decided first, as outside the hold: the child, spawned
     /// after, never got it.
     pub fn hold(&self) -> Hold {
+        // A test's gate on the signals thread opens here, so its delivery
+        // is decided as the hold settles (`testing::signals`).
+        #[cfg(feature = "testing")]
+        crate::testing::signals::a_hold_starts(self.holds.pending());
         let mut state = self.holds.settled(self.holds.lock());
         if state.count == 0 {
             state.noted = [false; 2];
@@ -674,6 +678,10 @@ impl Shutdown {
                         tracing::debug!(signal, "a copy of the first signal; not a second one");
                         continue;
                     }
+                    // A test's gate holds the decision back until a hold
+                    // starts (`testing::signals`).
+                    #[cfg(feature = "testing")]
+                    crate::testing::signals::before_a_decision();
                     match shutdown.step(first.map(|(first, _)| first), signal) {
                         Act::Cancel => first = Some((signal, Instant::now())),
                         Act::ForcedExit(first) => {
