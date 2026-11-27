@@ -108,9 +108,12 @@ struct Shared {
     /// Set when the fake is dropped: delayed answers end at once, so the
     /// graceful shutdown doesn't wait them out.
     stopping: tokio::sync::watch::Sender<bool>,
+    /// The handler's panics, caught.
+    panics: super::Panics,
 }
 
-/// A running fake controller; it stops when dropped.
+/// A running fake controller; it stops when dropped, and then fails the
+/// test with any handler panic it caught.
 pub struct FakeController {
     url: String,
     shared: Arc<Shared>,
@@ -135,6 +138,12 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 impl FakeController {
     /// Start a fake on a free loopback port.
     ///
+    /// # Panics
+    ///
+    /// Not here: a panic on the fake's thread (axum's serve, which
+    /// documents that it never errors, breaking that contract) is resumed
+    /// by the fake's drop, in the test.
+    ///
     /// # Errors
     ///
     /// The I/O error when the loopback port can't be bound or the fake's
@@ -147,9 +156,11 @@ impl FakeController {
         let shared = Arc::new(Shared {
             script: Mutex::new(Script::default()),
             stopping: tokio::sync::watch::channel(false).0,
+            panics: super::Panics::default(),
         });
         let app = Router::new()
             .fallback(answer)
+            .layer(shared.panics.layer("fake controller"))
             .with_state(Arc::clone(&shared));
         let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
         let (ready, started) = std::sync::mpsc::channel::<std::io::Result<()>>();
@@ -175,11 +186,16 @@ impl FakeController {
                         }
                     };
                     let _ = ready.send(Ok(()));
-                    let _ = axum::serve(listener, app)
+                    // axum documents that this never errors
+                    // (<https://docs.rs/axum/0.8.9/axum/serve/struct.Serve.html#method.with_graceful_shutdown>);
+                    // the expect only guards that contract, as a panic the
+                    // drop resumes.
+                    axum::serve(listener, app)
                         .with_graceful_shutdown(async move {
                             let _ = stopped.await;
                         })
-                        .await;
+                        .await
+                        .expect("the fake controller serves");
                 });
             })?;
         started
@@ -222,9 +238,7 @@ impl Drop for FakeController {
         if let Some(stop) = self.stop.take() {
             let _ = stop.send(());
         }
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
-        }
+        self.shared.panics.surface(self.thread.take());
     }
 }
 

@@ -34,9 +34,64 @@ use crate::ps::{Row, sorted};
 pub const FIXTURES: &str = include_str!("../fixtures/containers.json");
 
 /// The fixtures as raw JSON, one value per container.
+///
+/// # Panics
+///
+/// The fixture file isn't a JSON array: a broken fixture fails the test
+/// that reads it, naming the file, rather than leaving no containers.
 #[must_use]
 pub fn inspects() -> Vec<Value> {
-    serde_json::from_str(FIXTURES).unwrap_or_default()
+    serde_json::from_str(FIXTURES).expect("containers.json parses")
+}
+
+/// The panics a fake's handlers met, each caught as a 500 answer naming
+/// it (tower-http's `CatchPanicLayer`,
+/// <https://docs.rs/tower-http/0.6.11/tower_http/catch_panic/index.html>),
+/// so the test's own failure shows the panic rather than a dropped
+/// connection, and the fake's drop fails a test that passed through one.
+/// It covers a handler and its response future, not a streamed body (the
+/// event stream's and a log follow's chunks), which the layer doesn't
+/// wrap.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Panics(Arc<Mutex<Vec<String>>>);
+
+impl Panics {
+    /// The layer that catches a handler's panic into these, answering 500
+    /// with the fake's name and the panic's message.
+    pub(crate) fn layer(
+        &self,
+        fake: &'static str,
+    ) -> tower_http::catch_panic::CatchPanicLayer<
+        impl Fn(Box<dyn std::any::Any + Send + 'static>) -> Response + Clone + Send + Sync + 'static,
+    > {
+        let panics = self.clone();
+        tower_http::catch_panic::CatchPanicLayer::custom(
+            move |panic: Box<dyn std::any::Any + Send + 'static>| {
+                let message = panic
+                    .downcast_ref::<String>()
+                    .map(String::as_str)
+                    .or_else(|| panic.downcast_ref::<&str>().copied())
+                    .unwrap_or("a panic with no message");
+                let shown = format!("the {fake}'s handler panicked: {message}");
+                lock(&panics.0).push(shown.clone());
+                (StatusCode::INTERNAL_SERVER_ERROR, shown).into_response()
+            },
+        )
+    }
+
+    /// At a fake's drop: `thread`'s own panic is resumed, then a
+    /// handler's panic fails the test, unless the test is failing already.
+    pub(crate) fn surface(&self, thread: Option<std::thread::JoinHandle<()>>) {
+        let joined = thread.map(std::thread::JoinHandle::join);
+        if std::thread::panicking() {
+            return;
+        }
+        if let Some(Err(panic)) = joined {
+            std::panic::resume_unwind(panic);
+        }
+        let panics = lock(&self.0);
+        assert!(panics.is_empty(), "{}", panics.join("\n"));
+    }
 }
 
 /// A container's list entry as Docker would give it for its inspect, as
@@ -175,6 +230,8 @@ struct Shared {
     /// (`send_replace` notifies whether or not anyone waits,
     /// <https://docs.rs/tokio/1.54.1/tokio/sync/watch/struct.Sender.html#method.send_replace>).
     changes: tokio::sync::watch::Sender<()>,
+    /// The handlers' panics, caught.
+    panics: Panics,
 }
 
 impl Shared {
@@ -190,6 +247,7 @@ impl Shared {
             events: Mutex::new(Vec::new()),
             events_ended: AtomicBool::new(false),
             changes: tokio::sync::watch::channel(()).0,
+            panics: Panics::default(),
             options,
         })
     }
@@ -199,7 +257,8 @@ impl Shared {
     }
 }
 
-/// A running fake; it stops when dropped, letting held inspects answer.
+/// A running fake; it stops when dropped, letting held inspects answer,
+/// and then fails the test with any handler panic it caught.
 pub struct FakeEngine {
     _dir: tempfile::TempDir,
     socket: PathBuf,
@@ -218,6 +277,12 @@ impl std::fmt::Debug for FakeEngine {
 
 impl FakeEngine {
     /// Start a fake with `options` on a socket in a new temporary directory.
+    ///
+    /// # Panics
+    ///
+    /// Not here: a panic on the fake's thread (axum's serve, which
+    /// documents that it never errors, breaking that contract) is resumed
+    /// by the fake's drop, in the test.
     ///
     /// # Errors
     ///
@@ -258,11 +323,16 @@ impl FakeEngine {
                         }
                     };
                     let _ = ready.send(Ok(()));
-                    let _ = axum::serve(listener, app)
+                    // axum documents that this never errors
+                    // (<https://docs.rs/axum/0.8.9/axum/serve/struct.Serve.html#method.with_graceful_shutdown>);
+                    // the expect only guards that contract, as a panic the
+                    // drop resumes.
+                    axum::serve(listener, app)
                         .with_graceful_shutdown(async move {
                             let _ = stopped.await;
                         })
-                        .await;
+                        .await
+                        .expect("the fake engine serves");
                 });
             })?;
         started
@@ -367,9 +437,7 @@ impl Drop for FakeEngine {
         if let Some(stop) = self.stop.take() {
             let _ = stop.send(());
         }
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
-        }
+        self.shared.panics.surface(self.thread.take());
     }
 }
 
@@ -401,6 +469,7 @@ fn router(shared: Arc<Shared>) -> Router {
         .route("/{version}/events", get(events::events_at))
         .fallback(not_found)
         .method_not_allowed_fallback(not_found)
+        .layer(shared.panics.layer("fake engine"))
         .with_state(shared)
 }
 
@@ -628,6 +697,69 @@ mod tests {
         assert!(shown.starts_with("FakeEngine { socket: \""), "{shown}");
         assert!(shown.ends_with("\", .. }"), "{shown}");
     }
+
+    /// A handler's panic is answered 500 with the panic's message, and the
+    /// fake's drop then fails the test with it.
+    #[tokio::test]
+    async fn a_handler_panic_is_answered_and_fails_the_drop() {
+        let panics = Panics::default();
+        let app = Router::new()
+            .route(
+                "/",
+                axum::routing::get(|| async { panic!("a planted panic") }),
+            )
+            .layer(panics.layer("fake"));
+        let request = Request::get("/").body(Body::empty()).expect("request");
+        let response = app.oneshot(request).await.expect("answer");
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let shown = "the fake's handler panicked: a planted panic";
+        assert_eq!(body, shown);
+        let dropped = std::panic::catch_unwind(|| panics.surface(None)).expect_err("fails");
+        assert_eq!(
+            dropped.downcast_ref::<String>().map(String::as_str),
+            Some(shown)
+        );
+        // None caught: nothing to fail.
+        Panics::default().surface(None);
+    }
+
+    /// A test failing already isn't made to panic twice by a fake that
+    /// caught a panic: its own failure is the one that comes out.
+    #[test]
+    fn a_failing_test_keeps_its_own_panic() {
+        struct Fake(Panics);
+        impl Drop for Fake {
+            fn drop(&mut self) {
+                self.0.surface(None);
+            }
+        }
+        let panics = Panics::default();
+        lock(&panics.0).push("the fake's handler panicked: caught".to_owned());
+        let failed = std::panic::catch_unwind(|| {
+            let _fake = Fake(panics.clone());
+            panic!("the test's own failure");
+        })
+        .expect_err("the test failed");
+        assert_eq!(
+            failed.downcast_ref::<&str>(),
+            Some(&"the test's own failure")
+        );
+    }
+
+    /// The server thread's own panic comes out of the drop.
+    #[test]
+    fn the_server_threads_panic_is_resumed() {
+        let thread = std::thread::spawn(|| panic!("the server failed"));
+        let resumed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            Panics::default().surface(Some(thread));
+        }))
+        .expect_err("resumed");
+        assert_eq!(resumed.downcast_ref::<&str>(), Some(&"the server failed"));
+    }
+
     use axum::body::Body;
     use axum::http::Request;
     use tower::ServiceExt;

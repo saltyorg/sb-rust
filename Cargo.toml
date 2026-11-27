@@ -60,6 +60,9 @@ futures-util = { version = "0.3.34", default-features = false, features = ["std"
 axum = { version = "0.8.9", default-features = false, features = ["tokio", "http1", "json"] }
 # axum's testing pattern for the fake's own tests (`ServiceExt::oneshot`).
 tower = { version = "0.5.3", default-features = false, features = ["util"] }
+# The test fakes' handler panics, caught as an answer naming the panic
+# (sb-docker's `testing`; already in the tree through reqwest).
+tower-http = { version = "0.6.11", default-features = false, features = ["catch-panic"] }
 saphyr = { version = "0.3.3", default-features = false }
 # Every config file's events; Saltbox's schema files are read from them
 # into their typed rules by sb-config (ADR-028).
