@@ -798,6 +798,7 @@ fn frozen_reads() -> &'static std::collections::HashMap<String, Option<Sections>
 /// unset (every gate and CI run), nothing is written.
 fn record(texts: &[&str]) {
     static CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    // The freezing run's switch, read on purpose (above); the gate unsets it.
     let Some(dir) = std::env::var_os("SB_CONFIGPARSER_TEXTS") else {
         return;
     };
