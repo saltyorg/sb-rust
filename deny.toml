@@ -75,7 +75,9 @@ deny = [
     # host: the supported-release check and the journal reader's wrapper
     # (sb-journal's types and its tokio glue), used by the binary; ops'
     # apt sequence and sources for setup and gha, and bench's free space.
-    { crate = "sb-host", wrappers = ["sb", "sb-ops", "sb-tui", "sb-repo", "sb-motd", "sb-ansible", "sb-python-env"] },
+    # Its own name is its self dev-dependency, which turns `testing` on for
+    # its tests (as sb-repo's).
+    { crate = "sb-host", wrappers = ["sb", "sb-host", "sb-ops", "sb-tui", "sb-repo", "sb-motd", "sb-ansible", "sb-python-env"] },
     # journal: sb's own journal reader, depending on nothing of sb's and
     # wrapped by host (journal spec, "Capability map correction"). Its own
     # name is its self dev-dependency, which turns `testing` on for its

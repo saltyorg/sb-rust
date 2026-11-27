@@ -1,13 +1,15 @@
 //! The disk check's run-log records (host spec, "Disk space"): each
-//! filesystem's total, free and used space, and each skipped duplicate. A
-//! test binary of its own: tracing caches each callsite's interest
-//! process-wide
+//! filesystem's total, free and used space, and each skipped duplicate,
+//! over invented `statvfs` figures (the check's seam). A test binary of
+//! its own: tracing caches each callsite's interest process-wide
 //! (<https://docs.rs/tracing-core/0.1.36/tracing_core/callsite/index.html>),
 //! so a log test sharing a process with tests that run without a
 //! subscriber misses events.
 
 use std::io::Write;
 use std::sync::{Arc, Mutex};
+
+use sb_host::disk::{Disk, Stats};
 
 /// A log writer the test can read back, through tracing-subscriber's
 /// `MakeWriter` for a closure. Why not its `Mutex<W>` or `Arc<W>` writers:
@@ -31,9 +33,20 @@ impl Write for Captured {
     }
 }
 
+/// A filesystem the test invents: 64 GiB in 4 KiB fragments, 40 GiB of
+/// them free (over the check's 2 GiB, so the second path is reached),
+/// whatever the host's own disks hold.
+const INVENTED: Stats = Stats {
+    blocks: 16_777_216,
+    bavail: 10_485_760,
+    frsize: 4096,
+    fsid: 7,
+};
+
 #[test]
 fn each_filesystem_s_figures_and_each_skipped_duplicate_are_logged() {
-    // A directory and one inside it: two paths on one filesystem.
+    // A directory and one inside it: two paths on one filesystem, the
+    // invented one's.
     let dir = tempfile::tempdir().expect("tempdir");
     let inner = dir.path().join("inner");
     std::fs::create_dir(&inner).expect("inner");
@@ -45,28 +58,27 @@ fn each_filesystem_s_figures_and_each_skipped_duplicate_are_logged() {
         .with_ansi(false)
         .finish();
     let result = tracing::subscriber::with_default(subscriber, || {
-        sb_host::check_disk_space(&[dir.path(), &inner])
+        Disk::new()
+            .with_statvfs(|_| Ok(INVENTED))
+            .check_disk_space(&[dir.path(), &inner])
     });
 
     let text = captured.text();
+    assert!(result.is_ok(), "{result:?}\n{text}");
     let lines: Vec<&str> = text.lines().collect();
-    let figures = lines[0];
+    assert_eq!(lines.len(), 2, "{text}");
     assert!(
-        figures.contains("disk usage")
-            && figures.contains(&format!("path={}", dir.path().display()))
-            && figures.contains("total=")
-            && figures.contains("free=")
-            && figures.contains("used="),
+        lines[0].contains("disk usage")
+            && lines[0].contains(&format!("path={}", dir.path().display()))
+            && lines[0].contains("total=64.0 GiB")
+            && lines[0].contains("free=40.0 GiB")
+            && lines[0].contains("used=37.5%"),
         "{text}"
     );
-    // The duplicate is reached only when the first filesystem passed.
-    if result.is_ok() {
-        assert_eq!(lines.len(), 2, "{text}");
-        assert!(
-            lines[1].contains("disk usage skipped: same filesystem")
-                && lines[1].contains(&format!("path={}", inner.display()))
-                && lines[1].contains(&format!("same_as={}", dir.path().display())),
-            "{text}"
-        );
-    }
+    assert!(
+        lines[1].contains("disk usage skipped: same filesystem")
+            && lines[1].contains(&format!("path={}", inner.display()))
+            && lines[1].contains(&format!("same_as={}", dir.path().display())),
+        "{text}"
+    );
 }

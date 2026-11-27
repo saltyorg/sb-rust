@@ -8,9 +8,10 @@ license.workspace = true
 publish.workspace = true
 
 [features]
-# The program-path and timeout setters for tests outside the crate
-# (M-TEST-UTIL), and sb-journal's crafted journals re-exported for sb's
-# `sb logs` tests; never in a release build.
+# The program-path and timeout setters and the disk check's statvfs seam
+# for tests outside the crate (M-TEST-UTIL), and sb-journal's crafted
+# journals re-exported for sb's `sb logs` tests; never in a release
+# build.
 testing = ["sb-journal/testing"]
 
 [dependencies]
@@ -52,6 +53,9 @@ tokio = { workspace = true, features = ["macros"] }
 rustix = { workspace = true, features = ["event", "thread"] }
 
 [dev-dependencies]
+# Itself with `testing`: the disk log test reads invented figures
+# through the statvfs seam (as sb-repo's tests take its own).
+sb-host = { workspace = true, features = ["testing"] }
 # The crafted journal files the helpers' tests page and follow.
 sb-journal = { workspace = true, features = ["testing"] }
 # `#[tokio::test]`'s current-thread runtime.

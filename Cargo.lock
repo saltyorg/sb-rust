@@ -3346,6 +3346,7 @@ dependencies = [
  "rustix",
  "sb-cli-core",
  "sb-exec",
+ "sb-host",
  "sb-journal",
  "sb-term-ui",
  "serde",
