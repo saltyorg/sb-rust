@@ -57,7 +57,7 @@ invented; no test reads the host's data.
 
 ## Batch 3: oracles that can't fail, and the closed-reader redesign
 
-- [ ] 3.1: the specs say the stream ends when the reader goes, with no
+- [x] 3.1: the specs say the stream ends when the reader goes, with no
       new line needed.
 - [ ] 3.2: cli-core's reader-gone watch.
 - [ ] 3.3: piped `sb logs` ends on the watch; the in-process tests; the

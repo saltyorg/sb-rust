@@ -378,7 +378,26 @@ SIGINT, SIGTERM or SIGHUP when interrupted (`$?` reads 130, 143 or
 code a command requested; a wrapped child's own code when sb only passes it
 through (`sudo` relaunch, plain pass-through commands); 141, quietly, when
 the reader of sb's output goes away (`sb ... | head`), as sb-go gets when
-SIGPIPE kills it.
+SIGPIPE kills it: from a failed write, or from the reader-gone watch of a
+command that waits on something other than its output (below).
+
+**The reader-gone watch** (`exit::ReaderGone`; the maintainer,
+2026-11-26, for `sb logs`'s piped stream): a command that may wait a
+long time with nothing to write learns that its reader went away
+without writing, as `journalctl -f` and GNU `tail -f` do.
+- **What:** `ReaderGone::stdout()` watches fd 1. Its `wait()` resolves
+  once the reader is gone, to cli-core's output error for a broken pipe,
+  so the run ends with the quiet 141 as a failed write does.
+- **When:** only when stdout is a pipe, FIFO or socket (`fstat`), as GNU
+  tail does. Then a blocking-pool task (`spawn::blocking`) polls fd 1
+  with no requested events, so only POLLERR, POLLHUP or POLLNVAL wake
+  it: Linux sets POLLERR on a pipe's write end once no reader is left
+  (`fs/pipe.c`), and POLLHUP on a socket whose peer shut down. On a
+  terminal, a regular file or `/dev/null` it never resolves and starts
+  nothing.
+- **How it stops:** dropping it signals a stop `eventfd` that the same
+  poll waits on, so the task ends at once, as host's `FollowWait` does
+  (the same reason not to use tokio's `AsyncFd`, written there).
 
 **Errors:** one block on stderr: `✗` and the message, each cause on its
 own line, then the log pointer (`details: /var/log/sb/sb.log (run <id>)`)
@@ -441,8 +460,9 @@ two.
 - **Every ending:** sb's `main` calls it after the run: success; an
   error block; a quiet exit (a step's block already shown); a requested
   exit code; "interrupted" after Ctrl-C or a signal, before sb ends by
-  the signal; the quiet SIGPIPE exit 141 (stdout's reader is gone; the
-  rule reads what reached the terminal); the unsupported-release refusal
+  the signal; the quiet SIGPIPE exit 141 (stdout's reader is gone, seen
+  by a failed write or by the reader-gone watch; the rule reads what
+  reached the terminal); the unsupported-release refusal
   and a failed relaunch.
 - **Ended by SIGINT, one newline fewer:** an interactive shell (bash,
   zsh) prints a newline of its own after a job that died of SIGINT (for

@@ -26,7 +26,8 @@ you could trip over.
   failed playbook, whose own output on the screen says why).
 - **A new log viewer** for `sb logs`: one live picker for services and
   containers, search across the whole log, wrap and mouse support. A log's text comes from `journalctl -u` or `docker
-  logs`, as Saltbox's docs use.
+  logs`, as Saltbox's docs use. Piped, `sb logs | head` ends when head
+  does, even on a quiet log, as `journalctl -f` does.
 - **`sb fact`'s editor**, a settings page with search, a changes panel
   and Copy (clipboard through OSC 52).
 - **`sb fact get <app> <instance> <key>`** prints one fact's value alone

@@ -304,6 +304,13 @@ fallback); the viewer itself has no save or print (decision 24).
   SIGINT, `$?` 130), SIGTERM, or when the reader goes away (a broken
   pipe: cli-core's quiet exit 141). A stopped container is followed
   across its restart, as in the viewer; the notices go to stderr.
+- **The reader going away ends it at once,** even when no new line comes
+  (the maintainer, 2026-11-26): `sb logs | head -n 2` on a quiet unit
+  ends when `head` does. When stdout is a pipe, FIFO or socket, sb
+  watches it for POLLERR/POLLHUP beside the follow (cli-core's
+  reader-gone watch), as `journalctl -f` (v249 and later) and GNU
+  `tail -f` (8.28 and later) do. Before, the stream ended only at the
+  next line written, which on a quiet unit could be hours later.
 - With no terminal at all (no `/dev/tty`): cli-core's error block, `sb
   logs needs a terminal to choose a log`, exit 1. Nothing goes to stdout.
 
@@ -634,8 +641,12 @@ no real systemctl.
   - SIGTERM and SIGHUP on the screen: the terminal restored, death by
     the signal;
   - piped stdout: the picker on the PTY as `/dev/tty`, then the plain
-    stream on the pipe, Ctrl-C ending it with 130, a closed reader
-    ending it with 141;
+    stream on the pipe (a pipe the test owns, with `setsid --ctty` making
+    the PTY sb's terminal, and sb's own exit code read), Ctrl-C ending
+    it with 130, a closed reader ending it with 141, before the stream
+    and after the tail with no new line; an appended entry after the
+    follow started, and one appended between the page and the follow
+    (sb-tui's journal source, under each release's journal rules);
   - no terminal (`setsid`, stdout a pipe): the error block, exit 1;
   - no services and no containers: the message, exit 0; a failing
     `systemctl`: the error block, exit 1;
