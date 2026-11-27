@@ -1748,6 +1748,13 @@ const stubs = (versions, arch) => {
   // With RUN_FAILS_AT set (`llvm-cov` or `nextest`), that test run fails
   // as a failing test makes cargo fail, with status 101.
   out.cargo += 'if [ -n "${RUN_FAILS_AT:-}" ] && [ "$1" = "$RUN_FAILS_AT" ]; then exit 101; fi\n';
+  // A test run given SB_TEST_BINARY writes `<subcommand> <path>` to
+  // STUB_LOG.binary; with BINARY_RUN_FAILS set, it fails as a failing
+  // test makes cargo fail, with status 101.
+  out.cargo += 'if [ -n "${SB_TEST_BINARY:-}" ]; then case "$1" in test | nextest)\n'
+    + '  printf \'%s %s\\n\' "$1" "$SB_TEST_BINARY" >>"$STUB_LOG.binary"\n'
+    + '  [ -z "${BINARY_RUN_FAILS:-}" ] || exit 101 ;;\n'
+    + 'esac; fi\n';
   // With STOP_RUN set, the test run named by STOP_RUN_AT (`llvm-cov` or
   // `nextest`) starts a child (as cargo starts its test binaries), writes
   // STOP_RUN, the ready file checkRun's stopWhen waits for, and runs on:
@@ -1867,6 +1874,7 @@ const checkRun = (stage, { files = {}, work = {}, commits = [], base = 'HEAD', v
       status: r.status, signal: r.signal, output: r.stdout + r.stderr, calls, root: repo,
       gitleaksInput: read(logFile + '.gitleaks'), changesDiff: read(join(repo, 'target/changes.diff')),
       crossOpts: read(logFile + '.cross-opts'), nextestEnv: read(logFile + '.nextest-env'), rootTests: read(logFile + '.root'),
+      binaryRuns: read(logFile + '.binary'),
     };
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -2182,6 +2190,23 @@ for (const at of ['llvm-cov', 'nextest']) {
     }
   });
 }
+
+// full runs sb's tests that need no seam once more, on the release build
+// task's startup step made, through SB_TEST_BINARY; task doesn't, and a
+// failure there fails the gate.
+test('check.sh: full runs sb\'s seam-free tests on the release binary, and fails with them', () => {
+  const work = { 'crates/foo/src/lib.rs': 'pub fn f() {}\n' };
+  const r = checkRun('full', { work });
+  passes(r, 'full');
+  assert.match(r.binaryRuns ?? '', /^nextest \/.*\/target\/release\/sb\n$/, r.output);
+  assert.ok(r.calls.some((c) => c.tool === 'cargo'
+    && /^nextest run --locked --cargo-profile release-tests --profile release-tests -p .* -E binary_id\(sb::help\) \| .*binary_id\(sb::theme_config\)$/
+      .test(c.args)), r.output);
+  const failed = checkRun('full', { work, env: { BINARY_RUN_FAILS: '1' } });
+  assert.equal(failed.status, 101, failed.output);
+  assert.doesNotMatch(failed.output, /check full: all passed/, failed.output);
+  assert.equal(checkRun('task', { work }).binaryRuns, null);
+});
 
 // A failing test run fails the gate with its own status, through the
 // run's own process group (in_group), and the steps after it don't run.

@@ -123,7 +123,8 @@ fn run_lock_dir() -> PathBuf {
 /// file, runs another build of sb in every test that uses this (the
 /// production glibc binary, docker plan Task 9); a bare name would go
 /// through `PATH` and could find an installed sb, so it is refused.
-/// scripts/check.sh unsets it. Such a build has no test seams of its
+/// scripts/check.sh unsets an inherited one, and sets its own for full's
+/// run of the tests that need no seam on the release binary. Such a build has no test seams of its
 /// own: its locking commands take the host's run lock in `/run/sb`
 /// (cli-core spec, "Run lock"), so tests that hold the lock use this test
 /// build.

@@ -26,7 +26,10 @@ fn aws_lc_is_built_without_cpu_jitter_entropy() {
 /// `aws_lc_0_46_0_jent_entropy_init`) into this test binary; without it,
 /// the library isn't compiled at all. The symbol the first test calls
 /// shows the symbol table is there to read (test profiles aren't
-/// stripped; only `production` is).
+/// stripped; only `production` is). `current_exe()` is this test binary,
+/// not sb: it links the one aws-lc-sys build in the graph, as sb does, so
+/// its symbols say what sb's build compiled; `SB_TEST_BINARY`, another
+/// build of sb, doesn't reach it.
 #[test]
 fn aws_lc_links_no_jitterentropy_code() {
     let exe = std::env::current_exe().expect("the test binary's path");

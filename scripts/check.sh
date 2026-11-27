@@ -1477,6 +1477,24 @@ full() {
     skip "only docs/ and tasks/ changed since $base"
     return
   fi
+  # sb's tests that need no test seam, once more on the release build of
+  # sb that task's startup step built ($CARGO_TARGET_DIR/release/sb),
+  # through SB_TEST_BINARY (crates/sb/tests/common, `sb()`): the test
+  # build has the `testing` feature's seams and a release build, as
+  # shipped, none, so a test that passes only through a seam can't pass
+  # here. Those binaries are help, errors, version, colour, docker (its
+  # parse errors, and its ps against the fake Engine API, which a real
+  # DOCKER_HOST reaches), run_log and theme_config; every other sb test
+  # binary reaches a variable only the test build reads (the run lock's
+  # SB_TEST_RUN_LOCK_DIR, SB_TEST_PYTHON_ENV_ROOT, SB_TEST_COMPLETION_ROOT,
+  # SB_TEST_MACHINE, SB_RELEASE_TEST_BASES, SB_BENCH_TEST_NETWORK) or a
+  # setter of the test build's. In the test steps' sandbox, with task's
+  # release-tests build of every crate (the same packages, so the same
+  # features and no second build), filtered to those binaries.
+  step "sb's tests that need no seam, on the release binary (SB_TEST_BINARY)"
+  tests_in_sandbox env SB_TEST_BINARY="$CARGO_TARGET_DIR/release/sb" cargo nextest run --locked \
+    --cargo-profile release-tests --profile release-tests "${pkg_args[@]}" \
+    -E 'binary_id(sb::help) | binary_id(sb::errors) | binary_id(sb::version) | binary_id(sb::colour) | binary_id(sb::docker) | binary_id(sb::run_log) | binary_id(sb::theme_config)'
   step "project coverage (crates/): lines >= ${PROJECT_LINES_MIN}%, functions >= ${PROJECT_FUNCTIONS_MIN}%, less ${PROJECT_COVERAGE_TOLERANCE_MAX} points"
   project_coverage
   step "dependencies and architecture (cargo-deny, shipped graph)"
