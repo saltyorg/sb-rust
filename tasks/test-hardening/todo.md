@@ -53,7 +53,7 @@ invented; no test reads the host's data.
       floor-guard stubs.
 - [x] 2.9b: the workflows, Renovate, CONSTRAINTS.md and the comments; the
       gate host's gitleaks from the release binary, Go kept (Q7).
-- [ ] Checkpoint: the rehearsal, `full <batch start>`.
+- [x] Checkpoint: the rehearsal, `full <batch start>`.
 
 ## Batch 3: oracles that can't fail, and the closed-reader redesign
 
