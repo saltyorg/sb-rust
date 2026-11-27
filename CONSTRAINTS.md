@@ -164,7 +164,7 @@ doesn't fail every run.
 | cargo-nextest | 0.9.151 | exact | `cargo install --locked cargo-nextest` (runs the mutation passes' tests, ADR-021, and the release-build tests) |
 | cargo-deny | 0.20.2 | exact | `cargo install --locked cargo-deny` |
 | hyperfine | 2.0.0 | exact | `cargo install --locked hyperfine` |
-| gitleaks | 8.30.1 | exact | `scripts/install-gitleaks.sh <bin-dir>`, which downloads the release's prebuilt linux binary and checks its archive against the SHA-256 the script pins for it beside `GITLEAKS_VERSION` (this row's version) |
+| gitleaks | 8.30.1 | exact | `scripts/install-gitleaks.sh <bin-dir>`, which downloads the release's prebuilt linux binary and checks its archive against the release's checksums file (`GITLEAKS_VERSION` in the script, this row's version) |
 | check-jsonschema | 0.39.0 | exact | `scripts/install-check-jsonschema.sh <venv-dir> <bin-dir>`, which installs `check-jsonschema==0.39.0` with uv into a virtual environment of its own on Python 3.12 (in CI, actions/setup-python's; on a host with no Python 3.12, uv downloads its own CPython and checks its SHA-256), every package at `scripts/check-jsonschema/requirements.txt`'s version and hashes (`--require-hashes`, wheels only); the lock is `requirements.in` compiled with the command in its header; not under `/tmp`, nor its Python: the schemas' tests run it in the gate's sandbox, whose `/tmp` is its own |
 | zizmor | 1.32.0 | exact | `uv tool install zizmor==1.32.0` |
 | node | 24 | major | system package (runs the floor guard) |
