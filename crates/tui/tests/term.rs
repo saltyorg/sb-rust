@@ -406,6 +406,22 @@ impl Pty {
     fn run_log(&self) -> String {
         std::fs::read_to_string(self.log.path().join("log/sb.log")).unwrap_or_default()
     }
+
+    /// The `millis=` of the run log's last record holding `message`: how
+    /// long the child itself measured (its own clock, not the test's).
+    fn run_log_millis(&self, message: &str) -> u128 {
+        let log = self.run_log();
+        let record = log
+            .lines()
+            .rev()
+            .find(|l| l.contains(message))
+            .unwrap_or_else(|| panic!("no {message:?} in the run log:\n{log}"));
+        record
+            .split_whitespace()
+            .find_map(|field| field.strip_prefix("millis="))
+            .and_then(|millis| millis.parse().ok())
+            .unwrap_or_else(|| panic!("no millis= in {record:?}"))
+    }
 }
 
 impl Drop for Pty {
@@ -576,9 +592,12 @@ fn with_the_mouse_in_use_the_exit_drains_the_whole_150_ms_without_a_query() {
     assert!(!raw.contains("\x1b[c"), "{raw:?}");
     assert!(!raw.contains("<35;10;5M"), "{raw:?}");
     pty.assert_nothing_queued();
+    // The whole drain, by the child's own clock: tokio's timeout ends no
+    // earlier than its 150 ms.
+    let millis = pty.run_log_millis("exit drain, the mouse in use");
     assert!(
-        pty.run_log().contains("the mouse in use"),
-        "{}",
+        millis >= 150,
+        "the drain took {millis} ms:\n{}",
         pty.run_log()
     );
 }

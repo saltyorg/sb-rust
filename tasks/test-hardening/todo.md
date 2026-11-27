@@ -68,7 +68,7 @@ invented; no test reads the host's data.
 - [x] 3.7: bench's cancelled gather and the hung mounts, on a channel.
 - [ ] 3.8: errors are asserted by kind: journal corruption and
       cli-core's log refusals.
-- [ ] 3.9: the 150 ms drain is checked by the child's own clock.
+- [x] 3.9: the 150 ms drain is checked by the child's own clock.
 - [ ] 3.10: tests that pass whichever way the race goes decide the race.
 - [ ] 3.11: weak assertions in sb's and completion's tests.
 - [ ] 3.12: tests that restate the code (Q6: kept as change detectors).
