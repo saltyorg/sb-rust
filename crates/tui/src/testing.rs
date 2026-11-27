@@ -87,6 +87,25 @@ mod tests {
     use super::*;
     use crate::source::Generation;
 
+    /// `viewer_gone` waits while the viewer's end of the channel is open
+    /// and resolves once it is dropped.
+    #[tokio::test]
+    async fn viewer_gone_waits_for_the_viewer_to_go() {
+        let (tx, viewer) = mpsc::unbounded_channel();
+        let outbox = Outbox::new(tx, Arc::new(Notify::new()), Generation::default());
+        let (_handle, fake) = fake_source(outbox);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(200), fake.viewer_gone())
+                .await
+                .is_err(),
+            "resolved with the viewer there"
+        );
+        drop(viewer);
+        tokio::time::timeout(std::time::Duration::from_secs(10), fake.viewer_gone())
+            .await
+            .expect("resolved once the viewer went");
+    }
+
     #[test]
     fn a_fake_source_takes_requests_and_sends_events() {
         let (tx, mut rx) = mpsc::unbounded_channel();

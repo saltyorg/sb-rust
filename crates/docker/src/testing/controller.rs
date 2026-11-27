@@ -319,4 +319,39 @@ mod tests {
             format!("FakeController {{ url: {:?}, .. }}", fake.url())
         );
     }
+
+    /// The fake's drop fails the test with a handler's panic, caught as
+    /// the 500 the request got.
+    #[test]
+    fn a_handler_panic_fails_the_drop() {
+        let fake = FakeController::start().expect("fake");
+        fake.script(
+            "/start",
+            Answer::ok(b"{}".to_vec()).then(|| panic!("a planted panic")),
+        );
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("a runtime");
+        let status = runtime.block_on(async {
+            // No proxy, as the controller's own client: a proxy variable
+            // in the test's environment would route the loopback request.
+            reqwest::Client::builder()
+                .no_proxy()
+                .build()
+                .expect("a client")
+                .post(format!("{}/start", fake.url()))
+                .send()
+                .await
+                .expect("an answer")
+                .status()
+        });
+        assert_eq!(status.as_u16(), 500);
+        let dropped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(fake)))
+            .expect_err("the drop fails");
+        assert_eq!(
+            dropped.downcast_ref::<String>().map(String::as_str),
+            Some("the fake controller's handler panicked: a planted panic")
+        );
+    }
 }

@@ -98,7 +98,10 @@ impl ReaderGone {
         // closes fd 1.
         let fd = fd.try_clone_to_owned()?;
         // Non-blocking, so a stop never blocks.
-        let stop = Arc::new(eventfd(0, EventfdFlags::CLOEXEC | EventfdFlags::NONBLOCK)?);
+        let stop = Arc::new(eventfd(
+            0,
+            EventfdFlags::CLOEXEC.union(EventfdFlags::NONBLOCK),
+        )?);
         let poll = {
             let stop = Arc::clone(&stop);
             // The caller's span goes along (cli-core's `spawn`).
@@ -315,6 +318,21 @@ mod tests {
                 tokio::time::timeout(STILL, gone.wait()).await.is_err(),
                 "a wait on a regular file resolved"
             );
+        });
+    }
+
+    /// The stop `eventfd` is close-on-exec, so no child holds it, and
+    /// non-blocking, so a stop never blocks.
+    #[test]
+    fn the_stop_is_close_on_exec_and_non_blocking() {
+        runtime().block_on(async {
+            let (_reader, writer) = io::pipe().expect("a pipe");
+            let gone = ReaderGone::on(writer.as_fd()).expect("the watch");
+            let stop = gone.stop.as_ref().expect("a stop on a pipe");
+            let fd = rustix::io::fcntl_getfd(stop.as_fd()).expect("fd flags");
+            assert!(fd.contains(rustix::io::FdFlags::CLOEXEC), "{fd:?}");
+            let fl = rustix::fs::fcntl_getfl(stop.as_fd()).expect("status flags");
+            assert!(fl.contains(rustix::fs::OFlags::NONBLOCK), "{fl:?}");
         });
     }
 
