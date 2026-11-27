@@ -700,6 +700,18 @@ mod tests {
         );
     }
 
+    /// `RunLog::open` refuses `dir` with `rule`'s message after the
+    /// directory's name: not by another rule, and not by a failure of the
+    /// system's.
+    #[track_caller]
+    fn assert_refused(dir: &Path, rule: &str) {
+        let Err(err) = RunLog::open(dir) else {
+            panic!("{} opened as a log directory", dir.display());
+        };
+        assert_eq!(err.kind(), std::io::ErrorKind::Other, "{err}");
+        assert_eq!(err.to_string(), format!("{} {rule}", dir.display()));
+    }
+
     /// A symlink (or directory) named like a log isn't one of sb's logs:
     /// only regular files with sb's log names count.
     #[test]
@@ -709,7 +721,10 @@ mod tests {
         std::os::unix::fs::symlink(elsewhere.path(), dir.path().join("sb.log")).expect("symlink");
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755))
             .expect("chmod");
-        assert!(RunLog::open(dir.path()).is_err());
+        assert_refused(
+            dir.path(),
+            "holds files that aren't sb's logs; not making it root-only",
+        );
         let mode = std::fs::metadata(dir.path())
             .expect("dir")
             .permissions()
@@ -730,7 +745,7 @@ mod tests {
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))
             .expect("chmod");
         std::os::unix::fs::chown(dir.path(), Some(65534), Some(65534)).expect("chown");
-        assert!(RunLog::open(dir.path()).is_err());
+        assert_refused(dir.path(), "belongs to another user; not logging there");
     }
 
     /// Only sb's log names count: another program's `.log` makes
@@ -741,7 +756,10 @@ mod tests {
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755))
             .expect("chmod");
         std::fs::write(dir.path().join("notes.log"), "x").expect("write");
-        assert!(RunLog::open(dir.path()).is_err());
+        assert_refused(
+            dir.path(),
+            "holds files that aren't sb's logs; not making it root-only",
+        );
     }
 
     /// One file, `sb.log`, whatever the date: Saltbox's logrotate rotates

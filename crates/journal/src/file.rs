@@ -2453,6 +2453,28 @@ mod tests {
     use crate::testing::crafted::*;
     use std::os::unix::fs::FileExt;
 
+    /// [`assert_corrupt`], from the entry rules: the entry's own message,
+    /// not another object's of the same words.
+    #[track_caller]
+    fn assert_corrupt_entry(err: &ReadError, what: &str) {
+        assert_corrupt(err, what);
+        assert!(
+            matches!(err.kind(), ReadErrorKind::Corrupt(message) if message.starts_with("entry ")),
+            "not an entry's: {err}"
+        );
+    }
+
+    /// `err` is corruption ([`ReadErrorKind::Corrupt`]) and says `what`:
+    /// the rule that refused it, not another failure.
+    #[track_caller]
+    fn assert_corrupt(err: &ReadError, what: &str) {
+        assert!(
+            matches!(err.kind(), ReadErrorKind::Corrupt(message) if message.contains(what)),
+            "not corruption saying {what:?}: {err} ({:?})",
+            err.kind()
+        );
+    }
+
     /// For `decompress_within`, which returns a bare kind.
     fn is_over(kind: &ReadErrorKind) -> bool {
         matches!(kind, ReadErrorKind::OverLimit { .. })
@@ -3036,19 +3058,27 @@ mod tests {
         let end = c.b.len() as u64;
         c.set(a + D_NEXT_HASH, end + 64);
         let (_t, f) = c.write();
-        assert!(f.find_data(b"C=3").is_err());
+        // The bucket's first object reads; the link after it doesn't.
+        assert!(f.find_data(b"A=1").expect("A=1 before the link").is_some());
+        let err = f.find_data(b"C=3").expect_err("refused");
+        assert_corrupt(&err, "outside the arena");
     }
 
     // Offsets that overflow.
 
     #[test]
     fn offsets_near_the_top_of_u64_are_refused() {
-        let (mut c, _l) = journal(3);
+        let (mut c, l) = journal(3);
         let top = !7u64;
         let (_t, f) = c.write();
+        assert!(f.entry(l.entries[0]).is_ok());
+        assert!(f.data_payload(l.messages[0]).is_ok());
         for at in [top, top - 8, top - 16] {
-            assert!(f.entry(at).is_err());
-            assert!(f.data_payload(at).is_err());
+            assert_corrupt(&f.entry(at).expect_err("an entry"), "outside the arena");
+            assert_corrupt(
+                &f.data_payload(at).expect_err("a payload"),
+                "outside the arena",
+            );
         }
     }
 
@@ -3218,9 +3248,11 @@ mod tests {
         let table = c.get(H_HASH_TABLE_OFFSET);
         let right = c.get(l.shared + D_HASH) % 7;
         let wrong = (right + 1) % 7;
+        let (_t0, clean) = c.write();
+        assert!(clean.all_data().is_ok(), "the file before the plant");
         c.set(table + wrong * 16, l.shared);
         let (_t, f) = c.write();
-        assert!(f.all_data().is_err());
+        assert_corrupt(&f.all_data().expect_err("refused"), "not its own");
     }
 
     // Compressed payloads.
@@ -3481,8 +3513,11 @@ mod tests {
         let empty = c.entry(7, &[]);
         c.set(l.entries[1] + 16, 0);
         let (_t, f) = c.write();
-        assert!(f.entry(empty).is_err());
-        assert!(f.entry(l.entries[1]).is_err());
+        assert_corrupt_entry(&f.entry(empty).expect_err("no items"), "has a bad size");
+        assert_corrupt(
+            &f.entry(l.entries[1]).expect_err("no seqnum"),
+            "has no sequence number",
+        );
         assert!(f.entry(l.entries[0]).is_ok());
     }
 
@@ -3615,6 +3650,9 @@ mod tests {
             entry.extend_from_slice(&u32::try_from(item).expect("small").to_le_bytes());
         }
         let e = c.object(OBJECT_ENTRY, 0, &entry);
+        // An object after the entry, so the part item below stays inside
+        // the arena and meets the entry's own rule, not the object's.
+        c.object(OBJECT_DATA, 0, &[0; 16]);
         let (_t, f) = c.write();
         assert!(f.header.compact());
         let got = f.entry(e).expect("entry");
@@ -3625,7 +3663,7 @@ mod tests {
         let mut bad = Crafted { b: c.b.clone() };
         bad.set(e + O_SIZE, bad.get(e + O_SIZE) + 1);
         let (_t, f) = bad.write();
-        assert!(f.entry(e).is_err());
+        assert_corrupt_entry(&f.entry(e).expect_err("a part item"), "has a bad size");
     }
 
     /// A keyed file hashes with siphash24 keyed by its file id, and its
@@ -4828,7 +4866,20 @@ mod tests {
             entry_array_offset: 272,
         };
         let got: Result<Vec<u64>> = f.entries_of_rev(&d).collect();
-        assert!(got.is_err());
+        assert_corrupt(
+            &got.expect_err("refused"),
+            "is newer than its entry array chain",
+        );
+        // The same chain with an older in-line entry reads.
+        let older = DataRef {
+            entry_offset: 500,
+            ..d
+        };
+        let got: Vec<u64> = f
+            .entries_of_rev(&older)
+            .collect::<Result<_>>()
+            .expect("reads");
+        assert_eq!(got, vec![2000, 1000, 500]);
     }
 
     /// An entry array too short for its next link is refused, not read
