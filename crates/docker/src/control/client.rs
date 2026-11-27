@@ -866,29 +866,45 @@ mod tests {
     }
 
     /// sb-go's `TestWaitForJobCompletionHonorsCancellation`: cancelled
-    /// mid-wait, it ends at once and asks nothing more.
+    /// mid-wait, it ends at once and asks nothing after the poll already
+    /// under way.
     #[tokio::test]
     async fn a_cancelled_wait_ends_at_once() {
         let fake = FakeController::start().expect("fake");
         fake.script("/job_status/job-1", status("running"));
-        let c = controller(&fake).with_wait(Duration::from_secs(60), Duration::from_secs(120));
+        // A short interval, so a poll after the cancel would come within
+        // the wait below.
+        let interval = Duration::from_millis(20);
+        let c = controller(&fake).with_wait(interval, Duration::from_secs(120));
         let token = tokio_util::sync::CancellationToken::new();
         let cancel = token.clone();
         let seen = std::sync::Arc::new(fake);
         let watched = std::sync::Arc::clone(&seen);
-        // Cancelled once the first poll has arrived: the wait is asleep.
-        tokio::spawn(async move {
+        // Cancelled once the first poll has arrived, noting how many
+        // polls had come by then.
+        let at_cancel = tokio::spawn(async move {
             let deadline = std::time::Instant::now() + Duration::from_secs(10);
             while watched.seen().is_empty() && std::time::Instant::now() < deadline {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
+            let polls = watched.seen().len();
             cancel.cancel();
+            polls
         });
         let started = std::time::Instant::now();
         assert_eq!(token.run_until_cancelled(c.wait(&job("job-1"))).await, None);
         assert!(started.elapsed() < Duration::from_secs(1));
-        assert_eq!(seen.seen().len(), 1);
+        let at_cancel = at_cancel.await.expect("the cancel");
+        assert!(at_cancel >= 1, "no poll before the cancel");
+        // Ten intervals on: at most the one poll the cancel can meet
+        // already started, none after it.
+        tokio::time::sleep(interval * 10).await;
+        let polls = seen.seen().len();
+        assert!(
+            polls <= at_cancel + 1,
+            "{polls} polls, {at_cancel} at the cancel: a poll after it"
+        );
     }
 
     /// An https override gets a client with the platform's roots (the

@@ -619,12 +619,24 @@ mod tests {
         c: &Controller,
         ready: impl Fn() -> bool,
     ) -> (Result<(), Exit>, String) {
+        interrupted_run_noting(command, c, ready, || ()).await
+    }
+
+    /// [`interrupted_run`], with `at_signal` run just before the SIGINT,
+    /// to note what the controller had seen by then.
+    async fn interrupted_run_noting(
+        command: Command,
+        c: &Controller,
+        ready: impl Fn() -> bool,
+        at_signal: impl FnOnce(),
+    ) -> (Result<(), Exit>, String) {
         let shutdown = Shutdown::new();
         let signal = async {
             while !ready() {
                 tokio::time::sleep(Duration::from_millis(5)).await;
             }
             tokio::time::sleep(Duration::from_millis(30)).await;
+            at_signal();
             shutdown.signalled(2);
         };
         let (ran, ()) = tokio::time::timeout(Duration::from_secs(5), async {
@@ -667,9 +679,21 @@ mod tests {
         let fake = FakeController::start().expect("fake");
         fake.script("/stop", Answer::ok(JOB_S));
         fake.script("/job_status/job-s", status("running"));
+        // A short interval, so a poll after the interrupt would come
+        // within the wait below; on the real clock, as client.rs's wait
+        // tests are (tokio's paused clock runs ahead while a real socket
+        // waits).
+        let interval = Duration::from_millis(20);
         let c = controller(dir.path(), &fake, "echo active")
-            .with_wait(Duration::from_secs(60), Duration::from_secs(3600));
-        let (result, screen) = interrupted_run(Command::Stop, &c, || fake.seen().len() >= 2).await;
+            .with_wait(interval, Duration::from_secs(3600));
+        let polls_at_signal = std::cell::Cell::new(0);
+        let (result, screen) = interrupted_run_noting(
+            Command::Stop,
+            &c,
+            || fake.seen().len() >= 2,
+            || polls_at_signal.set(fake.seen().len()),
+        )
+        .await;
         assert_eq!(
             tree(&screen),
             concat!(
@@ -683,7 +707,15 @@ mod tests {
             "{screen}"
         );
         assert!(matches!(result, Err(Exit(1))), "{screen}");
-        assert_eq!(fake.seen().len(), 2, "no poll after the interrupt");
+        // Ten intervals on: at most the one poll the interrupt can meet
+        // already started (sent, not yet seen by the fake), none after it.
+        tokio::time::sleep(interval * 10).await;
+        let polls = fake.seen().len();
+        assert!(
+            polls <= polls_at_signal.get() + 1,
+            "{polls} requests, {} at the interrupt: a poll after it",
+            polls_at_signal.get()
+        );
         // Restart's start: "starting".
         let dir = tempfile::tempdir().expect("dir");
         let fake = FakeController::start().expect("fake");
