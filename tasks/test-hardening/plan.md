@@ -75,9 +75,11 @@ they are not open questions. Each one is weighed in its task.
    - It follows `FollowWait`'s pattern: rustix `poll` plus a stop `eventfd` on cli-core's `spawn::blocking`.
    - The pattern is in `crates/host/src/journal.rs:264-281`, which also explains why not tokio's `AsyncFd`.
    - It watches fd 1 only when that is a pipe, FIFO or socket, as GNU tail does (`tail.c:2527-2535`). poll reports no error on a regular file or `/dev/null`, but the check keeps the blocking thread out of runs that can't need it.
-7. **gitleaks' checksum is handled as the repo's other release downloads are.**
-   - The checksums file is fetched from the same release at install time, as `provision.sh` does for Node and `rootfs.sh` for the Ubuntu base. Renovate then bumps only the version.
-   - The limit: this proves the archive matches its release's list, not who published it., which is what MD4 asks.
+7. **gitleaks' archives are pinned by SHA-256** (the maintainer, 2026-11-27), instead of reading the release's checksums file at install time, as `provision.sh` still does for Node and `rootfs.sh` for the Ubuntu base. This replaces Task 2.9's checksums step.
+   - gitleaks' releases are mutable and carry no attestations, so whoever can change an archive can change its checksums file too.
+   - `scripts/install-gitleaks.sh` pins each archive it installs (linux x64 and arm64) as its release's tag and SHA-256, beside `GITLEAKS_VERSION`, and refuses a missing, malformed, mismatched or other release's pin. It no longer reads the checksums file: once the archive matches its pin, the file adds nothing.
+   - Renovate updates the version and both pins in one PR (`github-release-attachments` for the pins), held for the maintainer's approval on the dependency dashboard (`dependencyDashboardApproval`), as speedtest's is.
+   - *Not chosen:* the release's checksums file at install time, which proves the archive matches its release's list, not that the release is the one reviewed.
 
 ### Batch adjustments (dependencies), and why
 

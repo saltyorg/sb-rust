@@ -99,9 +99,9 @@ jobs:
         with:
           python-version: "3.12"
       # gitleaks from its release's prebuilt binary, checked against the
-      # release's checksums (scripts/install-gitleaks.sh); diff-cover and
-      # check-jsonschema from their hash-pinned locks, each in a virtual
-      # environment of its own (scripts/install-diff-cover.sh,
+      # SHA-256 its install script pins (scripts/install-gitleaks.sh);
+      # diff-cover and check-jsonschema from their hash-pinned locks, each
+      # in a virtual environment of its own (scripts/install-diff-cover.sh,
       # scripts/install-check-jsonschema.sh), with the uv above, at the
       # version sb installs (crates/cli-core/src/build_info.rs).
       - name: gitleaks, diff-cover and check-jsonschema

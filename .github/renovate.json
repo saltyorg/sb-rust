@@ -185,6 +185,14 @@
             "dependencyDashboardApproval": true
         },
         {
+            "description": "gitleaks: its version and both archives' pinned SHA-256s (scripts/install-gitleaks.sh, CONSTRAINTS.md's Tools row) in one PR, which waits for the maintainer's approval on the dependency dashboard; before merging it, check each new SHA-256 as scripts/install-gitleaks.sh says",
+            "matchPackageNames": [
+                "gitleaks/gitleaks"
+            ],
+            "groupName": "gitleaks",
+            "dependencyDashboardApproval": true
+        },
+        {
             "description": "The gate's tools: each its own PR, as CONSTRAINTS.md's Tools table pins each exactly (gitleaks' install script beside its row)",
             "matchFileNames": [
                 "CONSTRAINTS.md",
@@ -354,7 +362,7 @@
         },
         {
             "customType": "regex",
-            "description": "gitleaks (CONSTRAINTS.md's Tools table, its version; scripts/install-gitleaks.sh's GITLEAKS_VERSION, the release it downloads, whose checksums come from the same release)",
+            "description": "gitleaks' version (CONSTRAINTS.md's Tools table; scripts/install-gitleaks.sh's GITLEAKS_VERSION, the release it downloads)",
             "managerFilePatterns": [
                 "/(^|/)CONSTRAINTS\\.md$/",
                 "/(^|/)scripts/install-gitleaks\\.sh$/"
@@ -367,6 +375,21 @@
             "packageNameTemplate": "gitleaks/gitleaks",
             "datasourceTemplate": "github-releases",
             "extractVersionTemplate": "^v(?<version>.*)$",
+            "versioningTemplate": "semver"
+        },
+        {
+            "customType": "regex",
+            "description": "gitleaks' pins (scripts/install-gitleaks.sh): each archive's release tag and SHA-256, the digest taken from the same archive's line in the new release's checksums file (github-release-attachments reads the release by its tag, so the pin keeps the tag's v)",
+            "managerFilePatterns": [
+                "/(^|/)scripts/install-gitleaks\\.sh$/"
+            ],
+            "matchStrings": [
+                "\\nGITLEAKS_PIN_LINUX_X64='(?<currentValue>v[0-9]+\\.[0-9]+\\.[0-9]+) (?<currentDigest>[0-9a-f]{64})'\\n",
+                "\\nGITLEAKS_PIN_LINUX_ARM64='(?<currentValue>v[0-9]+\\.[0-9]+\\.[0-9]+) (?<currentDigest>[0-9a-f]{64})'\\n"
+            ],
+            "depNameTemplate": "gitleaks",
+            "packageNameTemplate": "gitleaks/gitleaks",
+            "datasourceTemplate": "github-release-attachments",
             "versioningTemplate": "semver"
         },
         {
