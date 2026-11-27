@@ -1,8 +1,8 @@
 # A release from a version tag (release spec, "Release channels"): the
 # whole gate, the by-hand container suites, then each asset built with its
 # version, commit and channel baked in, checked, and published with notes
-# made from the commits; then the Discord announcement (release spec,
-# "Release notes and announcement"). It writes nothing to Saltbox
+# made from the commits; then, for a stable tag, the Discord announcement
+# (release spec, "Release notes and announcement"). It writes nothing to Saltbox
 # (ADR-031).
 #
 # Tags are bare semantic versions: `1.0.0` (stable) or `1.0.0-rc.N` (a
@@ -395,15 +395,17 @@ jobs:
 
   # sb-go's "Notify Discord" step, as its own job: no write token, and a
   # failed post leaves the publication alone (re-run this job only). The
-  # payload is built (and so checked) on every release; it is sent when
+  # payload is built (and so checked) on every stable release; it is sent when
   # the DISCORD_WEBHOOK secret is set. The secret is a repository secret
   # (publish and announce use no environment, the maintainer,
   # 2026-11-25), read by this step alone; GitHub passes none to a fork's
   # pull request:
   # https://docs.github.com/actions/how-tos/write-workflows/choose-what-workflows-do/use-secrets
+  # A prerelease (X.Y.Z-rc.N) is not announced (the maintainer, 2026-11-27).
   announce:
     name: announce on Discord
     needs: [plan, publish]
+    if: needs.plan.outputs.prerelease == 'false'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:

@@ -318,7 +318,7 @@ The maintainer's decisions of 2026-11-18.
       maintainer, 2026-11-25), so pushing the tag, which the
       repository's `version tags` ruleset restricts, is the decision to
       publish;
-    - then announces it on Discord.
+    - then, for a stable release only, announces it on Discord.
   - The release runs only for a commit on `main` whose ci.yml run
     passed, and for a tag that is semver without leading zeros. A release
     reaches every host on its channel as root, since `sb update`
@@ -380,9 +380,11 @@ when `scripts/` or `.github/` changed).
     release job's write token; the action stays because the maintainer
     asked for sb-go's. GitHub's immutable releases, a repository setting,
     would keep a published asset from being replaced.
-- **Discord:** the `announce` job, after the publication, with no write
-  token. It builds the payload on every release (so a broken one shows)
-  and posts it when the `DISCORD_WEBHOOK` secret is set; unset, it says
+- **Discord:** the `announce` job, after the publication of a stable
+  release, with no write token; a prerelease (`X.Y.Z-rc.N`) is not
+  announced (the maintainer, 2026-11-27). It builds the payload on every
+  stable release (so a broken one shows) and posts it when the
+  `DISCORD_WEBHOOK` secret is set; unset, it says
   `DISCORD_WEBHOOK isn't set: no announcement` and passes. The secret is
   a repository secret, as announce uses no environment (the maintainer,
   2026-11-25); only the post step reads it, and GitHub passes no secret
@@ -395,8 +397,8 @@ when `scripts/` or `.github/` changed).
     `...` after (Discord takes 4096:
     https://discord.com/developers/docs/resources/message#embed-object-embed-limits);
   - the fields `📥 Download` (the release's own channel's assets:
-    `sb_linux_amd64` and `sb_linux_arm64` for a stable release, the
-    `_beta` ones for an rc) and `📝 Full Changelog` (`[View
+    `sb_linux_amd64` and `sb_linux_arm64`; `release.sh discord` still
+    builds an rc's `_beta` payload, which the workflow doesn't post) and `📝 Full Changelog` (`[View
     Changes](<release page>)`).
   - It is built with `jq -n --arg`, so a subject's quotes, backslashes
     and newlines reach Discord as text; sb-go escaped with sed.
