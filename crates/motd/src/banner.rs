@@ -895,6 +895,9 @@ mod tests {
         assert!(five.contains("d               \n  e "));
     }
 
+    /// A change detector (kept as one, the maintainer, 2026-11-26): the
+    /// system's tools and fonts, as sb-go names them; the tests above use
+    /// stand-ins, so only this sees a name move.
     #[test]
     fn the_system_tools_are_sb_gos() {
         let tools = Tools::system();

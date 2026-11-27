@@ -825,6 +825,9 @@ mod tests {
         // A clock that went backwards (it can't, `Instant` is monotonic)
         // reads as inside.
         assert!(repeats((SIGTERM, inside), SIGTERM, at));
+        // A change detector (kept as one, the maintainer, 2026-11-26): the
+        // spec's 250 ms window; the cases above use the constant, so only
+        // this sees the number move.
         assert_eq!(REPEAT_WINDOW, Duration::from_millis(250));
     }
 
@@ -876,6 +879,9 @@ mod tests {
     fn only_sigint_and_sigquit_have_slots() {
         use signal_hook::consts::{SIGINT, SIGQUIT, SIGTERM};
         assert_eq!(slot(SIGINT), Some(0));
+        // A change detector (kept as one, the maintainer, 2026-11-26):
+        // SIGINT's place in `HELD`, the order the delivery flags are
+        // registered in.
         assert_eq!(SIGINT_SLOT, 0);
         assert_eq!(slot(SIGQUIT), Some(1));
         assert_eq!(slot(SIGTERM), None);

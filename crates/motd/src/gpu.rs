@@ -497,6 +497,10 @@ mod tests {
         }
     }
 
+    /// A change detector (kept as one, the maintainer, 2026-11-26): the
+    /// motd spec's sources (the files lspci reads, decision 21) and its
+    /// cap; the tests above use invented sources, so only this sees a path
+    /// move.
     #[test]
     fn the_system_sources_are_sysfs_and_ubuntus_pci_ids() {
         let system = Sources::system();

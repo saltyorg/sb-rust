@@ -133,6 +133,8 @@ mod tests {
         );
     }
 
+    /// The real read of the system's inotify limit runs here (coverage of
+    /// its syscall line): a number, or "unknown" where it can't be read.
     #[test]
     fn the_limit_is_the_systems_value() {
         let value = limit();

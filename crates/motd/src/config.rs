@@ -1128,6 +1128,8 @@ mod tests {
         let loaded = load(&settings(root.path()));
         assert_eq!(loaded.line, None);
         assert_eq!(loaded.motd, Some(Motd::default()));
+        // A change detector (kept as one, the maintainer, 2026-11-26): the motd spec's texts (M42;
+        // Difference 33 for the denied one).
         assert_eq!(UNREADABLE, "motd.yml can't be read; run sb validate-config");
         assert_eq!(DENIED, "motd.yml can't be read: permission denied");
         // A read refused with a permission error drops the validate-config

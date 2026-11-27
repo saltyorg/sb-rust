@@ -756,6 +756,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let tools = tools(dir.path());
         assert_eq!(last_login(&tools, &Paint::plain(), false).await, NO_LOGINS);
+        // A change detector (kept as one, the maintainer, 2026-11-26): sb-go's text.
         assert_eq!(NO_LOGINS, "No recent logins");
         for body in [
             "echo 'sbuser pts/0 192.0.2.9 Sat Nov 14 23:10 gone'; exit 1",

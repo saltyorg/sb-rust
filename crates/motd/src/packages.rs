@@ -623,6 +623,7 @@ pub(crate) mod tests {
         let dir = tempfile::tempdir().unwrap();
         let paths = paths(dir.path());
         assert_eq!(packages(&paths, &Paint::plain()).await, UNKNOWN);
+        // A change detector (kept as one, the maintainer, 2026-11-26): sb-go's text.
         assert_eq!(UNKNOWN, "Update status unknown");
         for body in [
             "echo 'Listing... Done'",

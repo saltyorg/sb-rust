@@ -1633,6 +1633,12 @@ Region               Saxony"
         drop(release);
     }
 
+    /// A change detector (kept as one, the maintainer, 2026-11-26): the
+    /// host's sources, as sb-go's `cmd/bench_script.sh` reads them (cpus,
+    /// cpufreq's directory, in place of its lscpu); the tests above use
+    /// invented ones, so only this sees a path or the disks' limit move.
+    /// Its last line reads the host's mounts, a smoke test of the default
+    /// listing.
     #[test]
     fn the_default_sources_are_the_hosts() {
         let sources = Sources::default();

@@ -111,6 +111,8 @@ fn the_timeout_is_the_instances_or_the_default_cut_to_the_deadline() {
         late.timeout(&one, DEFAULT_TIMEOUT),
         Duration::from_millis(1)
     );
+    // A change detector (kept as one, the maintainer, 2026-11-26): the spec's 1 s; the
+    // behaviour above uses the constant, so only this sees the number move.
     assert_eq!(DEFAULT_TIMEOUT, Duration::from_secs(1));
 }
 

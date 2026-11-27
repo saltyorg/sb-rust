@@ -168,13 +168,26 @@ mod tests {
         assert_eq!(cpus_in(&rustix::thread::CpuSet::new()), Vec::<usize>::new());
     }
 
-    /// A smoke test on this host's own mask and topology: it reads them
-    /// without failing, within the CPUs sb may use.
+    /// The host's own answer, whatever its mask and topology (a container
+    /// without sysfs's CPU topology too): at least one child, and never
+    /// more than the CPUs sb may run on; where the mask and the topology
+    /// both read, exactly the lesser of the logical CPUs and their cores,
+    /// so the real `sched_getaffinity` and sysfs reads, which the invented
+    /// cases above stand in for, are joined as `children_at_once` joins
+    /// them.
     #[test]
-    fn this_hosts_cap_is_read() {
-        let mask = rustix::thread::sched_getaffinity(None).expect("mask");
-        let cores = physical_cores(Path::new(SYSFS_CPUS), &cpus_in(&mask)).expect("cores");
-        let logical = std::thread::available_parallelism().expect("cpus");
-        assert_eq!(children_at_once(), logical.min(cores));
+    fn this_hosts_cap_is_within_its_cpus() {
+        // At least one: the type's (`NonZeroUsize`).
+        let at_once = children_at_once().get();
+        let Ok(logical) = std::thread::available_parallelism() else {
+            return;
+        };
+        assert!(at_once <= logical.get(), "{at_once} of {logical}");
+        let cores = rustix::thread::sched_getaffinity(None)
+            .ok()
+            .and_then(|mask| physical_cores(Path::new(SYSFS_CPUS), &cpus_in(&mask)));
+        if let Some(cores) = cores {
+            assert_eq!(at_once, logical.get().min(cores.get()), "{cores} cores");
+        }
     }
 }

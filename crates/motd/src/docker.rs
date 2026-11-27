@@ -896,6 +896,7 @@ mod tests {
             }
         );
         assert_eq!(Settings::default().proxy, Proxy::Off);
+        // A change detector (kept as one, the maintainer, 2026-11-26): sb-go's 3 s connect timeout.
         assert_eq!(TRAEFIK_CONNECT, Duration::from_secs(3));
     }
 
@@ -1201,6 +1202,7 @@ mod tests {
             "{:?}",
             start.elapsed()
         );
+        // A change detector (kept as one, the maintainer, 2026-11-26): sb-go's 5 s limit.
         assert_eq!(LIMIT, Duration::from_secs(5));
     }
 

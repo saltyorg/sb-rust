@@ -473,7 +473,9 @@ mod tests {
     }
 
     /// `coredump_uid` asks the system for systemd-coredump, whether or not
-    /// this host has the user.
+    /// this host has the user. It restates the code on purpose: the real
+    /// lookup's line, which the invented cases stand in for, runs here, and
+    /// a lookup of a name whose answer differs on this host fails it.
     #[test]
     fn the_coredump_uid_is_the_systems_systemd_coredump() {
         assert_eq!(

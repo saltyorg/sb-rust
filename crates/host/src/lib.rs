@@ -247,7 +247,11 @@ mod tests {
         );
     }
 
-    /// The host's own answer is the decision on its os-release values.
+    /// The host's own answer is the decision on its os-release values. It
+    /// restates the code on purpose: it runs the real os-release reads,
+    /// which the invented cases above stand in for, so a reader that stops
+    /// feeding the decision fails here on a host whose values change the
+    /// answer.
     #[test]
     fn the_setup_check_reads_this_host() {
         assert_eq!(
@@ -287,6 +291,9 @@ mod tests {
     }
 
     /// The runtime list is sb-go's `SupportedUbuntuRuntimeReleases`.
+    /// A change detector (kept as one, the maintainer, 2026-11-26): it
+    /// mirrors sb-go's list (`layout/layout.go`), and fails a change to
+    /// either list alone.
     #[test]
     fn the_runtime_releases_match_sb_go() {
         assert_eq!(SUPPORTED_RUNTIME_RELEASES, SUPPORTED);
