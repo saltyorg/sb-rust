@@ -18,8 +18,8 @@
 # - the runner user, uid 1001, with passwordless sudo, its home 0750.
 # Not installed: the image's other toolchains (Docker, .NET, Java,
 # browsers, ...), which the task job doesn't use, and its toolcache's
-# preinstalled Node, Go and Python: the setup actions download the same
-# builds (actions/node-versions, go-versions, python-versions).
+# preinstalled Node and Python: the setup actions download the same
+# builds (actions/node-versions, python-versions).
 # Besides the image: Node 24 for running the job's JavaScript actions (the
 # runner's own `externals`), and python3-yaml for the job runner (job.py).
 #

@@ -143,7 +143,7 @@ the same version; major, the same major version; minimum, that version or a
 later one. A cargo tool is read from `cargo install --list` when cargo
 installed it, else from its own `--version` (CI installs release binaries
 cargo has no record of), cross only from cargo's record (`cross --version`
-syncs a toolchain); gitleaks from `go version -m`; the others from their
+syncs a toolchain); gitleaks from `gitleaks version`; the others from their
 `--version`. The
 system packages have a major or minimum rule, so a host package update
 doesn't fail every run.

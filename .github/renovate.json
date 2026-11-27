@@ -185,9 +185,10 @@
             "dependencyDashboardApproval": true
         },
         {
-            "description": "The gate's tools: each its own PR, as CONSTRAINTS.md's Tools table pins each exactly; a gitleaks major would also need its Go module path (/v8) changed by hand",
+            "description": "The gate's tools: each its own PR, as CONSTRAINTS.md's Tools table pins each exactly (gitleaks' install script beside its row)",
             "matchFileNames": [
-                "CONSTRAINTS.md"
+                "CONSTRAINTS.md",
+                "scripts/install-gitleaks.sh"
             ],
             "automerge": false,
             "labels": [
@@ -353,13 +354,14 @@
         },
         {
             "customType": "regex",
-            "description": "gitleaks (CONSTRAINTS.md's Tools table: its version and its install line)",
+            "description": "gitleaks (CONSTRAINTS.md's Tools table, its version; scripts/install-gitleaks.sh's GITLEAKS_VERSION, the release it downloads, whose checksums come from the same release)",
             "managerFilePatterns": [
-                "/(^|/)CONSTRAINTS\\.md$/"
+                "/(^|/)CONSTRAINTS\\.md$/",
+                "/(^|/)scripts/install-gitleaks\\.sh$/"
             ],
             "matchStrings": [
                 "\\| gitleaks \\| (?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+) \\| exact \\|",
-                "gitleaks/v8@v(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)`"
+                "\\nGITLEAKS_VERSION=(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)\\n"
             ],
             "depNameTemplate": "gitleaks",
             "packageNameTemplate": "gitleaks/gitleaks",

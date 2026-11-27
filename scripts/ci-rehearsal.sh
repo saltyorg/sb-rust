@@ -26,7 +26,7 @@
 # - the job: scripts/ci-rehearsal/job.py reads ci.yml and runs the job's
 #   steps as the runner does, each `run` step as written and each action
 #   from its repository at the pinned commit (install-action's binaries,
-#   setup-node, setup-go, setup-python, rust-cache), so the tools come at
+#   setup-node, setup-python, rust-cache), so the tools come at
 #   ci.yml's versions the way CI installs them, and check.sh task runs
 #   with the command and environment ci.yml gives it, as root through
 #   sudo, as a push to main does: the push's earlier commit (its event's
@@ -62,7 +62,7 @@
 # What it can't reproduce: systemd (the container has none; check.sh's
 # sandbox hides it in CI too); a VM's kernel (the host's is shared);
 # on arm64, a VM's root (above); the runner image's other preinstalled
-# software and its toolcache's prebuilt Node, Go and Python (the setup actions
+# software and its toolcache's prebuilt Node and Python (the setup actions
 # download the same builds); the GitHub token (actions run without one,
 # so `github.token` is empty and API calls are anonymous); rust-cache's
 # cache service (every run is a cold build); the post steps; the

@@ -237,7 +237,7 @@ need() { command -v "$1" >/dev/null || { echo "check: $1 not installed (see CONS
 #   run for it (`cross --version` syncs a toolchain), so without cargo's
 #   record it can't be read.
 # - gitleaks, from `gitleaks version`, whole: its release build
-#   (scripts/install-gitleaks.sh) prints the bare version, "8.30.1"; a
+#   (scripts/install-gitleaks.sh) prints the bare version; a
 #   `go install` build prints "version is set by build process", no
 #   version, and is refused.
 # - The rest, from the first version number `--version` prints on stdout
