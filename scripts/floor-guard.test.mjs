@@ -2499,9 +2499,17 @@ test('check.sh full: another architecture says it skips the production build, an
 // never at task, nor inside GitHub Actions.
 const rehearsals = (r) => r.calls.filter((c) => c.tool === 'ci-rehearsal').map((c) => c.args);
 test('check.sh full: the CI rehearsal runs when a file CI reads differently changed, on the amd64 runners', () => {
+  // The lock and the manifests (the crates' versions a runner builds), a
+  // crate's build script, and its unit tests and testing code under src/,
+  // as well as its tests/ (the maintainer's decision, recorded in the
+  // test-hardening plan).
   for (const f of ['crates/foo/tests/t.rs', '.github/workflows/ci.yml', 'scripts/x.sh', '.config/nextest.toml',
-    'rust-toolchain.toml', 'CONSTRAINTS.md']) {
-    const r = checkRun('full', { work: { [f]: (f === 'CONSTRAINTS.md' ? TOOLS_MD : '') + '# changed\n' } });
+    'rust-toolchain.toml', 'CONSTRAINTS.md', 'Cargo.lock', 'Cargo.toml', 'crates/foo/Cargo.toml', 'crates/foo/build.rs',
+    'crates/foo/src/tests.rs', 'crates/foo/src/a/b/tests.rs', 'crates/foo/src/a/tests/c.rs', 'crates/foo/src/tests/c.rs',
+    'crates/foo/src/testing.rs', 'crates/foo/src/testing/d.rs', 'crates/foo/src/a/testing.rs', 'crates/foo/src/testing_x.rs',
+    'crates/foo/src/a/b/testing/x.rs']) {
+    const base = { 'CONSTRAINTS.md': TOOLS_MD, 'crates/foo/Cargo.toml': manifest('sb-foo') }[f] ?? '';
+    const r = checkRun('full', { work: { [f]: base + '# changed\n' } });
     passes(r, 'full');
     assert.deepEqual(rehearsals(r), ['--arch amd64 --base HEAD'], f + ':\n' + r.output);
   }
@@ -2516,10 +2524,18 @@ test('check.sh full: the CI rehearsal runs when a file CI reads differently chan
 });
 
 test('check.sh full: the CI rehearsal is skipped for other changes, at task, and in GitHub Actions', () => {
-  const src = checkRun('full', { work: { 'crates/foo/src/lib.rs': 'pub fn f() {}\n' } });
-  passes(src, 'full');
-  assert.deepEqual(rehearsals(src), [], src.output);
-  assert.match(src.output, /skipped: nothing under \.github\/, scripts\/, crates\/\*\/tests\/ or \.config\//, src.output);
+  for (const f of ['crates/foo/src/lib.rs', 'crates/foo/src/contests.rs', 'crates/foo/src/a/attesting.rs',
+    'crates/foo/src/build.rs', 'crates/foo/src/a/Cargo.toml']) {
+    const src = checkRun('full', { work: { [f]: 'pub fn f() {}\n' } });
+    passes(src, 'full');
+    assert.deepEqual(rehearsals(src), [], f + ':\n' + src.output);
+    assert.match(src.output, /skipped: nothing a runner shows differently changed since HEAD/, f + ':\n' + src.output);
+  }
+  // Documents only: the gate ends after its fast checks, the rehearsal
+  // with them.
+  const docs = checkRun('full', { work: { 'docs/x.md': '# changed\n' } });
+  passes(docs, 'full');
+  assert.deepEqual(rehearsals(docs), [], docs.output);
   const task = checkRun('task', { work: { 'crates/foo/tests/t.rs': '// changed\n' } });
   passes(task, 'task');
   assert.deepEqual(rehearsals(task), [], task.output);

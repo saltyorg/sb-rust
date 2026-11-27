@@ -162,9 +162,17 @@ RUNTIME_RELEASES=(22.04 24.04 26.04)
 # - rehearsal_changed: the same, for a file whose effect CI's task job
 #   shows on a runner and this host may not (the CI rehearsal, at full):
 #   under .github/ or scripts/ (the workflows, the tools they install,
-#   this gate), a crate's tests (crates/*/tests/), .config/ (nextest's
-#   profiles), rust-toolchain.toml, or CONSTRAINTS.md (the Tools table
-#   read above).
+#   this gate), the lock and the manifests (Cargo.lock, Cargo.toml, a
+#   crate's Cargo.toml: what the runners build), a crate's build.rs, its
+#   tests (crates/*/tests/), and its unit tests and testing code under
+#   src/ (a tests.rs, a testing.rs, testing/ or testing_*), .config/
+#   (nextest's profiles), rust-toolchain.toml, or CONSTRAINTS.md (the
+#   Tools table read above). A case pattern's `*` matches a `/` too: so
+#   `crates/*/src/*/tests.rs` is a tests.rs at any depth below src/, and
+#   `crates/*/tests/*` takes in a tests/ directory at any depth, under
+#   src/ too; a crate's own Cargo.toml and build.rs are matched by a
+#   regular expression, one directory deep (the maintainer's decision,
+#   recorded in the test-hardening plan).
 # - hangup_changed: the same, for a file under crates/ or scripts/ (sb, or
 #   the gate that runs hangup's systemd test, at full).
 mapfile -d '' -t changed_files < <(
@@ -198,7 +206,11 @@ else
     case $f in crates/* | scripts/*) hangup_changed=1 ;; esac
     case $f in
     .github/* | scripts/* | crates/*/tests/* | .config/* | rust-toolchain.toml | CONSTRAINTS.md) rehearsal_changed=1 ;;
+    Cargo.lock | Cargo.toml) rehearsal_changed=1 ;;
+    crates/*/src/tests.rs | crates/*/src/*/tests.rs) rehearsal_changed=1 ;;
+    crates/*/src/testing* | crates/*/src/*/testing*) rehearsal_changed=1 ;;
     esac
+    if [[ $f =~ ^crates/[^/]+/(Cargo\.toml|build\.rs)$ ]]; then rehearsal_changed=1; fi
   done
 fi
 
@@ -1605,7 +1617,7 @@ full() {
   elif [[ $arch != x86_64 ]]; then
     skip "the rehearsal runs on an x86_64 host, and this host is $arch"
   elif ((rehearsal_changed == 0)); then
-    skip "nothing under .github/, scripts/, crates/*/tests/ or .config/, nor rust-toolchain.toml or CONSTRAINTS.md, changed since $base"
+    skip "nothing a runner shows differently changed since $base: .github/, scripts/, .config/, a crate's tests and testing code, the lock, a manifest, a build script, rust-toolchain.toml, CONSTRAINTS.md"
   else
     # The base as the push's earlier commit, so the job's check.sh judges
     # this run's diff: its changed-line coverage runs on each runner
