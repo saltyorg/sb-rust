@@ -31,6 +31,12 @@ impl FakeSource {
         self.requests.try_recv().ok()
     }
 
+    /// Resolves once the viewer is gone (its channel's receiver
+    /// dropped), so a test can keep the source open until then.
+    pub async fn viewer_gone(&self) {
+        self.outbox.closed().await;
+    }
+
     /// Send `event` as the source would. `false` once the viewer is gone.
     #[must_use]
     pub fn send(&self, event: Event) -> bool {

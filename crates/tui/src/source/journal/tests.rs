@@ -440,6 +440,170 @@ async fn entries_written_before_the_follow_starts_come_first_once() {
     assert_eq!(v.followed(1).await, ["m5"]);
 }
 
+/// A local journal (`Source::Local`, as sb opens it on a host) under an
+/// injected `Host` (sb-journal's `testing::open_on`): an invented machine
+/// id, its file, and the two roots, all in a directory of the test's.
+struct Local {
+    dir: tempfile::TempDir,
+}
+
+impl Local {
+    /// An invented machine id: 32 hex digits, as /etc/machine-id holds.
+    const MACHINE: &str = "0123456789abcdef0123456789abcdef";
+
+    fn new() -> Self {
+        let dir = tempfile::tempdir().expect("a directory");
+        std::fs::write(
+            dir.path().join("machine-id"),
+            format!("{}\n", Self::MACHINE),
+        )
+        .expect("the machine id");
+        std::fs::create_dir_all(dir.path().join("var").join(Self::MACHINE))
+            .expect("the persistent journal's directory");
+        Self { dir }
+    }
+
+    /// The journal under `release`'s rules.
+    fn journal(&self, release: &Release) -> Arc<Journal> {
+        let host = sb_host::journal::testing::Host {
+            machine_id: self.dir.path().join("machine-id"),
+            roots: [self.dir.path().join("run"), self.dir.path().join("var")],
+        };
+        let journal = sb_host::journal::testing::open_on(Source::Local, release, &host);
+        Arc::new(journal.expect("opens"))
+    }
+
+    /// The machine's journal directory.
+    fn machine(&self) -> PathBuf {
+        self.dir.path().join("var").join(Self::MACHINE)
+    }
+
+    /// A journal file of one entry per element of `entries`
+    /// (`MESSAGE=m<i>` and the payloads given), seqnums and realtimes
+    /// from `first`.
+    fn file(first: u64, entries: &[&[&[u8]]]) -> Vec<u8> {
+        let (mut c, offsets) = crafted::journal_of(entries);
+        for (e, seqnum) in offsets.into_iter().zip(first..) {
+            // After the object header: the seqnum, then the realtime.
+            c.set(e + 16, seqnum);
+            c.set(e + 24, 1_000_000 + seqnum);
+        }
+        c.set(H_ARENA_SIZE, c.b.len() as u64 - 272);
+        c.b
+    }
+
+    /// `system.journal` holding `entries` from seqnum 1, written in
+    /// place: the same file (inode and file id), with entries appended
+    /// when it held fewer, as journald appends to it.
+    fn append(&self, entries: &[&[&[u8]]]) {
+        std::fs::write(
+            self.machine().join("system.journal"),
+            Self::file(1, entries),
+        )
+        .expect("system.journal");
+    }
+
+    /// journald's rotation: `system.journal` archived under its
+    /// `system@<seqnum id>-<head seqnum>-<head realtime>.journal` name,
+    /// then a new `system.journal` of `entries` from seqnum `first`.
+    /// The new file is written aside and renamed into place, the test's
+    /// way to have the follow never open it half written (journald
+    /// creates it in place).
+    fn rotate(&self, first: u64, entries: &[&[&[u8]]]) {
+        let machine = self.machine();
+        let archived = format!(
+            "system@{}-{:016x}-{:016x}.journal",
+            "0".repeat(32),
+            1,
+            1_000_001
+        );
+        std::fs::rename(machine.join("system.journal"), machine.join(archived)).expect("archived");
+        let part = self.dir.path().join("next.part");
+        std::fs::write(&part, Self::file(first, entries)).expect("a journal file");
+        std::fs::rename(&part, machine.join("system.journal")).expect("renamed into place");
+    }
+}
+
+/// How the entry written between the page and the follow arrives.
+#[derive(Clone, Copy, Debug)]
+enum Between {
+    /// Appended to `system.journal`.
+    Appended,
+    /// In the new `system.journal` of a rotation.
+    Rotated,
+}
+
+/// The handover on a host, under `version`'s journal rules: a service's
+/// entry written between its tail page and the follow's start comes in
+/// the follow's first batch, once, whether appended or in a rotation's
+/// new file. The entry is PID 1's message about the unit, which only the
+/// release's own `-u` term (`init_term`: `_PID=1` to 259.0,
+/// `_SYSTEMD_CGROUP=/init.scope` after) matches, so the follow reads it
+/// by the release's unit rule. Every entry is of one boot, so the
+/// releases' boot orders (24.04's `NewestTail`, 26.04's
+/// `NewestTailEntryMachine`) run but order nothing here.
+async fn what_came_before_the_follow_comes_in_its_first_batch(
+    version: &str,
+    init_term: &[u8],
+    between: Between,
+) {
+    let local = Local::new();
+    let own: &[&[u8]] = &[b"_SYSTEMD_UNIT=app.service"];
+    let other: &[&[u8]] = &[b"_SYSTEMD_UNIT=other.service"];
+    let about: &[&[u8]] = &[init_term, b"UNIT=app.service"];
+    local.append(&[own, own]);
+    let (tx, events) = mpsc::unbounded_channel();
+    let wake = Arc::new(Notify::new());
+    let outbox = Outbox::new(tx, Arc::clone(&wake), Generation::default().next());
+    let unit = UnitName::new("app").expect("a unit");
+    let mut v = Viewer {
+        handle: spawn(local.journal(&release(version)), &unit, None, outbox),
+        events,
+        wake,
+        _follow: follow_slot::take(),
+    };
+    assert_eq!(v.page(Request::Tail).await.messages, ["m0", "m1"]);
+    match between {
+        Between::Appended => local.append(&[own, own, other, about]),
+        Between::Rotated => local.rotate(10, &[other, other, other, about]),
+    }
+    v.handle.send(Request::Follow(true));
+    assert_eq!(v.followed(1).await, ["m3"], "{between:?}: the unit's entry");
+    v.quiet().await;
+}
+
+#[tokio::test]
+async fn an_entry_appended_before_the_follow_comes_first_on_24_04() {
+    what_came_before_the_follow_comes_in_its_first_batch("24.04", b"_PID=1", Between::Appended)
+        .await;
+}
+
+#[tokio::test]
+async fn an_entry_appended_before_the_follow_comes_first_on_26_04() {
+    what_came_before_the_follow_comes_in_its_first_batch(
+        "26.04",
+        b"_SYSTEMD_CGROUP=/init.scope",
+        Between::Appended,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn a_rotation_before_the_follow_comes_first_on_24_04() {
+    what_came_before_the_follow_comes_in_its_first_batch("24.04", b"_PID=1", Between::Rotated)
+        .await;
+}
+
+#[tokio::test]
+async fn a_rotation_before_the_follow_comes_first_on_26_04() {
+    what_came_before_the_follow_comes_in_its_first_batch(
+        "26.04",
+        b"_SYSTEMD_CGROUP=/init.scope",
+        Between::Rotated,
+    )
+    .await;
+}
+
 /// follow-L1: a read the follow waited on (an entry slot journald hadn't
 /// written yet) is read again on the source's tick, not only at the
 /// journal's next write. The slot is written through a hard link in

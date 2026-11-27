@@ -379,6 +379,14 @@ impl Outbox {
         }
     }
 
+    /// Resolves once the viewer's end of the channel is gone, for the
+    /// tests (tokio's `UnboundedSender::closed`,
+    /// <https://docs.rs/tokio/1.54.1/tokio/sync/mpsc/struct.UnboundedSender.html#method.closed>).
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) async fn closed(&self) {
+        self.events.closed().await;
+    }
+
     /// Send `event`, tagged, and wake the screen. `false` once the viewer
     /// is gone: the source then ends.
     #[must_use]

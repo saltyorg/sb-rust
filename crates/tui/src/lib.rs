@@ -155,8 +155,25 @@ pub async fn inline(
     // Recorded for the blank line at the end (cli-core's `tail`).
     let mut out = io::BufWriter::new(tail::Tracked::stdout(io::stdout()));
     let mut err = tail::Tracked::stderr(io::stderr());
-    let ending = stream_log(open, &format, &token, &mut out, &mut err).await;
-    tracing::info!(kind = word, name, ending = ?ending.as_ref().ok(), "stream ended");
+    // A watch that can't start (no descriptor left) leaves the stream to
+    // see the reader go at its next write, as before the watch.
+    let mut watch = exit::ReaderGone::stdout()
+        .inspect_err(|e| tracing::warn!(error = %e, "stdout's reader can't be watched"))
+        .ok();
+    let gone = async {
+        match watch.as_mut() {
+            Some(watch) => watch.wait().await,
+            None => std::future::pending().await,
+        }
+    };
+    let ending = stream_log(open, &format, &token, gone, &mut out, &mut err).await;
+    // The error too: a gone reader's quiet 141 shows nothing on screen.
+    tracing::info!(
+        kind = word,
+        name,
+        ending = ?ending.as_ref().map_err(|e| format!("{e:#}")),
+        "stream ended"
+    );
     ending
 }
 
@@ -270,7 +287,14 @@ async fn screens(tui: &mut Tui, logs: Logs, token: CancellationToken) -> io::Res
 
 /// The inline stream: the source `open` opens, its tail and then its
 /// follow written to `out` line by line in `format`, its notices to
-/// `err`, until `token` is cancelled ([`Ending::Cancelled`]). The events
+/// `err`, until `token` is cancelled ([`Ending::Cancelled`]) or `out`'s
+/// reader goes: at a failed write, or when `gone` resolves (cli-core's
+/// `ReaderGone`, with no new line needed; tui spec, "The inline
+/// fallback"), both cli-core's output error, the quiet 141. `gone` is
+/// pinned once and polled by reference on every pass, tokio's way to keep
+/// one future across `select!` calls
+/// (<https://docs.rs/tokio/1.54.1/tokio/macro.select.html>, "passing a
+/// reference to the future"). The events
 /// come from the channel itself (tokio's `recv`,
 /// <https://docs.rs/tokio/1.54.1/tokio/sync/mpsc/struct.UnboundedReceiver.html#method.recv>),
 /// so a source that ends is seen; the screen's wake isn't needed here.
@@ -278,9 +302,11 @@ async fn stream_log(
     open: Open,
     format: &Format,
     token: &CancellationToken,
+    gone: impl Future<Output = exit::OutputError>,
     out: &mut impl io::Write,
     err: &mut impl io::Write,
 ) -> anyhow::Result<Ending> {
+    let mut gone = std::pin::pin!(gone);
     let (tx, mut events) = mpsc::unbounded_channel();
     let source = open(Outbox::new(
         tx,
@@ -293,6 +319,7 @@ async fn stream_log(
         let tagged = tokio::select! {
             biased;
             () = token.cancelled() => return Ok(Ending::Cancelled),
+            gone = &mut gone => return Err(gone.into()),
             tagged = events.recv() => tagged,
         };
         let Some(first) = tagged else {
@@ -363,10 +390,23 @@ mod tests {
 
     /// How the stream ended, what it wrote on stdout and stderr, and the
     /// requests its source got, after `drive` has driven the fake source
-    /// (the stream's token in hand).
+    /// (the stream's token in hand); its reader never goes.
     async fn streamed(
         drive: impl AsyncFnOnce(&mut FakeSource, &CancellationToken),
     ) -> (Result<Ending, String>, String, String, Vec<Request>) {
+        let mut out = Vec::new();
+        let (ending, err, requests) = streamed_into(&mut out, std::future::pending(), drive).await;
+        let out = String::from_utf8(out).expect("utf-8");
+        (ending.map_err(|e| e.to_string()), out, err, requests)
+    }
+
+    /// As [`streamed`], with stdout `out` and stdout's reader-gone
+    /// watch `gone`, the ending as the stream returned it.
+    async fn streamed_into(
+        out: &mut impl io::Write,
+        gone: impl Future<Output = exit::OutputError>,
+        drive: impl AsyncFnOnce(&mut FakeSource, &CancellationToken),
+    ) -> (anyhow::Result<Ending>, String, Vec<Request>) {
         let slot = Arc::new(Mutex::new(None));
         let held = Arc::clone(&slot);
         let open: Open = Box::new(move |outbox| {
@@ -376,10 +416,10 @@ mod tests {
         });
         let format = Format::new(jiff::tz::TimeZone::UTC, Theme::plain());
         let token = CancellationToken::new();
-        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let mut err = Vec::new();
         let mut requests = Vec::new();
         let (ending, ()) = tokio::join!(
-            stream_log(open, &format, &token, &mut out, &mut err),
+            stream_log(open, &format, &token, gone, out, &mut err),
             async {
                 // The stream opened its source at its first poll.
                 tokio::task::yield_now().await;
@@ -388,13 +428,121 @@ mod tests {
                 requests.extend(std::iter::from_fn(|| fake.request()));
             }
         );
-        let text = |bytes: Vec<u8>| String::from_utf8(bytes).expect("utf-8");
-        (
-            ending.map_err(|e| e.to_string()),
-            text(out),
-            text(err),
-            requests,
-        )
+        (ending, String::from_utf8(err).expect("utf-8"), requests)
+    }
+
+    /// Stdout whose reader goes after `flushes` flushes: from then on,
+    /// every write and flush fails with a broken pipe, as a pipe's write
+    /// end does (pipe(7)). Hand-written: no crate in the tree has a sync
+    /// `io::Write` that fails on demand (tokio-test's mock is async, and
+    /// not a dependency).
+    struct Closing {
+        bytes: Vec<u8>,
+        flushes: usize,
+    }
+
+    impl Closing {
+        fn broken(&self) -> io::Result<()> {
+            if self.flushes == 0 {
+                Err(io::ErrorKind::BrokenPipe.into())
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    impl io::Write for Closing {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.broken()?;
+            self.bytes.extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            self.broken()?;
+            self.flushes -= 1;
+            Ok(())
+        }
+    }
+
+    /// The stream's ending, within a bound, so a stream that never ends
+    /// fails with a message rather than hanging the run.
+    async fn ended_within(
+        streamed: impl Future<Output = (anyhow::Result<Ending>, String, Vec<Request>)>,
+    ) -> (anyhow::Result<Ending>, String, Vec<Request>) {
+        tokio::time::timeout(std::time::Duration::from_secs(10), streamed)
+            .await
+            .expect("the stream ended within 10 s")
+    }
+
+    /// An ending that is sb's quiet exit for a gone reader: cli-core's
+    /// output error with a broken pipe in its chain, so 141.
+    fn assert_quiet_141(ending: &anyhow::Result<Ending>) {
+        let err = ending.as_ref().expect_err("the stream ended with an error");
+        let output = err
+            .chain()
+            .find_map(|e| e.downcast_ref::<exit::OutputError>())
+            .expect("cli-core's output error in the chain");
+        assert_eq!(exit::quiet_exit(err.as_ref()), Some(141), "{output}");
+    }
+
+    /// The stream on `out`, the tail then one followed line, its reader
+    /// never watched: the ending, within a bound.
+    async fn a_followed_line_on(out: &mut impl io::Write) -> anyhow::Result<Ending> {
+        let (ending, _, _) = ended_within(streamed_into(
+            out,
+            std::future::pending(),
+            async |fake, _| {
+                assert!(fake.send(tail_page(vec![line(1, "a"), line(2, "b")])));
+                turns().await;
+                assert!(fake.send(Event::Followed(vec![line(3, "c")])));
+                fake.viewer_gone().await;
+            },
+        ))
+        .await;
+        ending
+    }
+
+    /// The reader went after the tail: the next followed line fails, at
+    /// its write on stdout as it is, and at the batch's flush through the
+    /// `BufWriter` `inline` wraps stdout in; either way the stream ends
+    /// with the quiet 141.
+    #[tokio::test]
+    async fn a_reader_gone_at_a_followed_line_ends_with_141() {
+        let closing = || Closing {
+            bytes: Vec::new(),
+            flushes: 1,
+        };
+        let mut out = closing();
+        assert_quiet_141(&a_followed_line_on(&mut out).await);
+        assert_eq!(String::from_utf8_lossy(&out.bytes), "a\nb\n");
+        let mut buffered = io::BufWriter::new(closing());
+        assert_quiet_141(&a_followed_line_on(&mut buffered).await);
+        assert_eq!(String::from_utf8_lossy(&buffered.get_ref().bytes), "a\nb\n");
+    }
+
+    /// The watch saw the reader go, with no event after the tail: the
+    /// stream ends with the quiet 141 at once, writing nothing more.
+    #[tokio::test]
+    async fn a_reader_gone_with_no_new_line_ends_with_141() {
+        let (went, gone) = tokio::sync::oneshot::channel::<()>();
+        let gone = async {
+            gone.await.ok();
+            exit::output_error(io::ErrorKind::BrokenPipe.into())
+        };
+        let mut out = Vec::new();
+        let (ending, _, requests) = ended_within(streamed_into(&mut out, gone, async |fake, _| {
+            assert!(fake.send(tail_page(vec![line(1, "a")])));
+            turns().await;
+            went.send(()).expect("the stream waits on the watch");
+            // The source stays open until the stream ends: only the watch
+            // can end it.
+            fake.viewer_gone().await;
+        }))
+        .await;
+        assert_quiet_141(&ending);
+        assert_eq!(String::from_utf8_lossy(&out), "a\n");
+        assert_eq!(requests, [Request::Tail, Request::Follow(true)]);
     }
 
     /// Turns enough for the stream to take what was sent: `join!` polls

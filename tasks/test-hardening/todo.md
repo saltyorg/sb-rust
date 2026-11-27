@@ -60,7 +60,7 @@ invented; no test reads the host's data.
 - [x] 3.1: the specs say the stream ends when the reader goes, with no
       new line needed.
 - [x] 3.2: cli-core's reader-gone watch.
-- [ ] 3.3: piped `sb logs` ends on the watch; the in-process tests; the
+- [x] 3.3: piped `sb logs` ends on the watch; the in-process tests; the
       follow's first-batch case.
 - [ ] 3.4: the end-to-end closed-reader test owns its pipe.
 - [ ] 3.5: the systemd parallelism test sees half-serial calls.
